@@ -170,12 +170,17 @@ export function ReviewProvider(props: { session: SessionInfo; children: ReactNod
     draftsRef.current = fn(draftsRef.current);
     setDraftsState(draftsRef.current);
   }, []);
+  // Set while the page is unloading so draft saves use `keepalive` and outlive the page.
+  const unloading = useRef(false);
   const sync = useMemo(
     () =>
-      createDraftSync((path, init) => api(prUrl(path), init), {
-        get: () => draftsRef.current,
-        update: mutateDrafts,
-      }),
+      createDraftSync(
+        (path, init) => api(prUrl(path), unloading.current ? { ...init, keepalive: true } : init),
+        {
+          get: () => draftsRef.current,
+          update: mutateDrafts,
+        },
+      ),
     [mutateDrafts],
   );
 
@@ -207,11 +212,14 @@ export function ReviewProvider(props: { session: SessionInfo; children: ReactNod
   const loadAll = useCallback(async () => {
     setError(null);
     try {
-      const [data] = await Promise.all([
-        api<PrResponse>(prUrl('/pr')),
-        loadThreads(),
-        loadDrafts(),
-      ]);
+      // Always re-fetch: the server caches PR data per PR for its whole run, so a PR visited
+      // earlier would otherwise come back at the head it had then. Drafts load after the
+      // refresh so the server re-anchors them against the current head.
+      const data = await refreshInOrder({
+        fetchPr: () => api<PrResponse>(prUrl('/pr?refresh=1')),
+        loadThreads,
+        loadDrafts,
+      });
       setLoaded({ session, data });
     } catch (err) {
       setError((err as Error).message);
@@ -333,6 +341,21 @@ export function ReviewProvider(props: { session: SessionInfo; children: ReactNod
   }, []);
 
   useEffect(() => () => sync.dispose(), [sync]);
+
+  // Back/forward, reload, closing the tab or any other navigation: save pending drafts now and,
+  // if there were any, ask the browser to confirm leaving.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      unloading.current = true;
+      // If the user stays, the page lives on: later saves go back to normal requests.
+      setTimeout(() => (unloading.current = false), 0);
+      if (!sync.saveBeforeUnload()) return;
+      e.preventDefault();
+      e.returnValue = ''; // older browsers
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [sync]);
 
   const value = useMemo<ReviewContextValue | null>(
     () =>

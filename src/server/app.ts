@@ -25,12 +25,15 @@ export interface AppOptions {
   analysis?: AnalysisDeps;
   /** Port the server listens on; used for Host/Origin checks. May be set after listen(). */
   port: () => number;
+  /** How many PRs keep their in-memory caches (default 20); older ones are rebuilt on demand. */
+  maxCachedPrs?: number;
   /** Directory containing the built UI. Omit to skip static serving. */
   webDir?: string;
 }
 
 export function createApp(opts: AppOptions): Hono {
   const app = new Hono();
+  const maxPrApps = Math.max(1, opts.maxCachedPrs ?? 20);
 
   app.use('*', hostGuard(opts.port));
   app.use('/api/*', tokenGuard(opts.token));
@@ -59,11 +62,15 @@ export function createApp(opts: AppOptions): Hono {
 
   // Each PR gets its own sub-app (with its own PR-data and analysis caches), created on first
   // use. `/api/repos/:owner/:repo/pulls/:number/<route>` is served by that app's `/api/<route>`.
+  // Only the most recently used ones are kept: drafts and reviewed state live in the store, so
+  // dropping one only drops caches. Keys are lowercase, as GitHub names are case-insensitive.
   const prApps = new Map<string, Hono>();
   const prApp = (pr: PrRef): Hono => {
-    const key = formatPrRef(pr);
+    const key = formatPrRef(pr).toLowerCase();
     let sub = prApps.get(key);
-    if (!sub) {
+    if (sub) {
+      prApps.delete(key); // re-inserted below as the most recently used
+    } else {
       sub = new Hono();
       registerApi(sub, {
         pr,
@@ -72,8 +79,10 @@ export function createApp(opts: AppOptions): Hono {
         analysis: opts.analysis,
       });
       sub.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
-      prApps.set(key, sub);
     }
+    prApps.set(key, sub);
+    // Maps iterate in insertion order, so the first key is the least recently used.
+    if (prApps.size > maxPrApps) prApps.delete(prApps.keys().next().value!);
     return sub;
   };
   app.all('/api/repos/:owner/:repo/pulls/:number/*', (c) => {

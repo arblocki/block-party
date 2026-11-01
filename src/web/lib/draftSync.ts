@@ -178,12 +178,23 @@ export function createDraftSync(api: ApiFn, store: DraftStore, opts: { autosaveM
     return unsynced();
   }
 
+  /**
+   * For `beforeunload`: starts saving every unsynced draft now, since the autosave timers die
+   * with the page. Requests start synchronously (unless one for the same draft is still in
+   * flight). Returns whether anything was unsynced, i.e. whether leaving could lose text.
+   */
+  function saveBeforeUnload(): boolean {
+    if (!store.get().some(needsSync)) return false;
+    void flush();
+    return true;
+  }
+
   function dispose(): void {
     timers.forEach(clearTimeout);
     timers.clear();
   }
 
-  return { save, updateBody, remove, flush, dispose, unsynced };
+  return { save, updateBody, remove, flush, saveBeforeUnload, dispose, unsynced };
 }
 
 export type DraftSync = ReturnType<typeof createDraftSync>;

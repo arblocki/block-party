@@ -190,6 +190,41 @@ describe('/api/repos', () => {
   });
 });
 
+describe('per-PR caches', () => {
+  const NEW = '3333333333333333333333333333333333333333';
+  const headOf = async (a: ReturnType<typeof createApp>, path: string): Promise<string> => {
+    const res = await a.request(`/api/repos/${path}/pr`, { headers: auth });
+    return ((await res.json()) as { pr: { headSha: string } }).pr.headSha;
+  };
+
+  it('shares one cache across spellings of the same repository', async () => {
+    const github = fakeGitHub();
+    const a = createApp({ token: TOKEN, port: () => PORT, github, store: openStore(':memory:') });
+    expect(await headOf(a, 'Octocat/Hello-World/pulls/1')).not.toBe(NEW);
+    github.setHead(NEW);
+    // Still the cached (old) head: the same sub-app answered.
+    expect(await headOf(a, 'octocat/hello-world/pulls/1')).not.toBe(NEW);
+  });
+
+  it('drops the least recently used PR beyond the limit', async () => {
+    const github = fakeGitHub();
+    const a = createApp({
+      token: TOKEN,
+      port: () => PORT,
+      github,
+      store: openStore(':memory:'),
+      maxCachedPrs: 2,
+    });
+    const old = await headOf(a, 'o/r/pulls/1');
+    await headOf(a, 'o/r/pulls/2');
+    await headOf(a, 'o/r/pulls/1'); // 1 is now the most recently used
+    await headOf(a, 'o/r/pulls/3'); // evicts 2
+    github.setHead(NEW);
+    expect(await headOf(a, 'o/r/pulls/1')).toBe(old); // still cached
+    expect(await headOf(a, 'o/r/pulls/2')).toBe(NEW); // rebuilt from GitHub
+  });
+});
+
 describe('static UI serving', () => {
   const html = (asset: string) => `<!doctype html><script src="/assets/${asset}"></script>`;
   const host = { host: `127.0.0.1:${PORT}` };

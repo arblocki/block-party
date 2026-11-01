@@ -80,4 +80,18 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX review_checkpoints_by_pr ON review_checkpoints (repo, pr);
   `,
+  // Repository keys are lowercase (GitHub names are case-insensitive). Rows written under
+  // another spelling are folded in; where the lowercase row already exists it wins, and the
+  // duplicate (a reviewed mark, checklist tick or cached analysis for the same thing) is dropped.
+  `
+  UPDATE drafts SET repo = lower(repo);
+  UPDATE reviews_submitted SET repo = lower(repo);
+  UPDATE review_checkpoints SET repo = lower(repo);
+  UPDATE OR IGNORE reviewed_hunks SET repo = lower(repo);
+  DELETE FROM reviewed_hunks WHERE repo <> lower(repo);
+  UPDATE OR IGNORE verify_checks SET repo = lower(repo);
+  DELETE FROM verify_checks WHERE repo <> lower(repo);
+  UPDATE OR IGNORE analyses SET repo = lower(repo);
+  DELETE FROM analyses WHERE repo <> lower(repo);
+  `,
 ];

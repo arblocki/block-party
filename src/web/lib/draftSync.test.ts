@@ -67,6 +67,27 @@ function setup() {
 }
 
 describe('draft sync', () => {
+  it('saves a just-typed draft at once when the page unloads, before autosave fires', async () => {
+    const t = setup(); // autosave is effectively never
+    t.add('d1');
+    t.sync.updateBody('d1', 'typed then pressed Back');
+    expect(t.server.calls).toEqual([]);
+    // The request starts synchronously, inside the beforeunload handler.
+    expect(t.sync.saveBeforeUnload()).toBe(true);
+    expect(t.server.calls).toEqual(['PUT /drafts']);
+    await t.sync.flush();
+    expect(t.server.store.get('d1')?.body).toBe('typed then pressed Back');
+    // Nothing pending any more: leaving needs no prompt.
+    expect(t.sync.saveBeforeUnload()).toBe(false);
+  });
+
+  it('does not prompt on unload when there is nothing to save', () => {
+    const t = setup();
+    t.add('d1'); // empty, never persisted: local-only
+    expect(t.sync.saveBeforeUnload()).toBe(false);
+    expect(t.server.calls).toEqual([]);
+  });
+
   it('(a) a failed autosave of an edit blocks submission', async () => {
     const t = setup();
     t.add('d1');

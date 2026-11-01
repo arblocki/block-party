@@ -144,6 +144,50 @@ describe('file, threads, replies', () => {
   });
 });
 
+describe('switching between pull requests', () => {
+  // The client's load sequence for a review page: refresh the PR, then read drafts.
+  const open = async (call: ReturnType<typeof setup>['call'], n: number) => {
+    const pr = await (
+      await call('GET', `/api/repos/octocat/hello-world/pulls/${n}/pr?refresh=1`)
+    ).json();
+    const { drafts } = await (
+      await call('GET', `/api/repos/octocat/hello-world/pulls/${n}/drafts`)
+    ).json();
+    return { pr, drafts };
+  };
+
+  it('reopening a PR shows commits pushed while another PR was open', async () => {
+    const { call, github } = setup();
+    const NEW = '3333333333333333333333333333333333333333';
+    const a = await open(call, 1);
+    const hunk = a.pr.files[0].hunks[0];
+    const line = hunk.lines.find((l: { newLine?: number }) => l.newLine !== undefined).newLine;
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+      ...draft,
+      path: hunk.path,
+      line,
+      hunkId: hunk.id,
+    });
+
+    await open(call, 2);
+    github.setHead(NEW);
+
+    // Without a refresh the per-PR cache still holds the old head; that is what the page used to show.
+    const cached = await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr')).json();
+    expect(cached.pr.headSha).toBe(HEAD);
+
+    const again = await open(call, 1);
+    expect(again.pr.pr.headSha).toBe(NEW);
+    // Drafts are read after the refresh, so they were re-anchored onto the new head.
+    expect(again.drafts).toHaveLength(1);
+    expect(again.drafts[0]).toMatchObject({ headSha: NEW, outdated: false });
+    const inter = await (
+      await call('GET', '/api/repos/octocat/hello-world/pulls/1/interdiff')
+    ).json();
+    expect(inter.currentHeadSha).toBe(NEW);
+  });
+});
+
 describe('drafts', () => {
   it('keeps drafts separate per pull request and repository', async () => {
     const { call } = setup();

@@ -84,20 +84,16 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
               title="All open pull requests"
               onClick={(e) => {
                 if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
-                // Save pending drafts before the page goes away.
+                // Save pending drafts before the page goes away. Anything still unsaved after
+                // that is caught by the page's beforeunload prompt.
                 e.preventDefault();
                 if (leaving) return;
                 setLeaving(true);
-                void flushDrafts()
-                  .then((unsynced) => {
-                    const ok =
-                      unsynced.length === 0 ||
-                      confirm(
-                        `${unsynced.length} draft comment(s) could not be saved and will be lost. Leave anyway?`,
-                      );
-                    if (ok) location.search = pullsHref(session.pr);
-                  })
-                  .finally(() => setLeaving(false));
+                void flushDrafts().finally(() => {
+                  location.search = pullsHref(session.pr);
+                  // Still here if the user cancelled the leave prompt.
+                  setLeaving(false);
+                });
               }}
             >
               ← PRs
