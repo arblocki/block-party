@@ -23,14 +23,26 @@ export interface AnalysisContextValue {
   result: AnalysisResponse | null;
   /** The displayed result was computed for an older head/diff than the loaded PR. */
   stale: boolean;
+  /** A provider run (which spends LLM quota) is in progress. */
   loading: boolean;
+  /** A cache-only lookup is in progress; it never runs a provider. */
+  checking: boolean;
+  /**
+   * Nothing is cached for the current PR version and provider/model, and no run was requested:
+   * the user has to press Analyze.
+   */
+  idle: boolean;
   /** Seconds since the current request started. */
   elapsedS: number;
   error: { code?: string; message: string } | null;
   providers: ProvidersResponse | null;
   /** Provider/model the next (or current) request uses; null = server default. */
   choice: ProviderChoice | null;
+  /** Switching only looks up the cache; it doesn't start a run. */
   setChoice(c: ProviderChoice): void;
+  /** Run the provider: reuses a cached result for this version if one exists. */
+  analyze(): void;
+  /** Run the provider again, ignoring the cache. */
   reanalyze(): void;
 }
 
@@ -42,10 +54,14 @@ export function useAnalysis(): AnalysisContextValue {
   return v;
 }
 
+type RequestMode = 'cache' | 'run' | 'force';
+
 /**
- * Requests /api/analysis in the background so the file view stays usable. The request is
- * aborted and replaced when the provider/model changes, Re-analyze is pressed, or a refresh
- * loads a different head/diff (then the old result is `stale` until the new one arrives).
+ * Requests /api/analysis in the background so the file view stays usable. Opening a PR,
+ * switching provider/model, or a refresh that loads a new head/diff only asks the cache
+ * (`cacheOnly=1`); the provider runs, and spends quota, only when the user presses Analyze or
+ * Re-analyze. A request is aborted and replaced by the next one; an older result stays
+ * `stale` until a new one arrives.
  */
 export function AnalysisProvider({ children }: { children: ReactNode }) {
   const { pr, diffHash } = useReview();
@@ -55,12 +71,14 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   // PR version the latest request was started for.
   const requestedRef = useRef<string | null>(null);
   const [result, setResult] = useState<AnalysisResponse | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [checking, setChecking] = useState(true);
+  const [idle, setIdle] = useState(false);
   const [elapsedS, setElapsedS] = useState(0);
   const [error, setError] = useState<AnalysisContextValue['error']>(null);
   const [providers, setProviders] = useState<ProvidersResponse | null>(null);
   const [choice, setChoiceState] = useState<ProviderChoice | null>(null);
-  const [req, setReq] = useState({ id: 0, force: false });
+  const [req, setReq] = useState<{ id: number; mode: RequestMode }>({ id: 0, mode: 'cache' });
   const choiceRef = useRef<ProviderChoice | null>(null);
 
   useEffect(() => {
@@ -71,12 +89,18 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     const ctl = new AbortController();
     requestedRef.current = prVersionKey(versionRef.current);
     const started = Date.now();
-    setLoading(true);
+    const run = req.mode !== 'cache';
+    setLoading(run);
+    setChecking(!run);
+    setIdle(false);
     setError(null);
     setElapsedS(0);
-    const tick = setInterval(() => setElapsedS(Math.floor((Date.now() - started) / 1000)), 500);
+    const tick = run
+      ? setInterval(() => setElapsedS(Math.floor((Date.now() - started) / 1000)), 500)
+      : undefined;
     const params = new URLSearchParams();
-    if (req.force) params.set('force', '1');
+    if (req.mode === 'force') params.set('force', '1');
+    if (req.mode === 'cache') params.set('cacheOnly', '1');
     const choice = choiceRef.current;
     if (choice) {
       params.set('provider', choice.provider);
@@ -86,17 +110,22 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     api<AnalysisResponse>(prUrl(`/analysis${qs ? `?${qs}` : ''}`), { signal: ctl.signal })
       .then((res) => {
         setResult(res);
-        setLoading(false);
       })
       .catch((err: unknown) => {
         if (ctl.signal.aborted) return;
-        setError({
-          code: err instanceof ApiError ? err.code : undefined,
-          message: (err as Error).message,
-        });
-        setLoading(false);
+        const code = err instanceof ApiError ? err.code : undefined;
+        if (code === 'not_cached') {
+          setIdle(true);
+          return;
+        }
+        setError({ code, message: (err as Error).message });
       })
-      .finally(() => clearInterval(tick));
+      .finally(() => {
+        clearInterval(tick);
+        if (ctl.signal.aborted) return;
+        setLoading(false);
+        setChecking(false);
+      });
     return () => {
       ctl.abort();
       clearInterval(tick);
@@ -106,7 +135,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   // A refresh that brought a new head/diff: ask again (the server cache answers if it can).
   useEffect(() => {
     if (needsReanalysis(requestedRef.current, versionRef.current)) {
-      setReq((r) => ({ id: r.id + 1, force: false }));
+      setReq((r) => ({ id: r.id + 1, mode: 'cache' }));
     }
   }, [pr.headSha, diffHash]);
 
@@ -115,13 +144,40 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   const setChoice = useCallback((c: ProviderChoice) => {
     choiceRef.current = c;
     setChoiceState(c);
-    setReq((r) => ({ id: r.id + 1, force: false }));
+    setReq((r) => ({ id: r.id + 1, mode: 'cache' }));
   }, []);
-  const reanalyze = useCallback(() => setReq((r) => ({ id: r.id + 1, force: true })), []);
+  const analyze = useCallback(() => setReq((r) => ({ id: r.id + 1, mode: 'run' })), []);
+  const reanalyze = useCallback(() => setReq((r) => ({ id: r.id + 1, mode: 'force' })), []);
 
   const value = useMemo(
-    () => ({ result, stale, loading, elapsedS, error, providers, choice, setChoice, reanalyze }),
-    [result, stale, loading, elapsedS, error, providers, choice, setChoice, reanalyze],
+    () => ({
+      result,
+      stale,
+      loading,
+      checking,
+      idle,
+      elapsedS,
+      error,
+      providers,
+      choice,
+      setChoice,
+      analyze,
+      reanalyze,
+    }),
+    [
+      result,
+      stale,
+      loading,
+      checking,
+      idle,
+      elapsedS,
+      error,
+      providers,
+      choice,
+      setChoice,
+      analyze,
+      reanalyze,
+    ],
   );
   return <AnalysisContext.Provider value={value}>{children}</AnalysisContext.Provider>;
 }

@@ -47,6 +47,11 @@ Flags: `--provider`, `--model`, `--port`, `--no-open`, `--debug`.
 
 After `pnpm link --global`, run it as `review-dash owner/repo#123`.
 
+Analysis is opt-in: opening a PR only looks for a cached analysis and never calls the LLM.
+Press **Analyze** in the header to run the provider (default `codex-cli`) and group the PR;
+switching provider/model or loading new commits also waits for a click. **Re-analyze** forces
+a fresh run.
+
 Views (header): **By group** (default once the analysis finishes: groups in risk order, with
 intent, risk reasons and a verify checklist), **Tests first**, and **By file** (the plain diff).
 Each hunk has a reviewed checkbox, and the rail shows per-group and overall progress. Mechanical

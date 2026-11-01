@@ -27,4 +27,10 @@ describe('mainPaneState', () => {
   it('is stale whenever the analysis is for an older version', () => {
     expect(mainPaneState({ ...base, analysis, group: {}, stale: true })).toBe('stale');
   });
+
+  it('is idle when nothing is cached and no run was requested', () => {
+    expect(mainPaneState({ ...base, idle: true })).toBe('idle');
+    expect(mainPaneState({ ...base, idle: true, loading: true })).toBe('skeleton');
+    expect(mainPaneState({ ...base, idle: true, analysis, group: {} })).toBe('group');
+  });
 });

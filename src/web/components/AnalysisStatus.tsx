@@ -4,11 +4,13 @@ import { providerNotice } from '../lib/providerNotice';
 
 /** Skeleton shown in the main pane of a grouped view while analysis is running. */
 export function AnalysisSkeleton() {
-  const { elapsedS } = useAnalysis();
+  const { elapsedS, checking } = useAnalysis();
   return (
     <div aria-busy="true" aria-label="Analyzing pull request">
       <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">
-        Grouping hunks… {elapsedS}s elapsed (usually 10–60s). The By file view works meanwhile.
+        {checking
+          ? 'Looking for a cached analysis…'
+          : `Grouping hunks… ${elapsedS}s elapsed (usually 10–60s). The By file view works meanwhile.`}
       </p>
       <div className="space-y-3">
         <div className="h-8 w-2/3 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
@@ -16,6 +18,46 @@ export function AnalysisSkeleton() {
         <div className="h-4 w-5/6 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
         <div className="h-48 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
         <div className="h-32 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+      </div>
+    </div>
+  );
+}
+
+/** Provider/model the next run will use, for button labels. */
+export function useRequestedProvider(): string {
+  const { choice, providers } = useAnalysis();
+  return choice?.provider ?? providers?.current.provider ?? '';
+}
+
+/** Grouped view before any analysis exists: running one is opt-in because it spends quota. */
+export function AnalysisIdle({ onView }: { onView(v: ViewMode): void }) {
+  const { analyze, loading } = useAnalysis();
+  const provider = useRequestedProvider();
+  return (
+    <div
+      data-testid="analysis-idle"
+      className="rounded border border-gray-200 p-4 text-sm dark:border-gray-800"
+    >
+      <p className="text-gray-700 dark:text-gray-300">
+        This PR hasn't been analyzed{provider ? ` with ${provider}` : ''} yet. Grouping runs the
+        provider and uses your subscription or API quota, so it only starts when you ask.
+      </p>
+      <div className="mt-3 flex gap-2">
+        <button
+          type="button"
+          className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          disabled={loading}
+          onClick={analyze}
+        >
+          Analyze{provider ? ` with ${provider}` : ''}
+        </button>
+        <button
+          type="button"
+          className="rounded border border-gray-300 bg-white px-3 py-1.5 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+          onClick={() => onView('file')}
+        >
+          Review by file
+        </button>
       </div>
     </div>
   );
@@ -77,13 +119,14 @@ export function AnalysisEmpty({ summary, onView }: { summary: string; onView(v: 
 
 /** Says which provider produced the displayed groups while a switch is running or has failed. */
 export function ProviderNotice() {
-  const { result, providers, choice, loading, error } = useAnalysis();
+  const { result, providers, choice, loading, error, idle } = useAnalysis();
   const requested = choice ?? providers?.current ?? null;
   const text = providerNotice({
     displayed: result ? { provider: result.analysis.provider, model: result.analysis.model } : null,
     requested,
     loading,
     error: error?.message ?? null,
+    idle,
   });
   if (!text) return null;
   return (
@@ -99,7 +142,8 @@ export function ProviderNotice() {
 
 /** Slim banner above the file view while analysis runs in the background. */
 export function AnalysisBanner() {
-  const { loading, elapsedS, stale, result } = useAnalysis();
+  const { loading, elapsedS, stale, result, idle, analyze } = useAnalysis();
+  const provider = useRequestedProvider();
   if (stale) {
     const sha = result?.headSha?.slice(0, 7) ?? '';
     return (
@@ -113,6 +157,25 @@ export function AnalysisBanner() {
         )}
         Analysis is for an older version of this PR ({sha}){loading ? ' — re-analyzing…' : '.'}{' '}
         Showing the By file view meanwhile.
+        {idle && !loading && (
+          <button type="button" className="font-medium underline" onClick={analyze}>
+            Analyze this version
+          </button>
+        )}
+      </p>
+    );
+  }
+  if (idle && !result) {
+    return (
+      <p
+        role="status"
+        data-testid="idle-banner"
+        className="mb-3 flex flex-wrap items-center gap-2 rounded bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:bg-gray-900 dark:text-gray-300"
+      >
+        Not analyzed yet. Grouping by intent and risk uses your provider quota.
+        <button type="button" className="font-medium underline" onClick={analyze}>
+          Analyze{provider ? ` with ${provider}` : ''}
+        </button>
       </p>
     );
   }

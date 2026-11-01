@@ -16,7 +16,7 @@ afterEach(() => dirs.splice(0).forEach((d) => rmSync(d, { recursive: true, force
 describe('loadConfig', () => {
   it('returns defaults when the file is missing', () => {
     expect(loadConfig(tmp())).toEqual({
-      provider: 'claude-cli',
+      provider: 'codex-cli',
       models: {
         'claude-cli': 'sonnet',
         'codex-cli': 'gpt-5-codex',
@@ -51,8 +51,8 @@ describe('loadConfig', () => {
 describe('createProvider', () => {
   const config = loadConfig(tmp());
   it('applies overrides', () => {
-    expect(createProvider(config, { provider: 'codex-cli' }).id).toBe('codex-cli');
-    expect(createProvider(config).id).toBe('claude-cli');
+    expect(createProvider(config, { provider: 'claude-cli' }).id).toBe('claude-cli');
+    expect(createProvider(config).id).toBe('codex-cli');
   });
   it('requires OPENROUTER_API_KEY', () => {
     expect(() => createProvider(config, { provider: 'openrouter' }, { env: {} })).toThrow(

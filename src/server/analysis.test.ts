@@ -64,7 +64,7 @@ describe('GET /api/providers', () => {
     const { get } = setup(() => new FakeProvider([]));
     const r = await get('/api/repos/octocat/hello-world/pulls/1/providers');
     expect(r.status).toBe(200);
-    expect(r.json.current).toEqual({ provider: 'claude-cli', model: 'sonnet' });
+    expect(r.json.current).toEqual({ provider: 'codex-cli', model: 'gpt-5-codex' });
     expect(r.json.available).toEqual(['claude-cli', 'codex-cli', 'openrouter']);
   });
 });
@@ -117,6 +117,30 @@ describe('GET /api/analysis', () => {
     );
     expect(other.json.cached).toBe(false);
     expect(created.at(-1)).toEqual({ provider: 'openrouter', model: 'x/y' });
+  });
+
+  it('cacheOnly never runs a provider: 404 not_cached on a miss, the cached result on a hit', async () => {
+    const { get, created } = setup(() => new FakeProvider([reply]));
+    const url = '/api/repos/octocat/hello-world/pulls/1/analysis';
+    const miss = await get(`${url}?cacheOnly=1`);
+    expect(miss.status).toBe(404);
+    expect(miss.json.code).toBe('not_cached');
+    expect(created).toHaveLength(0);
+
+    const run = await get(url);
+    expect(run.json.cached).toBe(false);
+    expect(created).toHaveLength(1);
+
+    const hit = await get(`${url}?cacheOnly=1`);
+    expect(hit.status).toBe(200);
+    expect(hit.json.cached).toBe(true);
+    expect(hit.json.analysis).toEqual(run.json.analysis);
+    expect(created).toHaveLength(1);
+
+    // A different selection with nothing cached still doesn't run.
+    const other = await get(`${url}?cacheOnly=1&provider=claude-cli`);
+    expect(other.json.code).toBe('not_cached');
+    expect(created).toHaveLength(1);
   });
 
   it('reports the head and diff the analysis was computed for', async () => {

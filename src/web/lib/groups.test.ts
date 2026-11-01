@@ -133,7 +133,7 @@ describe('formatting', () => {
     expect(usageParts({ durationMs: 500 })).toEqual(['500ms']);
   });
   it('describes provider errors with a hint', () => {
-    expect(describeAnalysisError('not_installed', 'x').hint).toMatch(/claude CLI/);
+    expect(describeAnalysisError('not_installed', 'x').hint).toMatch(/provider CLI/);
     expect(describeAnalysisError('unsupported', 'x').hint).toMatch(/Upgrade/);
     expect(describeAnalysisError('auth', 'x').title).toMatch(/signed in/);
     expect(describeAnalysisError('weird', 'x').title).toBe('Analysis failed');

@@ -16,7 +16,7 @@ export const DEFAULT_MODELS: Record<ProviderId, string> = {
 };
 
 export const configSchema = z.object({
-  provider: providerId.default('claude-cli'),
+  provider: providerId.default('codex-cli'),
   models: z
     .object({
       'claude-cli': z.string().min(1).default(DEFAULT_MODELS['claude-cli']),
