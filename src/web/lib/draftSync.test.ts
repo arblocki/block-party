@@ -12,15 +12,15 @@ function fakeServer() {
   const api = async <T>(path: string, init: RequestInit = {}): Promise<T> => {
     const method = init.method ?? 'GET';
     calls.push(`${method} ${path}`);
-    if (method === 'PUT' && path === '/api/drafts') {
+    if (method === 'PUT' && path === '/drafts') {
       if (fail.put) throw new ApiError(500, 'boom');
       const d = JSON.parse(String(init.body)) as { id: string; body: string };
       store.set(d.id, { id: d.id, body: d.body });
       return { draft: d } as T;
     }
-    if (method === 'DELETE' && path.startsWith('/api/drafts/')) {
+    if (method === 'DELETE' && path.startsWith('/drafts/')) {
       if (fail.delete === 500) throw new ApiError(500, 'boom');
-      const id = decodeURIComponent(path.slice('/api/drafts/'.length));
+      const id = decodeURIComponent(path.slice('/drafts/'.length));
       // A 404 still means the draft is gone from the server.
       if (fail.delete === 404 || !store.delete(id)) throw new ApiError(404, 'draft not found');
       return { ok: true } as T;
@@ -67,6 +67,27 @@ function setup() {
 }
 
 describe('draft sync', () => {
+  it('saves a just-typed draft at once when the page unloads, before autosave fires', async () => {
+    const t = setup(); // autosave is effectively never
+    t.add('d1');
+    t.sync.updateBody('d1', 'typed then pressed Back');
+    expect(t.server.calls).toEqual([]);
+    // The request starts synchronously, inside the beforeunload handler.
+    expect(t.sync.saveBeforeUnload()).toBe(true);
+    expect(t.server.calls).toEqual(['PUT /drafts']);
+    await t.sync.flush();
+    expect(t.server.store.get('d1')?.body).toBe('typed then pressed Back');
+    // Nothing pending any more: leaving needs no prompt.
+    expect(t.sync.saveBeforeUnload()).toBe(false);
+  });
+
+  it('does not prompt on unload when there is nothing to save', () => {
+    const t = setup();
+    t.add('d1'); // empty, never persisted: local-only
+    expect(t.sync.saveBeforeUnload()).toBe(false);
+    expect(t.server.calls).toEqual([]);
+  });
+
   it('(a) a failed autosave of an edit blocks submission', async () => {
     const t = setup();
     t.add('d1');
@@ -101,7 +122,7 @@ describe('draft sync', () => {
 
     t.sync.updateBody('d1', '');
     expect(await t.sync.flush()).toEqual([]);
-    expect(t.server.calls).toContain('DELETE /api/drafts/d1');
+    expect(t.server.calls).toContain('DELETE /drafts/d1');
     expect(t.server.store.size).toBe(0);
     expect(t.get().filter(needsSync)).toEqual([]);
     expect(t.get()[0]?.persisted).toBe(false);

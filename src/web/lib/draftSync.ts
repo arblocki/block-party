@@ -2,6 +2,7 @@ import type { Draft, LocalDraft } from '../types';
 
 export const AUTOSAVE_MS = 700;
 
+/** Calls the API of the PR under review; `path` is relative to it (`/drafts`). */
 type ApiFn = <T>(path: string, init?: RequestInit) => Promise<T>;
 
 /** Where the drafts live; state.tsx backs this with a ref plus React state. */
@@ -70,7 +71,7 @@ export function createDraftSync(api: ApiFn, store: DraftStore, opts: { autosaveM
       try {
         if (clearing) {
           try {
-            await api(`/api/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            await api(`/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' });
           } catch (err) {
             if (!isNotFound(err)) throw err;
           }
@@ -82,7 +83,7 @@ export function createDraftSync(api: ApiFn, store: DraftStore, opts: { autosaveM
           if (cur) patch(id, { persisted: false, status: cur.body === sent ? 'new' : 'dirty' });
           return;
         }
-        await api<{ draft: Draft }>('/api/drafts', {
+        await api<{ draft: Draft }>('/drafts', {
           method: 'PUT',
           body: JSON.stringify({
             id,
@@ -123,7 +124,7 @@ export function createDraftSync(api: ApiFn, store: DraftStore, opts: { autosaveM
     if (pending) await pending.catch(() => undefined);
     if (!d || !(d.persisted || pending)) return;
     try {
-      await api(`/api/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      await api(`/drafts/${encodeURIComponent(id)}`, { method: 'DELETE' });
     } catch (err) {
       if (isNotFound(err)) return; // already gone
       const body = find(id)?.body ?? d.body;
@@ -177,12 +178,23 @@ export function createDraftSync(api: ApiFn, store: DraftStore, opts: { autosaveM
     return unsynced();
   }
 
+  /**
+   * For `beforeunload`: starts saving every unsynced draft now, since the autosave timers die
+   * with the page. Requests start synchronously (unless one for the same draft is still in
+   * flight). Returns whether anything was unsynced, i.e. whether leaving could lose text.
+   */
+  function saveBeforeUnload(): boolean {
+    if (!store.get().some(needsSync)) return false;
+    void flush();
+    return true;
+  }
+
   function dispose(): void {
     timers.forEach(clearTimeout);
     timers.clear();
   }
 
-  return { save, updateBody, remove, flush, dispose, unsynced };
+  return { save, updateBody, remove, flush, saveBeforeUnload, dispose, unsynced };
 }
 
 export type DraftSync = ReturnType<typeof createDraftSync>;

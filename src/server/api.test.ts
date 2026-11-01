@@ -9,12 +9,13 @@ type Json = any;
 
 const PORT = 4321;
 const pr = { owner: 'octocat', repo: 'hello-world', number: 1 };
+const appTarget = { repo: { owner: pr.owner, repo: pr.repo }, initialPr: pr.number };
 const HEAD = loadFixture().pr.headSha;
 
 function setup(fixture: Parameters<typeof fakeGitHub>[0] = {}) {
   const github = fakeGitHub(fixture);
   const store = openStore(':memory:');
-  const app = createApp({ token: 't', pr, port: () => PORT, github, store });
+  const app = createApp({ token: 't', ...appTarget, port: () => PORT, github, store });
   const call = async (
     method: string,
     path: string,
@@ -37,7 +38,7 @@ const draft = { path: 'src/greet.ts', side: 'RIGHT', line: 2, body: 'nit', headS
 describe('GET /api/pr', () => {
   it('returns metadata, parsed files, hash and viewer', async () => {
     const { call } = setup();
-    const res = await call('GET', '/api/pr');
+    const res = await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr');
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.pr.headSha).toBe(HEAD);
@@ -60,22 +61,24 @@ describe('GET /api/pr', () => {
   it('flags a PR whose files exceed what GitHub lists, without failing', async () => {
     const fx = loadFixture();
     const { call } = setup({ pr: { ...fx.pr, changedFiles: 3200 } });
-    const res = await call('GET', '/api/pr');
+    const res = await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr');
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.incomplete).toMatchObject({ fetchedFiles: 4, changedFiles: 3200 });
     expect(json.incomplete.reason).toMatch(/3,000/);
     expect(json.files).toHaveLength(4);
-    const complete = await (await setup().call('GET', '/api/pr')).json();
+    const complete = await (
+      await setup().call('GET', '/api/repos/octocat/hello-world/pulls/1/pr')
+    ).json();
     expect(complete).not.toHaveProperty('incomplete');
   });
 
   it('caches per run and refetches on ?refresh=1', async () => {
     const { call, github } = setup();
-    await call('GET', '/api/pr');
-    await call('GET', '/api/pr');
+    await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr');
+    await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr');
     expect(github.calls.fetchPr).toBe(1);
-    await call('GET', '/api/pr?refresh=1');
+    await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr?refresh=1');
     expect(github.calls.fetchPr).toBe(2);
   });
 
@@ -83,67 +86,184 @@ describe('GET /api/pr', () => {
     const { call } = setup();
     const app = createApp({
       token: 't',
-      pr,
+      ...appTarget,
       port: () => PORT,
       github: fakeGitHub(),
       store: openStore(':memory:'),
     });
-    expect((await app.request('/api/pr', { headers: { host: `127.0.0.1:${PORT}` } })).status).toBe(
-      401,
-    );
-    expect((await call('GET', '/api/pr')).status).toBe(200);
+    expect(
+      (
+        await app.request('/api/repos/octocat/hello-world/pulls/1/pr', {
+          headers: { host: `127.0.0.1:${PORT}` },
+        })
+      ).status,
+    ).toBe(401);
+    expect((await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr')).status).toBe(200);
   });
 });
 
 describe('file, threads, replies', () => {
   it('serves file content and validates params', async () => {
     const { call } = setup();
-    expect(await (await call('GET', '/api/file?path=a.ts&ref=abc')).json()).toEqual({
+    expect(
+      await (
+        await call('GET', '/api/repos/octocat/hello-world/pulls/1/file?path=a.ts&ref=abc')
+      ).json(),
+    ).toEqual({
       content: 'content of a.ts@abc',
     });
-    expect((await call('GET', '/api/file?path=a.ts')).status).toBe(400);
+    expect(
+      (await call('GET', '/api/repos/octocat/hello-world/pulls/1/file?path=a.ts')).status,
+    ).toBe(400);
   });
 
   it('lists threads and posts replies', async () => {
     const { call, github } = setup();
-    expect(await (await call('GET', '/api/threads')).json()).toEqual({ threads: [] });
-    const res = await call('POST', '/api/threads/123/replies', { body: 'thanks' });
+    expect(
+      await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/threads')).json(),
+    ).toEqual({ threads: [] });
+    const res = await call('POST', '/api/repos/octocat/hello-world/pulls/1/threads/123/replies', {
+      body: 'thanks',
+    });
     expect(res.status).toBe(200);
     expect(github.calls.replies).toEqual([{ id: 123, body: 'thanks' }]);
-    expect((await call('POST', '/api/threads/abc/replies', { body: 'x' })).status).toBe(400);
-    expect((await call('POST', '/api/threads/1/replies', { body: ' ' })).status).toBe(400);
+    expect(
+      (
+        await call('POST', '/api/repos/octocat/hello-world/pulls/1/threads/abc/replies', {
+          body: 'x',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (
+        await call('POST', '/api/repos/octocat/hello-world/pulls/1/threads/1/replies', {
+          body: ' ',
+        })
+      ).status,
+    ).toBe(400);
+  });
+});
+
+describe('switching between pull requests', () => {
+  // The client's load sequence for a review page: refresh the PR, then read drafts.
+  const open = async (call: ReturnType<typeof setup>['call'], n: number) => {
+    const pr = await (
+      await call('GET', `/api/repos/octocat/hello-world/pulls/${n}/pr?refresh=1`)
+    ).json();
+    const { drafts } = await (
+      await call('GET', `/api/repos/octocat/hello-world/pulls/${n}/drafts`)
+    ).json();
+    return { pr, drafts };
+  };
+
+  it('reopening a PR shows commits pushed while another PR was open', async () => {
+    const { call, github } = setup();
+    const NEW = '3333333333333333333333333333333333333333';
+    const a = await open(call, 1);
+    const hunk = a.pr.files[0].hunks[0];
+    const line = hunk.lines.find((l: { newLine?: number }) => l.newLine !== undefined).newLine;
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+      ...draft,
+      path: hunk.path,
+      line,
+      hunkId: hunk.id,
+    });
+
+    await open(call, 2);
+    github.setHead(NEW);
+
+    // Without a refresh the per-PR cache still holds the old head; that is what the page used to show.
+    const cached = await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr')).json();
+    expect(cached.pr.headSha).toBe(HEAD);
+
+    const again = await open(call, 1);
+    expect(again.pr.pr.headSha).toBe(NEW);
+    // Drafts are read after the refresh, so they were re-anchored onto the new head.
+    expect(again.drafts).toHaveLength(1);
+    expect(again.drafts[0]).toMatchObject({ headSha: NEW, outdated: false });
+    const inter = await (
+      await call('GET', '/api/repos/octocat/hello-world/pulls/1/interdiff')
+    ).json();
+    expect(inter.currentHeadSha).toBe(NEW);
   });
 });
 
 describe('drafts', () => {
+  it('keeps drafts separate per pull request and repository', async () => {
+    const { call } = setup();
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft);
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/2/drafts', {
+      ...draft,
+      body: 'other PR',
+    });
+    await call('PUT', '/api/repos/octocat/other/pulls/1/drafts', { ...draft, body: 'other repo' });
+    const one = await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/drafts')).json();
+    const two = await (await call('GET', '/api/repos/octocat/hello-world/pulls/2/drafts')).json();
+    expect(one.drafts.map((d: { body: string }) => d.body)).toEqual(['nit']);
+    expect(two.drafts.map((d: { body: string }) => d.body)).toEqual(['other PR']);
+    const other = await (await call('GET', '/api/repos/octocat/other/pulls/1/drafts')).json();
+    expect(other.drafts.map((d: { body: string }) => d.body)).toEqual(['other repo']);
+  });
+
   it('upserts, lists and deletes', async () => {
     const { call } = setup();
-    const created = await (await call('PUT', '/api/drafts', draft)).json();
+    const created = await (
+      await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft)
+    ).json();
     expect(created.draft.id).toBeTruthy();
     const edited = await (
-      await call('PUT', '/api/drafts', { ...draft, id: created.draft.id, body: 'v2' })
+      await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+        ...draft,
+        id: created.draft.id,
+        body: 'v2',
+      })
     ).json();
     expect(edited.draft.body).toBe('v2');
-    const list = await (await call('GET', '/api/drafts')).json();
+    const list = await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/drafts')).json();
     expect(list.drafts).toHaveLength(1);
-    expect((await call('DELETE', `/api/drafts/${created.draft.id}`)).status).toBe(200);
-    expect((await call('DELETE', `/api/drafts/${created.draft.id}`)).status).toBe(404);
+    expect(
+      (await call('DELETE', `/api/repos/octocat/hello-world/pulls/1/drafts/${created.draft.id}`))
+        .status,
+    ).toBe(200);
+    expect(
+      (await call('DELETE', `/api/repos/octocat/hello-world/pulls/1/drafts/${created.draft.id}`))
+        .status,
+    ).toBe(404);
   });
 
   it('validates bodies', async () => {
     const { call } = setup();
-    expect((await call('PUT', '/api/drafts', { ...draft, side: 'MIDDLE' })).status).toBe(400);
-    expect((await call('PUT', '/api/drafts', { ...draft, body: '  ' })).status).toBe(400);
-    expect((await call('PUT', '/api/drafts', { ...draft, line: 2, startLine: 5 })).status).toBe(
-      400,
-    );
-    expect((await call('PUT', '/api/drafts', { path: 'x' })).status).toBe(400);
+    expect(
+      (
+        await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+          ...draft,
+          side: 'MIDDLE',
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', { ...draft, body: '  ' }))
+        .status,
+    ).toBe(400);
+    expect(
+      (
+        await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+          ...draft,
+          line: 2,
+          startLine: 5,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', { path: 'x' })).status,
+    ).toBe(400);
   });
 
   it('only compares startLine with line when both are on the same side', async () => {
     const { call } = setup();
     const put = async (over: Record<string, unknown>) =>
-      (await call('PUT', '/api/drafts', { ...draft, ...over })).status;
+      (await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', { ...draft, ...over }))
+        .status;
     // Same side (startSide defaults to side), reversed.
     expect(await put({ line: 90, startLine: 100 })).toBe(400);
     expect(await put({ line: 90, startLine: 100, startSide: 'RIGHT' })).toBe(400);
@@ -158,9 +278,13 @@ describe('drafts', () => {
 describe('POST /api/review', () => {
   it('submits inline + fallback drafts, records, and clears drafts', async () => {
     const { call, github } = setup();
-    await call('PUT', '/api/drafts', draft);
-    await call('PUT', '/api/drafts', { ...draft, line: 99, body: 'outside' });
-    const res = await call('POST', '/api/review', {
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft);
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', {
+      ...draft,
+      line: 99,
+      body: 'outside',
+    });
+    const res = await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
       event: 'COMMENT',
       body: 'overall',
       headSha: HEAD,
@@ -173,13 +297,21 @@ describe('POST /api/review', () => {
     expect(sent.headSha).toBe(HEAD);
     expect(sent.comments).toHaveLength(1);
     expect(sent.body).toBe('overall\n\n`src/greet.ts:99` — outside');
-    expect((await (await call('GET', '/api/drafts')).json()).drafts).toEqual([]);
+    expect(
+      (await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/drafts')).json()).drafts,
+    ).toEqual([]);
   });
 
   it('keeps drafts edited while the submission was in flight', async () => {
     const { call, github, store } = setup();
-    const a = (await (await call('PUT', '/api/drafts', draft)).json()).draft;
-    const b = (await (await call('PUT', '/api/drafts', { ...draft, line: 3 })).json()).draft;
+    const a = (
+      await (await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft)).json()
+    ).draft;
+    const b = (
+      await (
+        await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', { ...draft, line: 3 })
+      ).json()
+    ).draft;
     let release!: () => void;
     const gate = new Promise<void>((r) => (release = r));
     const entered = new Promise<void>((resolve) => {
@@ -190,7 +322,10 @@ describe('POST /api/review', () => {
         return orig(r, input);
       };
     });
-    const pending = call('POST', '/api/review', { event: 'COMMENT', headSha: HEAD });
+    const pending = call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
+      event: 'COMMENT',
+      headSha: HEAD,
+    });
     await entered;
     store.upsertDraft(pr, { ...draft, side: 'RIGHT', id: a.id, body: 'edited meanwhile' });
     release();
@@ -205,11 +340,11 @@ describe('POST /api/review', () => {
 
   it('submits against the new head, flagging drafts that cannot be re-anchored as outdated', async () => {
     const { call, github } = setup();
-    await call('PUT', '/api/drafts', draft); // no hunk anchor, so it cannot follow a push
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft); // no hunk anchor, so it cannot follow a push
     github.setHead('3333333333333333333333333333333333333333');
-    const list = await (await call('GET', '/api/drafts')).json();
+    const list = await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/drafts')).json();
     expect(list.drafts[0]).toMatchObject({ outdated: true, headSha: HEAD });
-    const res = await call('POST', '/api/review', {
+    const res = await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
       event: 'COMMENT',
       headSha: '3333333333333333333333333333333333333333', // after reloading the new head
     });
@@ -223,9 +358,12 @@ describe('POST /api/review', () => {
 
   it('returns 409 for a bare approval after a new push, with no drafts at all', async () => {
     const { call, github } = setup();
-    await call('GET', '/api/pr');
+    await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr');
     github.setHead('3333333333333333333333333333333333333333');
-    const res = await call('POST', '/api/review', { event: 'APPROVE', headSha: HEAD });
+    const res = await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
+      event: 'APPROVE',
+      headSha: HEAD,
+    });
     expect(res.status).toBe(409);
     expect(await res.json()).toMatchObject({
       code: 'head_moved',
@@ -237,17 +375,32 @@ describe('POST /api/review', () => {
 
   it('rejects APPROVE on a self-review', async () => {
     const { call, github } = setup({ viewer: 'octocat' });
-    await call('PUT', '/api/drafts', draft);
-    const res = await call('POST', '/api/review', { event: 'APPROVE', headSha: HEAD });
+    await call('PUT', '/api/repos/octocat/hello-world/pulls/1/drafts', draft);
+    const res = await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
+      event: 'APPROVE',
+      headSha: HEAD,
+    });
     expect(res.status).toBe(422);
     expect(await res.json()).toMatchObject({ code: 'self_review' });
     expect(github.calls.submitReview).toHaveLength(0);
-    expect((await (await call('GET', '/api/pr')).json()).isSelfReview).toBe(true);
+    expect(
+      (await (await call('GET', '/api/repos/octocat/hello-world/pulls/1/pr')).json()).isSelfReview,
+    ).toBe(true);
   });
 
   it('validates the event', async () => {
     const { call } = setup();
-    expect((await call('POST', '/api/review', { event: 'NOPE', headSha: HEAD })).status).toBe(400);
-    expect((await call('POST', '/api/review', { event: 'APPROVE' })).status).toBe(400);
+    expect(
+      (
+        await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', {
+          event: 'NOPE',
+          headSha: HEAD,
+        })
+      ).status,
+    ).toBe(400);
+    expect(
+      (await call('POST', '/api/repos/octocat/hello-world/pulls/1/review', { event: 'APPROVE' }))
+        .status,
+    ).toBe(400);
   });
 });

@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import Database from 'better-sqlite3';
 import { openStore } from './index.js';
+import { MIGRATIONS } from './schema.js';
 
 const ref = { owner: 'o', repo: 'r', number: 1 };
 const other = { owner: 'o', repo: 'r', number: 2 };
@@ -141,5 +146,68 @@ describe('store review state', () => {
     expect(s.listDrafts(ref)[0]?.outdated).toBe(true);
     // Editing the draft makes it live again.
     expect(s.upsertDraft(ref, { ...base, id: d.id }).outdated).toBe(false);
+  });
+});
+
+describe('repository casing', () => {
+  const lower = { owner: 'org', repo: 'my-repo', number: 7 };
+  const mixed = { owner: 'Org', repo: 'My-Repo', number: 7 };
+  const draft = { path: 'a.ts', side: 'RIGHT' as const, line: 1, body: 'hi', headSha: 'h1' };
+
+  it('treats spellings of the same repository as one PR', () => {
+    const s = openStore(':memory:');
+    s.upsertDraft(mixed, draft);
+    s.markReviewed(mixed, ['h-a'], 'h1');
+    s.setVerifyCheck(mixed, 'g', 0, true);
+    s.setReviewCheckpoint(mixed, 'h1');
+    expect(s.listDrafts(lower)).toHaveLength(1);
+    expect(s.listReviewed(lower).map((r) => r.hunkId)).toEqual(['h-a']);
+    expect(s.listVerifyChecks(lower)).toHaveLength(1);
+    expect(s.getReviewBaselineHeadSha(lower)).toBe('h1');
+    s.close();
+  });
+
+  it('folds mixed-case rows from older databases into the lowercase key', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'rd-store-'));
+    const file = join(dir, 'db.sqlite');
+    try {
+      // A database at the schema version before the casing migration, written by hand.
+      const old = new Database(file);
+      for (const m of MIGRATIONS.slice(0, MIGRATIONS.length - 1)) old.exec(m);
+      old.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+      const now = '2026-01-01T00:00:00Z';
+      old
+        .prepare(
+          `INSERT INTO drafts (id, repo, pr, path, side, line, body, head_sha, updated_at)
+           VALUES ('d1', 'Org/My-Repo', 7, 'a.ts', 'RIGHT', 1, 'hi', 'h1', ?)`,
+        )
+        .run(now);
+      const reviewed = old.prepare(
+        'INSERT INTO reviewed_hunks (repo, pr, hunk_id, reviewed_at, head_sha) VALUES (?, 7, ?, ?, ?)',
+      );
+      // The same hunk marked under both spellings, plus one only under the mixed spelling.
+      reviewed.run('Org/My-Repo', 'h-a', now, 'h1');
+      reviewed.run('org/my-repo', 'h-a', now, 'h1');
+      reviewed.run('Org/My-Repo', 'h-b', now, 'h1');
+      old
+        .prepare(
+          'INSERT INTO review_checkpoints (repo, pr, head_sha, created_at) VALUES (?, 7, ?, ?)',
+        )
+        .run('ORG/MY-REPO', 'h1', now);
+      old.close();
+
+      const s = openStore(file);
+      expect(s.listDrafts(lower).map((d) => d.id)).toEqual(['d1']);
+      expect(
+        s
+          .listReviewed(lower)
+          .map((r) => r.hunkId)
+          .sort(),
+      ).toEqual(['h-a', 'h-b']);
+      expect(s.getReviewBaselineHeadSha(mixed)).toBe('h1');
+      s.close();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

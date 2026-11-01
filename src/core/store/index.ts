@@ -8,6 +8,14 @@ import type { ReviewEvent } from '../github/types.js';
 import { formatPrRef, type PrRef } from '../pr-ref.js';
 import { MIGRATIONS } from './schema.js';
 
+/**
+ * How a PR's repository is stored. GitHub names are case-insensitive, so `Org/Repo` and
+ * `org/repo` must share drafts, reviewed state and analyses: the key is lowercased.
+ */
+export function repoKey(ref: { owner: string; repo: string }): string {
+  return `${ref.owner}/${ref.repo}`.toLowerCase();
+}
+
 /** Where a draft's line sat inside its hunk when written; used to re-anchor after a push. */
 export interface DraftAnchor {
   /** Index into `hunk.lines` of the commented (end) line. */
@@ -249,7 +257,7 @@ export function openStore(file: string): Store {
   return {
     getAnalysis(ref, k) {
       const row = getAnalysisRow.get(
-        `${ref.owner}/${ref.repo}`,
+        repoKey(ref),
         ref.number,
         k.headSha,
         k.diffHash,
@@ -266,7 +274,7 @@ export function openStore(file: string): Store {
     },
     saveAnalysis(ref, k, analysis) {
       putAnalysis.run(
-        `${ref.owner}/${ref.repo}`,
+        repoKey(ref),
         ref.number,
         k.headSha,
         k.diffHash,
@@ -278,10 +286,10 @@ export function openStore(file: string): Store {
       );
     },
     listDrafts(ref) {
-      return list.all(`${ref.owner}/${ref.repo}`, ref.number).map(toDraft);
+      return list.all(repoKey(ref), ref.number).map(toDraft);
     },
     upsertDraft(ref, input) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       const id = input.id ?? randomUUID();
       const info = upsert.run({
         id,
@@ -308,16 +316,16 @@ export function openStore(file: string): Store {
       return toDraft(row);
     },
     deleteDraft(ref, id) {
-      return del.run(id, `${ref.owner}/${ref.repo}`, ref.number).changes > 0;
+      return del.run(id, repoKey(ref), ref.number).changes > 0;
     },
     deleteDrafts(ref, ids) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       db.transaction(() => {
         for (const id of ids) del.run(id, repo, ref.number);
       })();
     },
     deleteDraftsIfUnchanged(ref, snapshot) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       return db.transaction(() => {
         const kept: string[] = [];
         for (const { id, revision } of snapshot) {
@@ -332,20 +340,13 @@ export function openStore(file: string): Store {
       })();
     },
     moveDraft(ref, id, pos) {
-      move.run(
-        pos.line,
-        pos.startLine ?? null,
-        pos.headSha,
-        id,
-        `${ref.owner}/${ref.repo}`,
-        ref.number,
-      );
+      move.run(pos.line, pos.startLine ?? null, pos.headSha, id, repoKey(ref), ref.number);
     },
     markDraftOutdated(ref, id) {
-      outdate.run(id, `${ref.owner}/${ref.repo}`, ref.number);
+      outdate.run(id, repoKey(ref), ref.number);
     },
     markReviewed(ref, hunkIds, headSha) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       const at = new Date().toISOString();
       db.transaction(() => {
         // The first mark pins the re-review baseline as a checkpoint, so later unmarking that
@@ -359,46 +360,41 @@ export function openStore(file: string): Store {
       })();
     },
     unmarkReviewed(ref, hunkIds) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       db.transaction(() => {
         for (const id of hunkIds) unmarkStmt.run(repo, ref.number, id);
       })();
     },
     listReviewed(ref) {
-      return listReviewedStmt.all(`${ref.owner}/${ref.repo}`, ref.number).map((r) => ({
+      return listReviewedStmt.all(repoKey(ref), ref.number).map((r) => ({
         hunkId: r.hunk_id,
         reviewedAt: r.reviewed_at,
         headSha: r.head_sha,
       }));
     },
     setVerifyCheck(ref, groupKey, itemIndex, checked) {
-      setCheck.run(`${ref.owner}/${ref.repo}`, ref.number, groupKey, itemIndex, checked ? 1 : 0);
+      setCheck.run(repoKey(ref), ref.number, groupKey, itemIndex, checked ? 1 : 0);
     },
     listVerifyChecks(ref) {
-      return listChecks.all(`${ref.owner}/${ref.repo}`, ref.number).map((r) => ({
+      return listChecks.all(repoKey(ref), ref.number).map((r) => ({
         groupKey: r.group_key,
         itemIndex: r.item_index,
         checked: r.checked !== 0,
       }));
     },
     getReviewBaselineHeadSha(ref) {
-      const repo = `${ref.owner}/${ref.repo}`;
+      const repo = repoKey(ref);
       return (
         baseline.get(repo, ref.number, repo, ref.number)?.head_sha ??
         firstMark.get(repo, ref.number)?.head_sha
       );
     },
     setReviewCheckpoint(ref, headSha) {
-      insertCheckpoint.run(
-        `${ref.owner}/${ref.repo}`,
-        ref.number,
-        headSha,
-        new Date().toISOString(),
-      );
+      insertCheckpoint.run(repoKey(ref), ref.number, headSha, new Date().toISOString());
     },
     recordSubmittedReview(ref, rec) {
       insertReview.run(
-        `${ref.owner}/${ref.repo}`,
+        repoKey(ref),
         ref.number,
         rec.headSha,
         rec.githubReviewId,
