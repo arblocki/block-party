@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { api, ApiError, prUrl } from './api';
+import { analysisQuery, retryMode, type RequestMode } from './lib/analysisRequest';
 import { isStale, needsReanalysis, prVersionKey } from './lib/staleness';
 import { useReview } from './state';
 import type { AnalysisResponse, ProvidersResponse } from './types';
@@ -34,7 +35,8 @@ export interface AnalysisContextValue {
   idle: boolean;
   /** Seconds since the current request started. */
   elapsedS: number;
-  error: { code?: string; message: string } | null;
+  /** `mode` is how the failed request was started, so Retry can repeat it exactly. */
+  error: { code?: string; message: string; mode: RequestMode } | null;
   providers: ProvidersResponse | null;
   /** Provider/model the next (or current) request uses; null = server default. */
   choice: ProviderChoice | null;
@@ -44,6 +46,8 @@ export interface AnalysisContextValue {
   analyze(): void;
   /** Run the provider again, ignoring the cache. */
   reanalyze(): void;
+  /** Repeat the failed request in the same mode: a failed cache lookup stays cache-only. */
+  retry(): void;
 }
 
 const AnalysisContext = createContext<AnalysisContextValue | null>(null);
@@ -53,8 +57,6 @@ export function useAnalysis(): AnalysisContextValue {
   if (!v) throw new Error('useAnalysis outside AnalysisProvider');
   return v;
 }
-
-type RequestMode = 'cache' | 'run' | 'force';
 
 /**
  * Requests /api/analysis in the background so the file view stays usable. Opening a PR,
@@ -98,15 +100,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
     const tick = run
       ? setInterval(() => setElapsedS(Math.floor((Date.now() - started) / 1000)), 500)
       : undefined;
-    const params = new URLSearchParams();
-    if (req.mode === 'force') params.set('force', '1');
-    if (req.mode === 'cache') params.set('cacheOnly', '1');
-    const choice = choiceRef.current;
-    if (choice) {
-      params.set('provider', choice.provider);
-      if (choice.model) params.set('model', choice.model);
-    }
-    const qs = params.toString();
+    const qs = analysisQuery(req.mode, choiceRef.current);
     api<AnalysisResponse>(prUrl(`/analysis${qs ? `?${qs}` : ''}`), { signal: ctl.signal })
       .then((res) => {
         setResult(res);
@@ -118,7 +112,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
           setIdle(true);
           return;
         }
-        setError({ code, message: (err as Error).message });
+        setError({ code, message: (err as Error).message, mode: req.mode });
       })
       .finally(() => {
         clearInterval(tick);
@@ -148,6 +142,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
   }, []);
   const analyze = useCallback(() => setReq((r) => ({ id: r.id + 1, mode: 'run' })), []);
   const reanalyze = useCallback(() => setReq((r) => ({ id: r.id + 1, mode: 'force' })), []);
+  const retry = useCallback(() => setReq((r) => ({ id: r.id + 1, mode: retryMode(r.mode) })), []);
 
   const value = useMemo(
     () => ({
@@ -163,6 +158,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       setChoice,
       analyze,
       reanalyze,
+      retry,
     }),
     [
       result,
@@ -177,6 +173,7 @@ export function AnalysisProvider({ children }: { children: ReactNode }) {
       setChoice,
       analyze,
       reanalyze,
+      retry,
     ],
   );
   return <AnalysisContext.Provider value={value}>{children}</AnalysisContext.Provider>;

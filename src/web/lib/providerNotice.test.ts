@@ -41,6 +41,13 @@ describe('providerNotice', () => {
     );
   });
 
+  it('labels the previous result while the cache lookup for the new selection runs', () => {
+    const requested = { provider: 'codex-cli', model: 'm' };
+    expect(providerNotice({ ...base, requested, checking: true })).toBe(
+      'Showing the previous analysis from claude-cli (sonnet); looking for a cached codex-cli analysis',
+    );
+  });
+
   it('is silent when they differ but nothing is pending or failed', () => {
     expect(
       providerNotice({ ...base, requested: { provider: 'openrouter', model: 'm' } }),

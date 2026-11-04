@@ -1,5 +1,6 @@
 import { useAnalysis } from '../analysis';
 import { describeAnalysisError, type ViewMode } from '../lib/groups';
+import { retryLabel } from '../lib/analysisRequest';
 import { providerNotice } from '../lib/providerNotice';
 
 /** Skeleton shown in the main pane of a grouped view while analysis is running. */
@@ -65,7 +66,7 @@ export function AnalysisIdle({ onView }: { onView(v: ViewMode): void }) {
 
 /** Analysis failure with a hint and a way back to the By file view. */
 export function AnalysisError({ view, onView }: { view: ViewMode; onView(v: ViewMode): void }) {
-  const { error, reanalyze, loading } = useAnalysis();
+  const { error, retry, loading, checking } = useAnalysis();
   if (!error) return null;
   const info = describeAnalysisError(error.code, error.message);
   return (
@@ -77,8 +78,8 @@ export function AnalysisError({ view, onView }: { view: ViewMode; onView(v: View
       <p className="mt-1">{info.hint}</p>
       <p className="mt-1 font-mono text-xs opacity-80">{error.message}</p>
       <div className="mt-2 flex gap-3">
-        <button type="button" className="underline" disabled={loading} onClick={reanalyze}>
-          Retry
+        <button type="button" className="underline" disabled={loading || checking} onClick={retry}>
+          {retryLabel(error.mode)}
         </button>
         {view !== 'file' && (
           <button type="button" className="underline" onClick={() => onView('file')}>
@@ -119,13 +120,14 @@ export function AnalysisEmpty({ summary, onView }: { summary: string; onView(v: 
 
 /** Says which provider produced the displayed groups while a switch is running or has failed. */
 export function ProviderNotice() {
-  const { result, providers, choice, loading, error, idle } = useAnalysis();
+  const { result, providers, choice, loading, checking, error, idle } = useAnalysis();
   const requested = choice ?? providers?.current ?? null;
   const text = providerNotice({
     displayed: result ? { provider: result.analysis.provider, model: result.analysis.model } : null,
     requested,
     loading,
     error: error?.message ?? null,
+    checking,
     idle,
   });
   if (!text) return null;

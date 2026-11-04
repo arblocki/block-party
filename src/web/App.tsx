@@ -150,6 +150,7 @@ function Review() {
     main = (
       <>
         {error && !loading && <AnalysisError view={view} onView={setChoice} />}
+        <ProviderNotice />
         <AnalysisEmpty summary={analysis.summary} onView={setChoice} />
       </>
     );
