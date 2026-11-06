@@ -148,6 +148,6 @@ vite.config.ts.timestamp-*
 # Turbo Repo
 .turbo
 
-# review-dash
+# block-party
 *.db
 *.db-*

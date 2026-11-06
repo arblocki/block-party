@@ -6,7 +6,7 @@ import type { GitHubClient } from '../github/types.js';
 import type { PrRef } from '../pr-ref.js';
 import { BUILTIN_RULES, type RiskRule } from './rules.js';
 
-export const REPO_CONFIG_FILES = ['.review-dash.yaml', '.review-dash.yml'] as const;
+export const REPO_CONFIG_FILES = ['.block-party.yaml', '.block-party.yml'] as const;
 
 /** Longest custom pattern accepted; longer ones are skipped with a warning. */
 export const MAX_PATTERN_CHARS = 200;
@@ -61,7 +61,7 @@ export interface RepoConfig {
   warnings?: string[];
 }
 
-/** Parses the text of a .review-dash.yaml. Throws an Error with a readable message. */
+/** Parses the text of a .block-party.yaml. Throws an Error with a readable message. */
 export function parseRepoConfig(text: string): RepoConfig {
   let raw: unknown;
   try {

@@ -41,7 +41,7 @@ export function configPath(dir: string = configDir()): string {
   return join(dir, 'config.json');
 }
 
-/** Load ~/.config/review-dash/config.json; missing file means defaults. */
+/** Load ~/.config/block-party/config.json; missing file means defaults. */
 export function loadConfig(dir: string = configDir()): LlmConfig {
   const file = configPath(dir);
   let raw: string;

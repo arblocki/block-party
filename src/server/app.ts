@@ -46,7 +46,7 @@ export function createApp(opts: AppOptions): Hono {
     return c.json({
       repo,
       pr,
-      label: pr ? formatPrRef(pr) : repo ? formatRepoRef(repo) : 'review-dash',
+      label: pr ? formatPrRef(pr) : repo ? formatRepoRef(repo) : 'block-party',
     });
   });
   app.get('/api/repos', async (c) => c.json({ repos: await opts.github.listRepos() }));

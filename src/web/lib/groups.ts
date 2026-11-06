@@ -211,12 +211,12 @@ export function describeAnalysisError(code: string | undefined, message: string)
     case 'unsupported':
       return {
         title: 'The provider CLI is too old to run read-only',
-        hint: 'Upgrade the CLI so review-dash can restrict its tools, or switch provider.',
+        hint: 'Upgrade the CLI so block-party can restrict its tools, or switch provider.',
       };
     case 'config':
       return {
         title: 'The analysis provider is misconfigured',
-        hint: 'Check ~/.config/review-dash/config.json and your .env, or switch provider.',
+        hint: 'Check ~/.config/block-party/config.json and your .env, or switch provider.',
       };
     case 'timeout':
       return {

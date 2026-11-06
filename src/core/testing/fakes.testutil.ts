@@ -31,7 +31,7 @@ export interface FakeGitHub extends GitHubClient {
   setHead(sha: string): void;
   /** Edits PR metadata (title/body/...) without moving the head. */
   setMeta(patch: Partial<PrMeta>): void;
-  /** File contents served by fetchFileContent, by path; unknown `.review-dash.y*ml` is a 404. */
+  /** File contents served by fetchFileContent, by path; unknown `.block-party.y*ml` is a 404. */
   contents: Record<string, string>;
   /** Like `contents` but for one commit, keyed `${path}@${sha}`; wins over `contents`. */
   contentsAt: Record<string, string>;
@@ -78,7 +78,7 @@ export function fakeGitHub(overrides: Partial<Fixture> = {}): FakeGitHub {
     async fetchFileContent(_ref, path, sha) {
       const known = fake.contentsAt[`${path}@${sha}`] ?? fake.contents[path];
       if (known !== undefined) return known;
-      if (/^\.review-dash\.ya?ml$/.test(path)) {
+      if (/^\.block-party\.ya?ml$/.test(path)) {
         throw Object.assign(new Error('Not Found'), { status: 404 });
       }
       return `content of ${path}@${sha}`;

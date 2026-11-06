@@ -95,7 +95,7 @@ describe('/api/session', () => {
     expect(await (await a.request('/api/session', { headers: auth })).json()).toEqual({
       repo: null,
       pr: null,
-      label: 'review-dash',
+      label: 'block-party',
     });
   });
 });

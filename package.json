@@ -1,5 +1,5 @@
 {
-  "name": "review-dash",
+  "name": "block-party",
   "version": "0.0.0",
   "private": true,
   "description": "Local PR review dashboard",
@@ -8,7 +8,7 @@
     "node": ">=22"
   },
   "bin": {
-    "review-dash": "dist/cli/index.js"
+    "block-party": "dist/cli/index.js"
   },
   "scripts": {
     "dev": "concurrently -k -n web,api \"vite build --watch\" \"tsx watch src/cli/index.ts ${PR:-octocat/hello-world#1} --port 5174\"",

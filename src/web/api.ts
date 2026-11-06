@@ -1,6 +1,6 @@
-const TOKEN_HEADER = 'x-review-dash-token';
+const TOKEN_HEADER = 'x-block-party-token';
 
-const STORAGE_KEY = 'review-dash-token';
+const STORAGE_KEY = 'block-party-token';
 
 /** Session token; persisted in sessionStorage so a reload keeps it. */
 let token = '';

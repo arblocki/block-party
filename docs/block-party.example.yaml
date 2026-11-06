@@ -1,4 +1,4 @@
-# Copy to .review-dash.yaml (or .review-dash.yml) at the root of the repo you review.
+# Copy to .block-party.yaml (or .block-party.yml) at the root of the repo you review.
 # Read from the PR's head commit. Rules are added to the built-in ones; the final risk of a
 # group is the highest of the model's rating and every rule that fires.
 rules:

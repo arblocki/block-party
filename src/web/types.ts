@@ -92,9 +92,9 @@ export interface AnalysisResponse {
   /** The PR head and diff hash the analysis was computed for (absent from older servers). */
   headSha?: string;
   diffHash?: string;
-  /** Problem with .review-dash.yaml (it was ignored). */
+  /** Problem with .block-party.yaml (it was ignored). */
   configWarning?: string;
-  /** The PR changes .review-dash.yaml: the base branch's rules were used instead. */
+  /** The PR changes .block-party.yaml: the base branch's rules were used instead. */
   configNotice?: string;
 }
 

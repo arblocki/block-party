@@ -58,7 +58,7 @@ export class CodexCliProvider implements LlmProvider {
 
   async complete(req: LlmRequest): Promise<LlmResult> {
     const caps = await this.detect();
-    const dir = await mkdtemp(join(tmpdir(), 'review-dash-codex-'));
+    const dir = await mkdtemp(join(tmpdir(), 'block-party-codex-'));
     try {
       const args = ['exec', '--sandbox', 'read-only', '--model', this.opts.model];
       if (caps.skipGitRepoCheck) args.push('--skip-git-repo-check');

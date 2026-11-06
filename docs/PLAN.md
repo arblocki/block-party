@@ -1,4 +1,4 @@
-# review-dash: MVP Plan
+# block-party: MVP Plan
 
 A local, single-user tool for reviewing big (usually AI-generated) GitHub pull requests.
 It takes an existing PR, sorts the diff into small groups of related changes, labels each
@@ -8,7 +8,7 @@ that are posted back to GitHub as a normal review.
 ## 1. Scope
 
 ### In scope (MVP)
-- Start from a PR that already exists on GitHub (`review-dash owner/repo#123` or a PR URL).
+- Start from a PR that already exists on GitHub (`block-party owner/repo#123` or a PR URL).
 - Read the diff and split it into hunks, each with a stable ID.
 - Group related hunks with an LLM, with cheap deterministic rules running before it.
 - For each group: a title, a one-line intent, a risk level with reasons, and a short
@@ -42,13 +42,13 @@ that are posted back to GitHub as a normal review.
 ## 2. Architecture
 
 ```
-            ┌───────────────────────── review-dash (local Node process) ──────────────────────────┐
+            ┌───────────────────────── block-party (local Node process) ──────────────────────────┐
  CLI ──────▶│  ingest ─▶ parse ─▶ classify ─▶ pre-group ─▶ LLM refine ─▶ validate ─▶ risk ─▶ order │
             │     │                                       │                                       │
             │  GitHub API                           LLM provider                                  │
             │  (Octokit)                    (claude CLI / codex CLI / OpenRouter)                 │
             │                                                                                     │
-            │  SQLite (~/.review-dash/): analysis cache, draft comments, reviewed-hunk state      │
+            │  SQLite (~/.block-party/): analysis cache, draft comments, reviewed-hunk state      │
             │                                                                                     │
             │  HTTP API on 127.0.0.1 ◀──────────▶ React UI in the browser                         │
             └─────────────────────────────────────────────────────────────────────────────────────┘
@@ -63,7 +63,7 @@ that are posted back to GitHub as a normal review.
 | UI | React + Vite + Tailwind | Fast to build |
 | Diff rendering | `react-diff-view` (+ `refractor` or Shiki for highlighting) | Hunk-based model, supports inline "widgets" for comment threads |
 | GitHub | `@octokit/rest` + `@octokit/graphql` | REST for files and reviews, GraphQL for review threads |
-| Storage | `better-sqlite3` in `~/.review-dash/review-dash.db` | Local and durable; never inside the repo |
+| Storage | `better-sqlite3` in `~/.block-party/block-party.db` | Local and durable; never inside the repo |
 | Validation | `zod` | Checks LLM JSON output and API payloads |
 | Code structure (v2) | `web-tree-sitter` | Maps hunks to enclosing symbols, finds def-use edges |
 
@@ -163,7 +163,7 @@ A single call, whose input is:
 - PR title and body (the author's stated intent)
 - The hunk list: ID, path, enclosing symbol, tags, and the hunk text (trimmed if huge)
 - Candidate clusters from 4.3
-- Optional `REVIEW.md` or `.review-dash.yaml` from the repo, with project-specific risk notes
+- Optional `REVIEW.md` or `.block-party.yaml` from the repo, with project-specific risk notes
 
 Output, checked against a zod schema:
 ```json
@@ -203,7 +203,7 @@ Output, checked against a zod schema:
 Final risk is the higher of the LLM's rating and the rule-based rating:
 - Built-in rules: auth/session/crypto paths, `.github/workflows`, migrations, dependency
   manifests, infra (`Dockerfile`, `*.tf`), large deletions, changes to public API exports.
-- Per-repo rules: `.review-dash.yaml` in the reviewed repo (globs and regexes mapped to a
+- Per-repo rules: `.block-party.yaml` in the reviewed repo (globs and regexes mapped to a
   risk level and a reason), the same idea as `REVIEW.md`.
 - The low end is Antique-style **auto-clear**: groups that are all mechanical or docs
   (whitespace-only and comment-only hunks are tagged but never auto-cleared, see 4.2) start collapsed and pre-marked as reviewed. Start strict and
@@ -274,7 +274,7 @@ about structured output.
 - Show the cost from the response's usage data in the UI.
 
 ### 5.4 Configuration
-`~/.config/review-dash/config.json`, outside the repo:
+`~/.config/block-party/config.json`, outside the repo:
 ```json
 {
   "provider": "codex-cli",
@@ -351,7 +351,7 @@ reviews_submitted(id, repo, pr, head_sha, github_review_id, event, submitted_at)
 ## 9. Repo layout
 
 ```
-review-dash/
+block-party/
   docs/PLAN.md
   .env.example              # placeholders only
   src/
@@ -362,7 +362,7 @@ review-dash/
       diff/                 # patch parsing, hunk IDs, line mapping for comments
       classify/             # path/content rules, mechanical detection
       group/                # pre-grouping, LLM prompt, validator, ordering
-      risk/                 # built-in + .review-dash.yaml rules
+      risk/                 # built-in + .block-party.yaml rules
       llm/                  # provider interface + claude-cli, codex-cli, openrouter
       store/                # sqlite schema + queries
     web/                    # React app
@@ -375,7 +375,7 @@ Each milestone ends with something I can use.
 
 **M0: Scaffold (½ day)**
 - TS project, lint/format, vitest, Vite and React, Hono, CLI entry, `.env.example`.
-- `review-dash owner/repo#123` starts the server and opens the browser.
+- `block-party owner/repo#123` starts the server and opens the browser.
 
 **M1: Better GitHub diff viewer, no LLM yet (1–2 days)**
 - Fetch the PR, files, and patches. Parse into hunks with stable IDs.
@@ -397,7 +397,7 @@ Each milestone ends with something I can use.
 **M3: Review state and re-review (1–2 days)**
 - Reviewed checkboxes per hunk, progress bars, auto-cleared mechanical groups.
 - Interdiff after new pushes, and draft re-anchoring or outdated warnings.
-- `.review-dash.yaml` risk rules.
+- `.block-party.yaml` risk rules.
 
 **M4: Quality (ongoing)**
 - tree-sitter symbol mapping and def-use pre-grouping.
@@ -405,7 +405,7 @@ Each milestone ends with something I can use.
   identical removed/added blocks).
 - Map-reduce for very large PRs. Use a cheap model for the map step.
 - "Explain this group" chat. Keyboard shortcuts.
-- An optional local checkout (`--repo-path`, or a shallow clone into `~/.review-dash/repos`)
+- An optional local checkout (`--repo-path`, or a shallow clone into `~/.block-party/repos`)
   so CLI agents can read context outside the diff.
 
 **Later / maybe**
@@ -440,7 +440,7 @@ Each milestone ends with something I can use.
 ## 13. Secrets checklist (public repo)
 - `.env` and `.env.*` are gitignored. Only `.env.example` with empty placeholders is
   committed.
-- Config, database, cached analyses, and clones all live under `~/.review-dash` or
-  `~/.config/review-dash`, never in the working tree.
+- Config, database, cached analyses, and clones all live under `~/.block-party` or
+  `~/.config/block-party`, never in the working tree.
 - Test fixtures come from public PRs only, with auth headers stripped before saving.
 - Consider adding a pre-commit secret scan (e.g. `gitleaks`) in M0.

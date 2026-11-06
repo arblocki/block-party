@@ -12,12 +12,12 @@ export interface CliOptions {
   port?: number;
   open: boolean;
   debug: boolean;
-  /** Read .review-dash.yaml and REVIEW.md at the PR head instead of the base commit. */
+  /** Read .block-party.yaml and REVIEW.md at the PR head instead of the base commit. */
   trustPrConfig: boolean;
 }
 
-export const USAGE = `Usage: review-dash [owner/repo#123 | https://github.com/owner/repo/pull/123] [options]
-       review-dash [owner/repo | https://github.com/owner/repo] [options]
+export const USAGE = `Usage: block-party [owner/repo#123 | https://github.com/owner/repo/pull/123] [options]
+       block-party [owner/repo | https://github.com/owner/repo] [options]
 
 With only a repository, the UI lists its open pull requests to choose from. With no
 argument, it starts on a list of your repositories.
@@ -27,7 +27,7 @@ Options:
   --model <name>     LLM model
   --port <n>         Port to listen on (default: random free port)
   --no-open          Do not open the browser
-  --trust-pr-config  Use the PR's own .review-dash.yaml and REVIEW.md (default: the base
+  --trust-pr-config  Use the PR's own .block-party.yaml and REVIEW.md (default: the base
                      branch's, since a PR could change its own review rules)
   --debug            Verbose logging
   -h, --help         Show this help`;

@@ -26,7 +26,7 @@ export interface AnalysisDeps {
   /** Effective config (CLI --provider/--model already applied). */
   config: LlmConfig;
   createProvider(sel: ProviderSelection): LlmProvider;
-  /** CLI --trust-pr-config: read .review-dash.yaml and REVIEW.md at the PR head, not the base. */
+  /** CLI --trust-pr-config: read .block-party.yaml and REVIEW.md at the PR head, not the base. */
   trustPrConfig?: boolean;
 }
 
@@ -107,7 +107,7 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
 
   /**
    * The review policy (rules, notes, REVIEW.md) is trusted only from the PR's base commit: the
-   * PR itself could otherwise change its own rules. If the head's .review-dash.yaml differs from
+   * PR itself could otherwise change its own rules. If the head's .block-party.yaml differs from
    * the base's it is not used, unless the user passed --trust-pr-config.
    */
   async function resolvePolicy(pr: { baseSha: string; headSha: string }): Promise<Policy> {
@@ -128,7 +128,7 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
       ...(changed
         ? {
             notice:
-              "This PR changes .review-dash.yaml; using the base branch's rules. Re-run with --trust-pr-config to use the PR's version.",
+              "This PR changes .block-party.yaml; using the base branch's rules. Re-run with --trust-pr-config to use the PR's version.",
           }
         : {}),
     };
@@ -173,7 +173,7 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
         ...(configWarning ? { configWarning } : {}),
         ...(policy.notice ? { configNotice: policy.notice } : {}),
       };
-      // Editing .review-dash.yaml changes the key, so cached analyses are not reused.
+      // Editing .block-party.yaml changes the key, so cached analyses are not reused.
       const key = {
         headSha: data.pr.headSha,
         // Folded into the existing key column to avoid a schema migration.
@@ -229,7 +229,7 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
       }
     }
     const notes = repoConfig.notes
-      ? `# Repo risk notes (.review-dash.yaml)\n${repoConfig.notes}`
+      ? `# Repo risk notes (.block-party.yaml)\n${repoConfig.notes}`
       : undefined;
     return analyzePr({
       pr: { title: data.pr.title, body: data.pr.body },

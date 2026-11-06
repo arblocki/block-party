@@ -64,7 +64,7 @@ export class OpenRouterProvider implements LlmProvider {
         headers: {
           Authorization: `Bearer ${this.opts.apiKey}`,
           'Content-Type': 'application/json',
-          'X-Title': 'review-dash',
+          'X-Title': 'block-party',
         },
         body: JSON.stringify(body),
         signal,

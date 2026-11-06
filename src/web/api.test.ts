@@ -22,7 +22,7 @@ describe('resolveToken', () => {
   it('uses and stores the token from the hash', () => {
     const s = memoryStorage();
     expect(resolveToken('#token=abc', s)).toBe('abc');
-    expect(s.getItem('review-dash-token')).toBe('abc');
+    expect(s.getItem('block-party-token')).toBe('abc');
   });
 
   it('survives a refresh (empty hash, same storage)', () => {

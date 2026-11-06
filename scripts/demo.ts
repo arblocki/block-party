@@ -65,7 +65,7 @@ const README_NEW = README_OLD.replace(
 
 /** A real unified diff body (from `@@` on) for two texts, via git. */
 function patchFor(oldText: string, newText: string): string {
-  const dir = mkdtempSync(join(tmpdir(), 'review-dash-demo-'));
+  const dir = mkdtempSync(join(tmpdir(), 'block-party-demo-'));
   try {
     writeFileSync(join(dir, 'a'), oldText);
     writeFileSync(join(dir, 'b'), newText);

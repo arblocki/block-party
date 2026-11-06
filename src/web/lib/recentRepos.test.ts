@@ -3,7 +3,7 @@ import { recentRepos, rememberRepo } from './recentRepos';
 
 function memoryStorage(initial?: string) {
   const m = new Map<string, string>();
-  if (initial !== undefined) m.set('review-dash:recentRepos', initial);
+  if (initial !== undefined) m.set('block-party:recentRepos', initial);
   return {
     getItem: (k: string) => m.get(k) ?? null,
     setItem: (k: string, v: string) => void m.set(k, v),

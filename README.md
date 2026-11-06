@@ -1,4 +1,4 @@
-# review-dash
+# block-party
 
 A local dashboard for reviewing GitHub pull requests. Run it against a PR and it starts a
 server on `127.0.0.1` and opens a review UI in your browser. See [docs/PLAN.md](docs/PLAN.md)
@@ -45,7 +45,7 @@ opened automatically, the printed URL is redacted.
 
 Flags: `--provider`, `--model`, `--port`, `--no-open`, `--debug`.
 
-After `pnpm link --global`, run it as `review-dash owner/repo#123`.
+After `pnpm link --global`, run it as `block-party owner/repo#123`.
 
 Analysis is opt-in: opening a PR only looks for a cached analysis and never calls the LLM.
 Press **Analyze** in the header to run the provider (default `codex-cli`) and group the PR;
@@ -63,8 +63,8 @@ body.
 Shortcuts: `j`/`k` next/previous hunk, `J`/`K` next/previous group, `r` toggle reviewed, `c`
 comment on the focused hunk, `?` help, `Esc` close dialogs.
 
-Per-repo risk rules go in `.review-dash.yaml` at the repo root (see
-`docs/review-dash.example.yaml`). Providers and models are set with `--provider`/`--model`, the
+Per-repo risk rules go in `.block-party.yaml` at the repo root (see
+`docs/block-party.example.yaml`). Providers and models are set with `--provider`/`--model`, the
 header switcher, or the config file (see `docs/PLAN.md` section 5.4).
 
 To try the UI without a token, run `pnpm build && pnpm demo` (add `DEMO_REREVIEW=1` for the
@@ -92,8 +92,8 @@ pnpm test
 pnpm format
 ```
 
-Data lives in `~/.review-dash` (override with `REVIEW_DASH_HOME`) and config in
-`~/.config/review-dash` (respects `XDG_CONFIG_HOME`).
+Data lives in `~/.block-party` (override with `BLOCK_PARTY_HOME`) and config in
+`~/.config/block-party` (respects `XDG_CONFIG_HOME`).
 
 ## Layout
 

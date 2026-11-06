@@ -76,7 +76,7 @@ rules:
 
   it('surfaces skipped rules as the loaded config warning', async () => {
     const text = "rules:\n  - {pattern: '(a+)+$', risk: high, reason: Evil}";
-    const c = await loadRepoConfig(client({ '.review-dash.yaml': text }), ref, 'sha');
+    const c = await loadRepoConfig(client({ '.block-party.yaml': text }), ref, 'sha');
     expect(c.rules).toEqual(BUILTIN_RULES);
     expect(c.warning).toMatch(/Skipped rule "Evil"/);
   });
@@ -92,7 +92,7 @@ describe('loadRepoConfig', () => {
 
   it('merges repo rules after the built-ins and falls back to .yml', async () => {
     const text = 'rules:\n  - {glob: "x/**", risk: high, reason: X}\nnotes: n';
-    const c = await loadRepoConfig(client({ '.review-dash.yml': text }), ref, 'sha');
+    const c = await loadRepoConfig(client({ '.block-party.yml': text }), ref, 'sha');
     expect(c.rules).toHaveLength(BUILTIN_RULES.length + 1);
     expect(c.rules.at(-1)).toMatchObject({ reason: 'X' });
     expect(c.notes).toBe('n');
@@ -101,15 +101,15 @@ describe('loadRepoConfig', () => {
   });
 
   it('hash changes with the file content', async () => {
-    const a = await loadRepoConfig(client({ '.review-dash.yaml': 'notes: a' }), ref, 's');
-    const b = await loadRepoConfig(client({ '.review-dash.yaml': 'notes: b' }), ref, 's');
+    const a = await loadRepoConfig(client({ '.block-party.yaml': 'notes: a' }), ref, 's');
+    const b = await loadRepoConfig(client({ '.block-party.yaml': 'notes: b' }), ref, 's');
     expect(a.hash).not.toBe(b.hash);
   });
 
   it('warns and keeps the built-ins for an invalid file', async () => {
-    const c = await loadRepoConfig(client({ '.review-dash.yaml': 'rules: 3' }), ref, 'sha');
+    const c = await loadRepoConfig(client({ '.block-party.yaml': 'rules: 3' }), ref, 'sha');
     expect(c.rules).toBe(BUILTIN_RULES);
-    expect(c.warning).toMatch(/Ignoring \.review-dash\.yaml/);
+    expect(c.warning).toMatch(/Ignoring \.block-party\.yaml/);
     expect(c.hash).not.toBe('');
   });
 

@@ -31,7 +31,7 @@ export type ViewType = 'unified' | 'split';
 function usePersistentState<T extends string | boolean>(key: string, initial: T) {
   const [value, setValue] = useState<T>(() => {
     try {
-      const raw = localStorage.getItem(`review-dash:${key}`);
+      const raw = localStorage.getItem(`block-party:${key}`);
       return raw === null ? initial : (JSON.parse(raw) as T);
     } catch {
       return initial;
@@ -41,7 +41,7 @@ function usePersistentState<T extends string | boolean>(key: string, initial: T)
     (next: T) => {
       setValue(next);
       try {
-        localStorage.setItem(`review-dash:${key}`, JSON.stringify(next));
+        localStorage.setItem(`block-party:${key}`, JSON.stringify(next));
       } catch {
         // storage unavailable: setting just won't persist
       }

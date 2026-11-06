@@ -8,7 +8,7 @@ import { maxRisk, type Risk } from './types.js';
  * - `pattern` matches the content of at least one added or removed line,
  * - none of `excludeTags` is among the hunk's tags.
  * A rule needs at least one of glob / pathPattern / pattern. A group fires the rule if
- * any of its hunks matches. Per-repo rules from .review-dash.yaml map onto this directly.
+ * any of its hunks matches. Per-repo rules from .block-party.yaml map onto this directly.
  */
 export interface RiskRule {
   risk: Risk;

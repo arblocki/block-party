@@ -88,7 +88,7 @@ describe('CodexCliProvider', () => {
       onRun: () => writeFile(arg(call.args, '--output-last-message')!, 'x'),
     }));
     await provider.complete({ system: '', prompt: 'p' });
-    expect(calls[1]!.cwd).toMatch(/review-dash-codex-/);
+    expect(calls[1]!.cwd).toMatch(/block-party-codex-/);
     expect(calls[1]!.args).not.toContain('--cd');
   });
 

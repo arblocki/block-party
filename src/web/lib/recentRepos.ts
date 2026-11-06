@@ -1,6 +1,6 @@
 import type { RepoRef } from '../types';
 
-const KEY = 'review-dash:recentRepos';
+const KEY = 'block-party:recentRepos';
 const MAX = 8;
 
 type RepoStorage = Pick<Storage, 'getItem' | 'setItem'>;

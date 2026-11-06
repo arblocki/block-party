@@ -111,7 +111,7 @@ export function ReviewStateProvider({ children }: { children: ReactNode }) {
   const [focusedId, setFocusedId] = useState<string | null>(null);
 
   // Auto-clear is never stored, so un-checking an auto-cleared hunk is a local override.
-  const overrideKey = `review-dash:autoUnchecked:${session.pr.owner}/${session.pr.repo}#${session.pr.number}`;
+  const overrideKey = `block-party:autoUnchecked:${session.pr.owner}/${session.pr.repo}#${session.pr.number}`;
   const [autoUnchecked, setAutoUnchecked] = useState<ReadonlySet<string>>(() =>
     loadSet(overrideKey),
   );

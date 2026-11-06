@@ -54,7 +54,7 @@ const POSIX = process.platform !== 'win32';
 
 /**
  * Process groups of children still running. Detached children don't get the terminal's
- * SIGINT when review-dash is stopped, so kill them when this process exits.
+ * SIGINT when block-party is stopped, so kill them when this process exits.
  */
 const liveGroups = new Set<number>();
 let exitHookInstalled = false;

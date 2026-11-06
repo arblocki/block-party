@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 
-export const TOKEN_HEADER = 'x-review-dash-token';
+export const TOKEN_HEADER = 'x-block-party-token';
 
 export function generateToken(): string {
   return randomBytes(32).toString('base64url');
