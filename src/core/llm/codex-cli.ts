@@ -24,6 +24,7 @@ interface Caps {
   skipGitRepoCheck: boolean;
   cd: boolean;
   sandbox: boolean;
+  ignoreUserConfig: boolean;
 }
 
 export class CodexCliProvider implements LlmProvider {
@@ -50,6 +51,7 @@ export class CodexCliProvider implements LlmProvider {
         skipGitRepoCheck: hasFlag(help, '--skip-git-repo-check'),
         cd: hasFlag(help, '--cd'),
         sandbox: hasFlag(help, '--sandbox'),
+        ignoreUserConfig: hasFlag(help, '--ignore-user-config'),
       };
     });
     this.caps.catch(() => (this.caps = undefined));
@@ -60,7 +62,11 @@ export class CodexCliProvider implements LlmProvider {
     const caps = await this.detect();
     const dir = await mkdtemp(join(tmpdir(), 'block-party-codex-'));
     try {
-      const args = ['exec', '--sandbox', 'read-only', '--model', this.opts.model];
+      const args = ['exec', '--sandbox', 'read-only'];
+      if (this.opts.model && this.opts.model !== 'default') args.push('--model', this.opts.model);
+      // Skip ~/.codex/config.toml: its MCP servers/plugins (Stripe, GitHub, ...) may need their
+      // own OAuth and fail under `exec`. Login still comes from CODEX_HOME/auth.json.
+      if (caps.ignoreUserConfig) args.push('--ignore-user-config');
       if (caps.skipGitRepoCheck) args.push('--skip-git-repo-check');
       if (req.cwd && caps.cd) args.push('--cd', req.cwd);
       if (req.jsonSchema && caps.outputSchema) {
@@ -90,7 +96,9 @@ export class CodexCliProvider implements LlmProvider {
       });
 
       if (code !== 0) {
-        const detail = (stderr || stdout).trim().slice(-500);
+        const detail = stripMcpNoise(stderr || stdout)
+          .trim()
+          .slice(-500);
         if (looksLikeAuthError(detail))
           throw new LlmError('auth', `codex CLI not authenticated: ${detail}`);
         throw new LlmError('http', `codex exec exited ${code}: ${detail}`);
@@ -165,4 +173,12 @@ function usageFromEvents(stdout: string): LlmUsage | undefined {
     }
   }
   return usage;
+}
+
+/** Drop MCP-client log lines (e.g. `rmcp::transport::worker ... AuthRequired`): they are not codex login failures. */
+export function stripMcpNoise(text: string): string {
+  return text
+    .split('\n')
+    .filter((l) => !/rmcp::|AuthRequired|resource_metadata=/.test(l))
+    .join('\n');
 }

@@ -131,6 +131,15 @@ describe('CodexCliProvider', () => {
       kind: 'auth',
     });
 
+    const mcp = setup(FULL_HELP, () => ({
+      code: 1,
+      stderr:
+        'ERROR rmcp::transport::worker: worker quit with fatal: AuthRequired(resource_metadata="x")\nboom',
+    }));
+    await expect(mcp.provider.complete({ system: '', prompt: 'p' })).rejects.toMatchObject({
+      kind: 'http',
+    });
+
     const empty = setup(FULL_HELP, () => ({}));
     await expect(empty.provider.complete({ system: '', prompt: 'p' })).rejects.toMatchObject({
       kind: 'bad_output',

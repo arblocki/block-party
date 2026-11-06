@@ -27,7 +27,9 @@ export function startServer(opts: {
   store: Store;
   analysis?: AnalysisDeps;
 }): Promise<RunningServer> {
-  const token = generateToken();
+  // BLOCK_PARTY_TOKEN lets `npm run dev` keep one token across tsx-watch restarts,
+  // so already-open tabs don't start getting 401s.
+  const token = process.env.BLOCK_PARTY_TOKEN || generateToken();
   let port = opts.port ?? 0;
   const app = createApp({
     token,

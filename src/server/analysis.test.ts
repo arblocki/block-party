@@ -64,7 +64,7 @@ describe('GET /api/providers', () => {
     const { get } = setup(() => new FakeProvider([]));
     const r = await get('/api/repos/octocat/hello-world/pulls/1/providers');
     expect(r.status).toBe(200);
-    expect(r.json.current).toEqual({ provider: 'codex-cli', model: 'gpt-5-codex' });
+    expect(r.json.current).toEqual({ provider: 'codex-cli', model: 'default' });
     expect(r.json.available).toEqual(['claude-cli', 'codex-cli', 'openrouter']);
   });
 });

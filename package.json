@@ -11,7 +11,7 @@
     "block-party": "dist/cli/index.js"
   },
   "scripts": {
-    "dev": "concurrently -k -n web,api \"vite build --watch\" \"tsx watch src/cli/index.ts ${PR:-octocat/hello-world#1} --port 5174\"",
+    "dev": "BLOCK_PARTY_TOKEN=$(node -p \"require('crypto').randomBytes(32).toString('base64url')\") concurrently -k -n web,api \"vite build --watch\" \"tsx watch src/cli/index.ts ${PR:-octocat/hello-world#1} --port 5174\"",
     "build": "rm -rf dist && vite build && tsc -p tsconfig.node.json && chmod +x dist/cli/index.js",
     "start": "node dist/cli/index.js",
     "demo": "tsx scripts/demo.ts",

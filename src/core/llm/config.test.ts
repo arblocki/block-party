@@ -19,7 +19,7 @@ describe('loadConfig', () => {
       provider: 'codex-cli',
       models: {
         'claude-cli': 'sonnet',
-        'codex-cli': 'gpt-5-codex',
+        'codex-cli': 'default',
         openrouter: 'anthropic/claude-sonnet-4.5',
       },
       maxConcurrency: 4,

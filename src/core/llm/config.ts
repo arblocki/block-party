@@ -11,7 +11,9 @@ const providerId = z.enum(PROVIDER_IDS);
 
 export const DEFAULT_MODELS: Record<ProviderId, string> = {
   'claude-cli': 'sonnet',
-  'codex-cli': 'gpt-5-codex',
+  // 'default' = omit --model so codex picks a model its login supports (ChatGPT accounts
+  // reject some named models, e.g. gpt-5-codex).
+  'codex-cli': 'default',
   openrouter: 'anthropic/claude-sonnet-4.5',
 };
 

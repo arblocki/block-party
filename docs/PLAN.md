@@ -278,7 +278,7 @@ about structured output.
 ```json
 {
   "provider": "codex-cli",
-  "models": { "claude-cli": "sonnet", "codex-cli": "gpt-5-codex", "openrouter": "anthropic/claude-sonnet-4.5" },
+  "models": { "claude-cli": "sonnet", "codex-cli": "default", "openrouter": "anthropic/claude-sonnet-4.5" },
   "mapProvider": "openrouter",
   "maxConcurrency": 4
 }
