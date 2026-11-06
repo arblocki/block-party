@@ -96,29 +96,37 @@ A **run** is one feature (or bug fix) going from plan to merge-ready PR on one b
 one worktree, with one accountable implementer.
 
 ```
- ┌────────────┐   ┌──────────┐   ┌─────────────┐   ┌──────────┐   ┌──────────┐   ┌─────────┐   ┌──────────────┐
- │ 1. Plan    │──▶│ 2. Impl  │──▶│ 3. Checks   │──▶│ 4. PR    │──▶│ 5. Codex │──▶│ 6. Fix  │──▶│ 7. My review │
- │ Opus,      │   │ Opus +   │   │ build, type │   │ draft PR │   │ review   │   │ Opus    │   │ block-party  │
- │ read-only  │   │ Sonnet   │   │ lint, test  │   │ from     │   │ pinned   │   │ resumes │   │ review UI +  │
- └─────┬──────┘   └──────────┘   └─────────────┘   │ worktree │   │ to SHA   │   │ session │   │ evidence     │
-       │                               ▲           └──────────┘   └──────────┘   └────┬────┘   └──────────────┘
-   I approve                           └──────────────── loop, max N rounds ─────────┘
+ ┌─────────┐  ┌─────────┐  ┌─────────────┐  ┌─────────┐  ┌───────┐  ┌───────────┐  ┌──────────┐  ┌───────────┐
+ │ 1. Plan │─▶│ 2. Impl │─▶│ 3. Local CI │─▶│ 4. Codex│─▶│ 6. Fix│  │ 7. Verify │─▶│ 8. Publish│─▶│ 9. My     │
+ │ Opus,   │  │ Opus +  │  │ same checks │  │ review  │  │ Opus  │  │ QA agent, │  │ push +    │  │ review    │
+ │ r/o     │  │ Sonnet  │  │ as GH CI    │  │ @ SHA   │  │resumes│  │ E2E       │  │ draft PR  │  │           │
+ └────┬────┘  └─────────┘  └─────────────┘  └────┬────┘  └───┬───┘  └─────┬─────┘  └──────────┘  └───────────┘
+      │                           ▲              │ clean      │            ▲  │
+  I approve                       └──────────────┼────────────┘            │  │ failed criteria
+                                                 └─────────────────────────┘  └──▶ become findings → 6
 ```
+
+Nothing is pushed to GitHub until the run has passed local CI, the review loop, and
+verification. That keeps Codex from reviewing code that wouldn't build, and keeps GitHub
+Actions minutes for a branch that is already expected to pass. (Stage 5 is the triage step
+inside the loop, see 3.3.)
 
 | # | Stage | Input | Output (artifact) | Done when (verified by block-party) | Human? |
 |---|---|---|---|---|---|
 | 1 | Plan | Task description, repo, references | `plan.md` (versioned) | I approve a specific plan version | Yes, always |
 | 2 | Implement | Approved plan, task brief | Commits on the run branch, `report.json` | Agent signals done **and** branch has new commits **and** worktree is clean | Only if blocked |
-| 3 | Checks | Worktree, configured commands | Check results with logs and exit codes | All required checks exit 0 on the current HEAD | Only on repeated failure |
-| 4 | Publish | Branch, base | PR number, head SHA | GitHub confirms the PR and its head SHA matches local HEAD | No |
-| 5 | Review | Diff `base_sha..head_sha`, plan | Structured findings pinned to `head_sha` | Reviewer process exits 0 and output validates against the schema | No |
-| 6 | Fix | Actionable findings | New commits, per-finding resolution | Fix commits exist; then back to 3 | Judgment calls only |
-| 7 | Human review | Current PR + all evidence | My decision | I approve, or send it back with instructions | Yes, always |
+| 3 | Local CI | Worktree, CI-parity commands (5.4) | Check results with logs and exit codes | Every required check exits 0 on the current HEAD | Only on repeated failure |
+| 4 | Review | Diff `base_sha..head_sha`, plan | Structured findings pinned to `head_sha` | Reviewer process exits 0 and output validates against the schema | No |
+| 5 | Triage | Findings + policy | Findings split into auto-fix / inbox / record | Policy applied; inbox items answered if any are blocking | Judgment calls only |
+| 6 | Fix | Actionable findings (from review or verify) | New commits, per-finding resolution | Fix commits exist; then back to 3 | Judgment calls only |
+| 7 | Verify | Clean head, acceptance criteria, verify profile (5.7) | Per-criterion pass / fail / unverified, with evidence | Every criterion has a result; no `fail` | Only if environment can't start |
+| 8 | Publish | Branch, base | PR number, head SHA, GitHub CI result | GitHub confirms the PR, its head SHA matches local HEAD, and CI is green | Only if CI disagrees with local CI |
+| 9 | Human review | Current PR + all evidence | My decision | I approve, or send it back with instructions | Yes, always |
 
 **Autonomy policy (default):** hands-off between plan approval and my review. The run
-implements, checks, reviews, and auto-fixes blocking findings for up to `maxReviewRounds`
-(default 3), and only interrupts me for blockers and judgment calls via the
-[decision inbox](#8-product-and-ui).
+implements, checks, reviews, auto-fixes blocking findings for up to `maxReviewRounds`
+(default 3), verifies, and publishes, and only interrupts me for blockers and judgment
+calls via the [decision inbox](#8-product-and-ui).
 
 ### 3.1 Planning: import first, in-app later
 
@@ -203,8 +211,11 @@ This is the part I do by hand most often today, and the main reason block-party 
   of the plan and the code it wrote.
 - The implementer may **dispute** a finding with a reason. A disputed finding is never
   silently dropped: it goes to the inbox with both sides.
-- After a fix round, checks run again, then Codex reviews the **new** head. Old findings
-  remain in history but say nothing about the new head.
+- After a fix round, local CI runs again, then Codex reviews the **new** head. Old findings
+  remain in history but say nothing about the new head. Codex never runs on a head that
+  failed local CI.
+- Failed verify criteria (5.7) re-enter this same loop as findings with category `e2e`, so
+  an E2E fix also gets local CI and a Codex review before it's verified again.
 - The reviewer in round N+1 sees the prior findings and their resolutions, so it can
   confirm fixes and avoid re-raising disputed points I already ruled on.
 - **Stop conditions:** no blocking findings on the current head → advance to my review.
@@ -222,10 +233,11 @@ This is the part I do by hand most often today, and the main reason block-party 
 │                                                                                                      │
 │  React UI  ◀── SSE ──  Hono API ──▶ Workflow engine (run state machine, policies, decision inbox)     │
 │  projects · runs ·          │              │                                                         │
-│  inbox · review             │              ├──▶ Agent runner ──▶ adapters: claude (tmux | headless), │
+│  inbox · review             │              ├──▶ Agent runner ──▶ adapters: claude (pane | headless), │
 │                             │              │                              codex (headless)           │
 │                             │              ├──▶ Git service (worktrees, branches, SHAs)              │
-│                             │              ├──▶ Check runner (configured commands, logs)             │
+│                             │              ├──▶ Local CI runner (CI-parity commands, logs)           │
+│                             │              ├──▶ Verify runner (environments + MCP drivers, QA agent) │
 │                             │              └──▶ GitHub client (PRs, CI status) — existing            │
 │                             │                                                                        │
 │                             └──▶ Review subsystem (diff grouping, risk, comments) — existing         │
@@ -234,7 +246,7 @@ This is the part I do by hand most often today, and the main reason block-party 
 │  Files  ~/.block-party/runs/<runId>/:  plans, briefs, reports, event logs, check logs, review output  │
 │  Worktrees ~/.block-party/worktrees/<owner>__<repo>/<runId>/                                          │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────┘
-          │ tmux sessions bp-<runId>-<stage>  (I can `tmux attach` to any live agent)
+          │ terminal host: herdr (default) or tmux, one labeled pane per agent session; I can attach to any
 ```
 
 Three boundaries that hold from day one:
@@ -280,13 +292,17 @@ A run is an explicit state machine persisted in SQLite. The engine is the only t
 writes run state.
 
 ```
-draft ─▶ planning ─▶ awaiting_plan_approval ─▶ implementing ─▶ checking ─▶ publishing
-                         ▲          │                 ▲              │
-                         └─ revise ─┘                 │              ▼
-                                                   fixing ◀───── reviewing
-                                                      │              │
-                                                      └──(cap)──▶ awaiting_human_review ─▶ complete
+draft ─▶ planning ─▶ awaiting_plan_approval ─▶ implementing ─▶ checking ─▶ reviewing
+                         ▲          │                              ▲           │ clean
+                         └─ revise ─┘                              │           ▼
+                                                                fixing ◀── verifying
+                                                    (blocking findings │           │ all criteria pass
+                                                     or failed criteria)           ▼
+                                      complete ◀── awaiting_human_review ◀── publishing
 ```
+
+`reviewing` with blocking findings also goes to `fixing`. Hitting any loop cap goes to
+`blocked` with an inbox item, not straight to my review.
 
 Any active state can also go to `blocked` (needs me), `failed`, `cancelled`, or
 `interrupted` (process died / server restarted). `blocked` and `interrupted` can resume
@@ -339,13 +355,14 @@ never typed into the agent's conversation.
 #### Claude adapter, interactive mode (primary, for planner and implementer)
 
 I want to be able to drop into a live Claude session and steer it, so the implementer runs
-as a **real interactive Claude Code session inside tmux**, not a headless pipe:
+as a **real interactive Claude Code session inside a terminal multiplexer** (herdr or tmux,
+see [5.2.1](#521-terminal-host-herdr-or-tmux)), not a headless pipe:
 
-- **Launch:** `tmux new-session -d -s bp-<runId>-<stage> -c <worktree>` running
+- **Launch:** the terminal host opens a pane in the worktree and runs
   `claude --model <opus> --session-id <uuid> --settings <run settings> --agents <agents.json> "<prompt>"`.
   The session ID is chosen by block-party so it can resume or locate the transcript later.
-- **Attach:** the UI shows `tmux attach -t bp-…` with a copy button (and later, possibly an
-  embedded terminal via `xterm.js` + `node-pty`). Attaching doesn't disturb the run.
+- **Attach:** the UI shows the host's attach command with a copy button (and later, possibly
+  an embedded terminal via `xterm.js` + `node-pty`). Attaching doesn't disturb the run.
 - **Structured events come from Claude Code hooks**, not from scraping the terminal. The
   per-run settings file registers hooks (`SessionStart`, `PostToolUse`, `SubagentStop`,
   `Notification`, `Stop`, `SessionEnd`) that call a tiny `block-party hook` command. It
@@ -366,16 +383,87 @@ as a **real interactive Claude Code session inside tmux**, not a headless pipe:
   stalls silently. To make prompts rare, each role gets a permission profile (edit
   freely in the worktree; allowlisted commands for checks, git, package manager; no
   network-affecting or out-of-tree writes).
-- **Sending a message** (e.g. fix-round findings): if the session is idle, type into it via
-  `tmux send-keys` with a short brief pointer ("Read findings at <path> and fix them per the
-  brief."), not pasting long text. If the process has exited, `claude --resume <sessionId>`
-  in a new tmux session with the message. Long content always goes in files; messages only
-  point at files.
+- **Sending a message** (e.g. fix-round findings): once the session is idle, type a short
+  pointer into it through the terminal host ("Read findings at <path> and fix them per the
+  brief."), never long pasted text. If the process has exited, `claude --resume <sessionId>`
+  in a new pane with the message. Long content always goes in files; messages only point at
+  files.
 
-**Risk:** this mode is more fragile than headless (send-keys timing, detecting idle vs busy,
+**Risk:** this mode is more fragile than headless (keystroke timing, detecting idle vs busy,
 TUI changes in new Claude Code versions). Phase 0 spikes it. If it proves unreliable, the
 fallback is below, and "attach" becomes "stop the headless run and resume it interactively
-in tmux", which still gives me a live session when I need one.
+in a pane", which still gives me a live session when I need one.
+
+#### 5.2.1 Terminal host: herdr or tmux
+
+The engine talks to the multiplexer through a small interface, so herdr and tmux are
+interchangeable adapters:
+
+```ts
+interface TerminalHost {
+  open(opts: { label: string; cwd: string; command: string }): Promise<PaneRef>;
+  sendText(pane: PaneRef, text: string, opts?: { submit?: boolean }): Promise<void>;
+  read(pane: PaneRef, lines?: number): Promise<string>;   // diagnostics only, never state
+  agentState?(pane: PaneRef): Promise<'idle' | 'working' | 'blocked' | 'unknown'>;
+  close(pane: PaneRef): Promise<void>;
+  attachCommand(pane: PaneRef): string;
+  list(): Promise<PaneRef[]>;                              // for reconciliation on restart
+}
+```
+
+[herdr](https://github.com/herdrdev/herdr) (upstream: `herdrdev/herdr`; many forks and older
+READMEs point elsewhere) is a Rust terminal multiplexer built for running coding agents.
+Its control surface fits this interface closely: a local Unix socket with newline-delimited
+JSON (`workspace.create` with `cwd`, `pane.split`, `pane.send_text`, `pane.send_keys`,
+`pane.read`, `pane.close`, `pane.wait_for_output`), a matching CLI (`herdr pane run`,
+`herdr wait agent-state`), and `events.subscribe`, which pushes events such as
+`pane.agent_state_changed`, `pane.exited` and `pane.output_matched`.
+
+| | herdr | tmux |
+|---|---|---|
+| Control from Node | Socket API with JSON request/response and a push event stream. Natural fit for the server. | Shell out to `tmux` commands and parse text output; no push events (would poll or use hooks). |
+| Agent state | Built in: `idle` / `working` / `blocked` for Claude Code and Codex, pushed as events. A second signal that catches permission prompts and stalls even if a hook misfires. | None. We rely entirely on Claude Code hooks. |
+| Waiting on output | `pane.wait_for_output` and `output_matched` events | Poll `capture-pane` |
+| Agents driving it | Designed for this: an agent can open panes, run commands, and check other agents (useful later for a QA agent that starts servers). | Possible, but every agent has to learn tmux's CLI quirks. |
+| My own use | I'm already using it, and its UI shows every run's agent state at a glance. | Familiar, but no agent awareness. |
+| Remote | Reported to support a remote server with a local client (relevant for the Ableton machine later). Unconfirmed in its API docs. | Run tmux over ssh. |
+| Maturity | Pre-1.0 (v0.9.5 as of 2026-10-14) but widely used (~47k stars, ~100 releases). Fast-moving; the socket API has no stability promise. | Decades old, extremely stable. |
+| Identifiers | Pane IDs like `1-2` are positional and **renumber when panes close**, so they can't be stored as durable references. | Named sessions (`bp-<runId>`) are stable. |
+| Persistence | Same model as tmux: a background session server owns the panes, so agents keep running when the TUI (or desktop app) detaches or its window closes. A **server** stop, reboot, or logout kills them; herdr then restores only the layout and screen history, not the processes. | Same: server keeps running detached; processes die with the server. |
+| State detection method | Process name + screen heuristics, polled every few hundred ms. Can break when an agent's TUI changes. | N/A |
+| License | Apache-2.0 | ISC |
+
+**Decision: herdr is the default host, tmux is the fallback, and neither is the source of
+truth.** Architecturally it fits well, since it is basically the tmux adapter with better
+primitives. What it doesn't change: run state still comes from Claude Code hooks,
+`report.json`, and git, because heuristic screen detection is not reliable enough to
+advance a run. herdr's agent state is used as an extra signal: it can raise a `blocked`
+inbox item sooner and help with stall detection.
+
+Mitigations for the cons:
+
+- **Unstable IDs:** label each workspace `bp-<runId>-<stage>` and resolve the pane by label
+  and `cwd` through `pane.list` every time. Never store a raw pane ID in SQLite.
+- **API churn:** pin the herdr version, and keep all herdr calls inside the one adapter
+  with contract tests against a recorded socket transcript.
+- **Server lifetime:** the socket belongs to the background server, not the UI, so block-party
+  can drive herdr with no window open. On startup (and before launching a stage)
+  block-party pings the socket and starts the server if it isn't running. A herdr server
+  restart is treated like a reboot: every pane is gone, so reconciliation marks affected
+  stages `interrupted` and resumes them with `claude --resume <sessionId>` in a new pane.
+  Restored screen history is never mistaken for a live process.
+- **Closing kills:** `pane.close` and closing a workspace end the processes inside. Only
+  the engine closes panes, and only after a stage has finished or been stopped on purpose.
+  "Hide this run" in the UI never maps to close.
+- **Hooks side by side:** herdr's official Claude Code integration installs its own hooks,
+  and block-party adds per-run hooks via `--settings`. The spike confirms both fire and
+  don't interfere (v0.9.5 removed Codex turn hooks after timeout warnings, so hook
+  behavior does change between versions).
+
+Resolved 2026-11-05 (from herdr's docs and release notes): agents survive detach and
+closing the window; the socket is server-owned; closing a pane kills its process; upstream
+is `herdrdev/herdr`, latest v0.9.5. Still to confirm by hand in Phase 0: `ping` with no
+window open, and whether the CLI auto-starts the server.
 
 #### Claude adapter, headless mode (fallback, and for non-interactive roles)
 
@@ -447,7 +535,11 @@ Lifecycle rules:
 - A worktree is **not** a security sandbox. It isolates the checkout, not the machine. See
   section 9.
 
-### 5.4 Check runner
+### 5.4 Local CI (check runner)
+
+The goal is **CI parity**: run locally what GitHub Actions would run on the PR, so that
+Codex only reviews code that builds and passes tests, and the branch is pushed only once
+it is expected to go green. GitHub CI then confirms the result instead of finding failures.
 
 Per-project commands in `.block-party.yaml` (which already holds risk rules):
 
@@ -455,29 +547,47 @@ Per-project commands in `.block-party.yaml` (which already holds risk rules):
 checks:
   setup: pnpm install --frozen-lockfile
   required:
-    - { name: typecheck, run: pnpm typecheck }
-    - { name: lint, run: pnpm lint }
-    - { name: test, run: pnpm test }
-  optional:
-    - { name: build, run: pnpm build }
+    - { name: typecheck, run: pnpm typecheck, ci: "ci.yml#typecheck" }
+    - { name: lint,      run: pnpm lint,      ci: "ci.yml#lint" }
+    - { name: test,      run: pnpm test,      ci: "ci.yml#test" }
+    - { name: build,     run: pnpm build,     ci: "ci.yml#build" }
+  ciParity:
+    workflows: [.github/workflows/ci.yml]   # what "parity" is measured against
+    ignore: [deploy-preview]                # CI jobs that can't or shouldn't run locally
 ```
 
-- Runs in the worktree against a recorded HEAD, with a timeout and captured output.
-- Results are stored per stage: command, exit code, duration, log path, HEAD SHA.
-- Failing required checks after implementation → send the failure log back to the
-  implementer as a fix round (counts toward its own cap, `maxCheckFixRounds`, default 2).
+- **Deriving the list.** `block-party checks init` reads `.github/workflows/*.yml`, finds
+  the jobs that run on `pull_request`, and proposes a `checks` entry for each `run:` step
+  (it skips setup actions such as `actions/checkout` and `setup-node`). I review and commit
+  the result. LLM help is optional; the parser handles the common case.
+- **Detecting drift.** On every run, block-party re-reads the workflows. If CI has a step
+  that no local check maps to and that isn't in `ignore`, the run gets a warning in the
+  evidence panel ("CI step `e2e` has no local equivalent"). That way a passing local CI
+  can't quietly mean less than it used to.
+- **Running `act`** (GitHub Actions in Docker) is an optional mode for repos whose CI is hard
+  to reproduce by hand. It isn't the default: it's slower, needs Docker, and differs
+  from real runners in subtle ways.
+- Checks run in the worktree against a recorded HEAD, with a timeout and captured output.
+  Results are stored per stage: command, exit code, duration, log path, HEAD SHA.
+- Failing required checks → the failure log goes back to the implementer as a fix round
+  (its own cap, `maxCheckFixRounds`, default 2). Codex is not started until local CI is
+  green.
 - The implementer is told to run checks too, but block-party's run is the one that counts.
+- **If GitHub CI fails after local CI passed**, that's a parity gap. The run goes back to
+  `fixing` with the CI log, and the inbox records the gap so I can add the missing check.
 
 ### 5.5 GitHub integration
 
 Extends the existing client:
 
-- Push the branch and create a **draft** PR once checks first pass (title and body from the
-  plan and report; body links back to the run).
+- Push the branch and create a **draft** PR only at the Publish stage, after local CI, the
+  review loop, and verification have passed (title and body from the plan, report, and
+  verify results; body links back to the run). One push per run in the normal case keeps
+  Actions minutes down.
 - Confirm `pr.head.sha == local HEAD` after every push before treating anything as
   published.
-- Read CI status for the head SHA and show it as evidence (Phase 3+). Optionally wait for
-  CI before moving to my review.
+- Wait for GitHub CI on the head SHA and record it as evidence. Green → my review. Red →
+  parity gap (5.4).
 - Optionally post Codex findings to the PR as a review comment (off by default; findings
   live in block-party).
 - Mark ready-for-review / merge only on my explicit action.
@@ -487,12 +597,112 @@ Extends the existing client:
 - **To the browser:** Server-Sent Events per run (`/api/runs/:id/events`) and a global
   stream for the run list and inbox. WebSockets only if interactive control needs it.
 - **Reconciliation on server start:** for each run in an active state, check reality: is
-  the tmux session alive, did the process exit, is there a `report.json`, what is git HEAD,
+  the agent's pane alive, did the process exit, is there a `report.json`, what is git HEAD,
   replay any unprocessed lines in `events.jsonl`. Then either resume supervision, advance
   the state, or mark `interrupted` with an inbox item. This is the hard part of reliability
   and gets built incrementally (Phase 2 basic, Phase 4 thorough).
 - **Stall detection:** a cheap timer (no LLM) flags sessions with no events for a
-  configurable time as possibly stuck.
+  configurable time as possibly stuck. With herdr, `pane.agent_state_changed` adds a second,
+  faster signal.
+
+### 5.7 Verify stage (agentic end-to-end testing)
+
+Unit tests and review answer "is the code reasonable?". Verify answers "does the change
+actually work when you use it?". It runs after the review loop is clean and before
+publishing, and for now it's the last automated stage.
+
+The hard requirement is that it works for **any kind of project**: a web app, an MCP server,
+a database migration, a CLI, or a desktop app like Ableton running on another machine. So
+the stage is generic, and everything project-specific lives in a **verify profile**.
+
+**How it works:**
+
+1. **Bring up the environment** from the profile: start commands, a readiness probe, seed
+   data, on the local worktree or a remote host.
+2. **Start an independent QA agent** (not the implementer, so it doesn't share its
+   assumptions). It receives the acceptance criteria, a summary of the diff, and a set of
+   **drivers**: tools for exercising the thing under test.
+3. The agent writes a short test plan per criterion, executes it through the drivers, and
+   records evidence.
+4. **Tear down** the environment (always, even on failure) and collect artifacts.
+
+**Drivers are MCP servers.** That's the generalization that makes "any project type"
+tractable: block-party starts the environment and hands the QA agent an MCP config. The QA
+agent doesn't need to know what kind of project it is; it just has different tools.
+
+| Project type | Environment | Drivers the QA agent gets |
+|---|---|---|
+| Web app | `pnpm dev` + wait for port | Browser (Playwright MCP): navigate, click, fill, screenshot, read console and network |
+| MCP server | Build, then launch the server under test | An MCP client driver pointed at the built server: list tools, call them with real and edge-case inputs, check schemas and errors |
+| API / CLI | Start service, or nothing | Shell and HTTP within the worktree; recorded requests and responses |
+| Database change | **Ephemeral** database: a local Docker Postgres, or a branch of a hosted DB such as a Neon branch, created per run and deleted after | SQL driver: run migrations up **and** down, seed, run queries, compare schema to expectation |
+| Desktop app (e.g. Ableton on a remote machine) | Remote host from an allowlist; app already running | 1st choice: the app's structured control (e.g. an Ableton MCP or OSC remote script) to set up state and query results. 2nd: a **computer-use driver** for checks that only make sense visually |
+
+**Prefer structured drivers to pixels.** A computer-use driver (screenshots plus mouse and
+keyboard, driven by a computer-use model such as OpenAI's or Claude's) can test anything
+with a screen, but it is slow, expensive, and less deterministic. The profile lists drivers
+in preference order, and the QA agent is told to use computer use only for what the
+structured drivers can't observe. For Ableton that might be: create a track and load a
+device through the MCP, then use computer use only to confirm the new UI element renders.
+
+The computer-use driver is itself wrapped as an MCP tool, for example
+`ui_task(goal, host) → { outcome, screenshots[], actions[] }`. That way the model behind it
+(OpenAI or Claude computer use) is a driver config choice, and the QA agent stays the same.
+It runs against a dedicated machine or VM reached over VNC or a small agent process on that
+host, never my everyday desktop session.
+
+**Verify profile** (in `.block-party.yaml`; a project can have several, chosen by which
+paths the diff touches):
+
+```yaml
+verify:
+  profiles:
+    - name: web
+      when: ["src/web/**"]
+      environment:
+        start: pnpm build && pnpm start --no-open --port 0
+        ready: { log: "listening on" , timeoutMs: 60000 }
+      drivers: [browser]
+    - name: ableton
+      when: ["remote-script/**"]
+      environment:
+        host: studio-mac            # from an allowlist in global config
+        ready: { mcp: ableton, call: query_connection_status }
+      drivers: [ableton-mcp, computer-use]
+  maxVerifyRounds: 2
+```
+
+**Output: evidence per acceptance criterion.**
+
+```jsonc
+{
+  "reviewedSha": "9d02…",
+  "profile": "web",
+  "criteria": [
+    { "criterion": "Run list shows live stage", "result": "pass",
+      "evidence": ["screens/run-list.png", "steps.md#3"] },
+    { "criterion": "Inbox item appears on permission prompt", "result": "fail",
+      "evidence": ["screens/inbox-empty.png", "console.log"], "note": "…" },
+    { "criterion": "Works on Safari", "result": "unverified",
+      "note": "no Safari driver configured" }
+  ]
+}
+```
+
+- `unverified` is an honest, allowed result. It shows up in my review as a gap, never as a
+  pass.
+- Each `fail` becomes a finding (`category: "e2e"`, P1 by default) and goes through the
+  normal fix loop: fix → local CI → Codex review → verify again, capped by
+  `maxVerifyRounds`.
+- If the environment can't start, the stage reports `blocked` (an infrastructure problem),
+  not `fail` (a code problem). The run waits in the inbox instead of making the
+  implementer chase a broken setup.
+- Results are pinned to a SHA like everything else.
+
+**Safety rules specific to verify:** never point a profile at production; database drivers
+refuse anything that isn't an ephemeral database created by the run; remote hosts come from
+an allowlist in global config; credentials for drivers are injected only into the verify
+stage; computer use runs only on dedicated machines.
 
 ---
 
@@ -508,7 +718,8 @@ content hashes in the DB.
 | `runs` | id, project_id, title, kind (`feature` / later `bugfix`, `scout`…), state, branch, worktree_path, base_sha, head_sha, pr_number, approved_plan_id, created_at, updated_at |
 | `plans` | id, run_id, version, content_hash, path, status (`draft` / `approved` / `superseded`), created_by (`me` / `agent`) |
 | `stages` | id, run_id, kind, attempt, round, state, input_json (plan_id, base/head SHA, model config), output_json, started_at, ended_at |
-| `agent_sessions` | id, stage_id, adapter, mode (`tmux` / `headless`), cli_session_id, tmux_session, pid, model, status, transcript_path |
+| `agent_sessions` | id, stage_id, adapter, mode (`pane` / `headless`), terminal_host (`herdr` / `tmux`), pane_label, cli_session_id, pid, model, status, transcript_path |
+| `verify_results` | id, stage_id, verified_sha, profile, criterion, result (`pass` / `fail` / `unverified`), evidence_artifact_ids, note |
 | `run_events` | id, run_id, stage_id, ts, type, payload_json (append-only) |
 | `artifacts` | id, run_id, stage_id, kind (`brief` / `report` / `check_log` / `review_raw`…), path, content_hash |
 | `check_results` | id, stage_id, name, command, head_sha, exit_code, duration_ms, log_artifact_id |
@@ -526,20 +737,25 @@ Global (`~/.config/block-party/config.yaml`), overridable per project (`.block-p
 
 ```yaml
 roles:
-  planner:     { agent: claude, model: opus, mode: tmux }
-  implementer: { agent: claude, model: opus, mode: tmux }
+  planner:     { agent: claude, model: opus, mode: pane }
+  implementer: { agent: claude, model: opus, mode: pane }
   subagents:
     implementer: { model: sonnet }
     test-writer: { model: sonnet }
     explorer:    { model: sonnet, readOnly: true }
   reviewer:    { agent: codex, model: <default>, mode: headless }
+  verifier:    { agent: claude, model: opus, mode: pane }   # QA agent; never the implementer's session
+
+terminal:
+  host: herdr              # or tmux; see 5.2.1
 
 policy:
   maxReviewRounds: 3
   maxCheckFixRounds: 2
+  maxVerifyRounds: 2
   autoFix: [P0, P1]        # P2 → inbox by default
-  publishAs: draft
-  waitForCi: false
+  publishAs: draft         # pushed once, after local CI, review, and verify pass
+  waitForCi: true
 
 worktrees:
   root: ~/.block-party/worktrees
@@ -556,11 +772,13 @@ Not a wall of agent chats. Three primary views, plus an inbox:
   blocked agents and their questions, permission prompts, P2 triage, disputed findings,
   cap-reached escalations, final reviews. Each item links to the context needed to decide.
 - **Run view:**
-  - Stage strip: Plan → Build → Checks → Codex → Fix → Review, with round counts.
+  - Stage strip: Plan → Build → Local CI → Codex → Fix → Verify → Publish → Review, with
+    round counts.
   - The approved plan, always visible, with acceptance criteria and their status.
-  - Condensed activity feed (tool calls, subagent tasks, files changed), plus "Attach" (tmux
+  - Condensed activity feed (tool calls, subagent tasks, files changed), plus "Attach" (herdr/tmux
     command or embedded terminal) and "Send message" / "Stop" as separate controls.
-  - Evidence panel: which checks ran on which SHA, which review rounds ran on which SHA,
+  - Evidence panel: which checks ran on which SHA (and CI steps with no local equivalent),
+    which review rounds and verify results apply to which SHA,
     and what is still unverified.
 - **Review (existing UI, extended):** the current diff grouped and risk-ordered as today,
   plus Codex findings shown on the groups and lines they touch, resolution history per
@@ -603,13 +821,17 @@ guesses for AI-assisted development.
 Verify the risky integration assumptions before building on them.
 
 - [x] This doc.
-- [ ] Spike: interactive Claude in tmux with `--session-id`, per-run `--settings` hooks
-      writing to `events.jsonl`, `--agents` Sonnet subagents. Confirm: hook payloads for
-      `Stop`/`SubagentStop`/`Notification`, idle detection, `send-keys` reliability, resume.
+- [ ] Spike: interactive Claude in a herdr pane with `--session-id`, per-run `--settings`
+      hooks writing to `events.jsonl`, `--agents` Sonnet subagents. Confirm: hook payloads
+      for `Stop`/`SubagentStop`/`Notification`, idle detection, `send_text` reliability,
+      resume. Confirm herdr `ping` with no window open, server auto-start, and that
+      herdr's own Claude hooks coexist with ours. Pin the herdr version.
 - [ ] Spike: headless `claude -p --output-format stream-json` with the same agents file
       (the fallback), including what subagent activity shows up in the stream.
 - [ ] Spike: `codex exec --output-schema` vs `codex review --base` on a real PR of mine.
       Compare finding quality and parse reliability. Record the decision in section 12.
+- [ ] Spike: `block-party checks init` on this repo: derive local checks from
+      `.github/workflows`, compare to what CI actually runs.
 - [ ] Draft the `plan.md` format (required sections, acceptance criteria) and the task brief
       template.
 
@@ -619,12 +841,12 @@ Verify the risky integration assumptions before building on them.
 with no UI beyond the terminal, logs, and artifacts.
 
 - [ ] Git service: worktree + branch creation, SHA recording, setup command.
-- [ ] Claude adapter (tmux mode, falling back to headless if the spike says so) with hooks
-      and `report.json` completion.
-- [ ] Check runner from `.block-party.yaml`.
-- [ ] Push + draft PR + head SHA confirmation.
-- [ ] Codex reviewer adapter with schema-validated findings.
-- [ ] One automatic fix round for P0/P1 findings, then re-check and re-review.
+- [ ] Terminal host adapter (herdr or tmux, per the spike) and Claude adapter with hooks
+      and `report.json` completion; headless fallback.
+- [ ] Local CI runner from `.block-party.yaml`, with `checks init` and CI drift warnings.
+- [ ] Codex reviewer adapter with schema-validated findings; only runs on green local CI.
+- [ ] One automatic fix round for P0/P1 findings, then local CI and re-review.
+- [ ] Push + draft PR at the end + head SHA confirmation + wait for GitHub CI.
 - [ ] All artifacts saved under `~/.block-party/runs/<runId>/`.
 - **Exit check:** I run it on a real plan for this repo and get a draft PR with Codex
   findings and their resolutions, without copying text between tools.
@@ -647,7 +869,7 @@ with no UI beyond the terminal, logs, and artifacts.
 - [ ] Findings shown in the review UI on groups/lines; per-finding history across rounds.
 - [ ] "Send to implementer" from findings and from my own review comments.
 - [ ] Evidence panel; acceptance-criteria tracking.
-- [ ] CI status for the head SHA.
+- [ ] CI parity gap handling (GitHub CI red after local green → fix round + inbox note).
 - **Exit check:** I start from a feature description and finish with a reviewed PR, and the
   only things I did were approve a plan, answer inbox items, and do the final review.
 
@@ -661,11 +883,19 @@ with no UI beyond the terminal, logs, and artifacts.
 - **Exit check:** three independent runs proceed in parallel for an afternoon without
   corrupting each other or needing me except via the inbox.
 
-### Phase 5: End-to-end verification
+### Phase 5: Verify stage (agentic end-to-end testing)
 
-- [ ] A QA stage: an independent agent launches the app, exercises the changed behavior
-      (browser automation for web projects), and produces evidence such as screenshots and
-      assertion results tied to acceptance criteria.
+See 5.7. Built driver by driver, in the order I need them:
+
+- [ ] Stage plumbing: verify profiles, environment start/ready/teardown, QA agent with an
+      MCP config, per-criterion results and evidence, `fail` → `e2e` findings → fix loop.
+- [ ] Browser driver (Playwright MCP) for web projects. First target: block-party itself.
+- [ ] MCP-client driver for MCP server projects.
+- [ ] Ephemeral database driver (local Docker Postgres first, hosted DB branches later).
+- [ ] Remote hosts from an allowlist; structured app drivers (e.g. Ableton MCP).
+- [ ] Computer-use driver (`ui_task`) on a dedicated machine, model configurable.
+- **Exit check:** a web change and a non-web change (MCP server or DB) each get verified
+  with real evidence and no manual setup.
 
 ### Later / maybe
 
@@ -690,7 +920,7 @@ with no UI beyond the terminal, logs, and artifacts.
 | Durable state outside conversations | **Borrow** (SQLite + run dirs) |
 | Event-driven supervision, no LLM polling | **Borrow, simplified** (hooks → JSONL → server) |
 | Messages separate from lifecycle control | **Borrow** (`send` vs `interrupt`/`stop`) |
-| tmux-hosted agent sessions | **Borrow** (attachable implementer sessions) |
+| Multiplexer-hosted agent sessions | **Borrow** (attachable implementer sessions in herdr, tmux fallback) |
 | Ship vs scout tasks | **Borrow conceptually**; scout runs are a later template |
 | Configurable model routing | **Borrow** for planner/implementer/subagents/reviewer roles |
 | Append-only fleet ledger | **Study** its event vocabulary when designing `run_events` |
@@ -705,14 +935,26 @@ with no UI beyond the terminal, logs, and artifacts.
 
 Newest first. Each entry: date, decision, why, and what would make us revisit it.
 
+- **2026-11-05: herdr (`herdrdev/herdr`, pinned) is the default terminal host, tmux the
+  fallback, behind a `TerminalHost` adapter.** Its socket API and agent-state events fit a
+  Node server better than shelling out to tmux, it has the same detach/persistence model,
+  it's Apache-2.0, and I already use it. Its state detection is a secondary signal only.
+  *Revisit if* its API breaks between versions often enough to cost more than tmux would.
+- **2026-11-05: Add a generic Verify stage after the review loop, before publishing.**
+  Project types differ only by verify profile (environment + MCP drivers); structured
+  drivers are preferred, computer use is a last resort on dedicated machines.
+- **2026-11-05: Local CI parity before Codex review; push only once, at the end.** Codex
+  shouldn't review code CI would reject, and GitHub Actions minutes are limited. Local
+  checks are derived from the workflow files, and drift is reported. *Revisit if* GitHub CI
+  regularly disagrees with local CI.
 - **2026-11-05: Personal, local-only; use installed `claude` and `codex` CLIs with my
   subscriptions.** Agent SDK can't use subscription auth in third-party apps without
   approval, and I don't need distribution. Adapters keep the SDK swappable. *Revisit if* I
   want to share block-party with others.
-- **2026-11-05: Implementer runs as an attachable interactive Claude session in tmux;
-  structured state comes from hooks, not terminal scraping.** I want to drop into and steer
-  live sessions. Headless stream-json stays as the fallback behind the same interface.
-  *Revisit after* the Phase 0 spike if tmux mode is unreliable.
+- **2026-11-05: Implementer runs as an attachable interactive Claude session in a terminal
+  multiplexer; structured state comes from hooks, not terminal scraping.** I want to drop
+  into and steer live sessions. Headless stream-json stays as the fallback behind the same
+  interface. *Revisit after* the Phase 0 spike if interactive mode is unreliable.
 - **2026-11-05: Hands-off autonomy between plan approval and my review.** Auto-fix P0/P1,
   inbox for P2 and judgment calls, `maxReviewRounds = 3`. No auto-merge.
 - **2026-11-05: Planning is import-first (Phase 1), in-app later (Phase 3).** Proves the
@@ -732,7 +974,12 @@ Newest first. Each entry: date, decision, why, and what would make us revisit it
 
 | Risk | Mitigation |
 |---|---|
-| tmux/send-keys interaction breaks with Claude Code TUI changes | Hooks for state; files for content; headless fallback |
+| Keystroke-driven interaction breaks with Claude Code TUI changes | Hooks for state; files for content; headless fallback |
+| herdr is pre-1.0 and its API changes | Pinned version; all calls in one adapter with contract tests; tmux fallback |
+| herdr server restarts and kills live agents | Treated like a reboot: stages marked `interrupted`, resumed via `claude --resume`; worktrees untouched |
+| Local CI drifts from GitHub CI | Checks derived from workflow files; drift warnings; CI-red-after-local-green recorded as a parity gap |
+| Verify environments are flaky or slow | Environment failures are `blocked`, not `fail`; ready probes and timeouts; structured drivers before computer use |
+| Verify touches real data or machines | Ephemeral DBs only, host allowlist, credentials scoped to the stage, never production |
 | Unattended run stalls on a permission prompt | `Notification` hook → inbox; permission profiles that make prompts rare |
 | Agent says "done" without doing it | `report.json` is a claim; engine verifies commits, cleanliness, checks, diff |
 | Review/fix churn or regressions | Round caps, repeated-finding detection, diff-size sanity check, escalation |
@@ -748,8 +995,11 @@ Newest first. Each entry: date, decision, why, and what would make us revisit it
 - Where should `report.json` live: in the worktree (needs a `.gitignore` entry or
   `.git/info/exclude`) or in the run dir (needs an absolute path in the brief)? Leaning
   toward the run dir.
-- Should the draft PR open before the first Codex review, or only after the review loop is
-  clean? Current plan: after the first passing checks, so CI runs in parallel with review.
+- How should the QA agent choose between several verify profiles when a diff touches
+  multiple areas: run all matching profiles, or let it pick? Leaning toward all matching.
+- Computer-use driver: OpenAI's or Claude's computer-use model, and what runs on the
+  remote host (VNC plus a local driver, or a small agent on the host)? Decide when that
+  driver is built.
 - Plan format: how strict? Required sections (Goal, Approach, Acceptance criteria,
   Out of scope) at minimum.
 - Does block-party develop itself? Dogfooding from Phase 1 onward is the best test, but a
