@@ -23,7 +23,7 @@ With only a repository, the UI lists its open pull requests to choose from. With
 argument, it starts on a list of your repositories.
 
 Options:
-  --provider <name>  LLM provider: claude-cli | codex-cli | openrouter
+  --provider <name>  LLM provider: codex-cli (default) | claude-cli | openrouter
   --model <name>     LLM model
   --port <n>         Port to listen on (default: random free port)
   --no-open          Do not open the browser

@@ -14,6 +14,7 @@ import {
   AnalysisBanner,
   AnalysisEmpty,
   AnalysisError,
+  AnalysisIdle,
   AnalysisSkeleton,
   ProviderNotice,
 } from './components/AnalysisStatus';
@@ -43,7 +44,7 @@ function Review() {
     errorNeedsRefresh,
     dismissError,
   } = useReviewState();
-  const { result, loading, error, stale } = useAnalysis();
+  const { result, loading, error, stale, idle } = useAnalysis();
   const [submitting, setSubmitting] = useState(false);
   const [choice, setChoice] = useState<ViewMode | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -117,7 +118,7 @@ function Review() {
     setHelpOpen,
   });
 
-  const pane = mainPaneState({ loading, error, analysis, group, stale });
+  const pane = mainPaneState({ loading, error, analysis, group, stale, idle });
   let main;
   if (view === 'file' || pane === 'stale') {
     main = (
@@ -149,9 +150,12 @@ function Review() {
     main = (
       <>
         {error && !loading && <AnalysisError view={view} onView={setChoice} />}
+        <ProviderNotice />
         <AnalysisEmpty summary={analysis.summary} onView={setChoice} />
       </>
     );
+  } else if (pane === 'idle') {
+    main = <AnalysisIdle onView={setChoice} />;
   } else if (pane === 'error') {
     main = <AnalysisError view={view} onView={setChoice} />;
   } else {

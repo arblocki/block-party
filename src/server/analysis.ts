@@ -78,7 +78,7 @@ function policyKey(policy: Policy): string {
   return `${PROMPT_VERSION}${rules}${md}@${policy.source}`;
 }
 
-/** GET /api/analysis and GET /api/providers. */
+/** GET /api/analysis (optionally ?cacheOnly=1 / ?force=1) and GET /api/providers. */
 export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
   const { pr: ref, github, store, getData, analysis: a } = deps;
   const inflight = new Map<string, Promise<Analysis>>();
@@ -154,6 +154,9 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
     const sel = selection({ provider: c.req.query('provider'), model: c.req.query('model') });
     if (typeof sel === 'string') return c.json({ error: sel, code: 'bad_request' }, 400);
     const force = c.req.query('force') === '1';
+    // cacheOnly=1 answers from the cache and never runs a provider, so opening a PR costs
+    // nothing until the user asks for an analysis.
+    const cacheOnly = !force && c.req.query('cacheOnly') === '1';
 
     try {
       const data = await getData();
@@ -187,6 +190,9 @@ export function registerAnalysisApi(app: Hono, deps: RouteDeps): void {
       }
 
       const flightKey = JSON.stringify(key);
+      if (cacheOnly && !inflight.has(flightKey)) {
+        return c.json({ error: 'No cached analysis', code: 'not_cached', ...warn }, 404);
+      }
       let flight = inflight.get(flightKey);
       const shared = flight !== undefined;
       if (!flight) {

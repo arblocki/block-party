@@ -201,7 +201,7 @@ export function describeAnalysisError(code: string | undefined, message: string)
     case 'not_installed':
       return {
         title: 'The analysis provider is not installed',
-        hint: 'Install and log in to the claude CLI, or switch provider.',
+        hint: 'Install and log in to the provider CLI (codex or claude), or switch provider.',
       };
     case 'auth':
       return {

@@ -220,7 +220,9 @@ Final risk is the higher of the LLM's rating and the rule-based rating:
 
 ### 4.8 Cache
 Key: `(repo, pr, headSha, diffHash, provider, model, promptVersion)` → analysis JSON in
-SQLite. Re-opening a PR costs nothing. A "Re-analyze" button forces a fresh run.
+SQLite. Re-opening a PR costs nothing. Opening a PR only checks this cache
+(`/api/analysis?cacheOnly=1`); the provider runs only when the user presses "Analyze", so an
+accidental open never spends quota. A "Re-analyze" button forces a fresh run.
 
 ## 5. LLM providers
 
@@ -275,7 +277,7 @@ about structured output.
 `~/.config/review-dash/config.json`, outside the repo:
 ```json
 {
-  "provider": "claude-cli",
+  "provider": "codex-cli",
   "models": { "claude-cli": "sonnet", "codex-cli": "gpt-5-codex", "openrouter": "anthropic/claude-sonnet-4.5" },
   "mapProvider": "openrouter",
   "maxConcurrency": 4

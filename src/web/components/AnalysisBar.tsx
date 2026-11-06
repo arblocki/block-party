@@ -18,8 +18,19 @@ export function AnalysisBar({
   onView(v: ViewMode): void;
   onHelp?: () => void;
 }) {
-  const { result, stale, loading, elapsedS, providers, choice, setChoice, reanalyze } =
-    useAnalysis();
+  const {
+    result,
+    stale,
+    loading,
+    checking,
+    idle,
+    elapsedS,
+    providers,
+    choice,
+    setChoice,
+    analyze,
+    reanalyze,
+  } = useAnalysis();
   const [summaryOpen, setSummaryOpen] = useState(false);
   const [dismissedWarning, setDismissedWarning] = useState<string | null>(null);
   // A stale analysis describes an older head; its summary and badges must not read as current.
@@ -82,9 +93,22 @@ export function AnalysisBar({
             />
           </div>
         )}
-        <button type="button" className={btn} disabled={loading} onClick={reanalyze}>
-          {loading ? `Analyzing… ${elapsedS}s` : 'Re-analyze'}
-        </button>
+        {/* Runs the provider (spends quota) only on click; nothing runs on open. */}
+        {idle || !result ? (
+          <button
+            type="button"
+            className="rounded bg-blue-600 px-2.5 py-1 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            disabled={loading || checking}
+            title="Run the provider to group this PR's hunks (uses your quota)"
+            onClick={analyze}
+          >
+            {loading ? `Analyzing… ${elapsedS}s` : 'Analyze'}
+          </button>
+        ) : (
+          <button type="button" className={btn} disabled={loading} onClick={reanalyze}>
+            {loading ? `Analyzing… ${elapsedS}s` : 'Re-analyze'}
+          </button>
+        )}
         <HideReviewedToggle />
         {onHelp && (
           <button
