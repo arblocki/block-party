@@ -2,7 +2,8 @@
 
 A local dashboard for reviewing GitHub pull requests. Run it against a PR and it starts a
 server on `127.0.0.1` and opens a review UI in your browser. See [docs/PLAN.md](docs/PLAN.md)
-for the design and milestones.
+for the design and milestones, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
+agentic delivery roadmap.
 
 Status: M0 scaffold. The UI currently shows only the PR reference being reviewed.
 

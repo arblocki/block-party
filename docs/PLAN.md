@@ -1,5 +1,10 @@
 # block-party: MVP Plan
 
+> **Scope note (2026-11-05):** this is the spec for the *review subsystem* (diff grouping,
+> risk, comments, re-review). The broader agentic workflow (planning, implementation,
+> Codex review/fix loop) lives in [ARCHITECTURE.md](ARCHITECTURE.md), which supersedes the
+> "Out of scope" items below about writing plans, generating code, and finding bugs.
+
 A local, single-user tool for reviewing big (usually AI-generated) GitHub pull requests.
 It takes an existing PR, sorts the diff into small groups of related changes, labels each
 group and gives it a risk level, shows the groups riskiest first, and lets me leave comments
