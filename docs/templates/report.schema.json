@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/arblocki/block-party/docs/templates/report.schema.json",
+  "title": "Implementer stage report",
+  "description": "Written by the implementer to <runDir>/report.json at the end of each implement or fix stage. A claim, not evidence: block-party verifies it against git and checks.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "summary", "acceptance", "questions", "findingResolutions"],
+  "properties": {
+    "status": { "enum": ["done", "blocked", "partial"] },
+    "summary": { "type": "string", "minLength": 1, "maxLength": 4000 },
+    "acceptance": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["criterion", "status", "evidence"],
+        "properties": {
+          "criterion": { "type": "string", "minLength": 1 },
+          "status": { "enum": ["met", "not_met", "unsure"] },
+          "evidence": { "type": "string" }
+        }
+      }
+    },
+    "questions": {
+      "description": "Required non-empty when status is blocked; empty otherwise.",
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "findingResolutions": {
+      "description": "Only populated in fix rounds.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["findingId", "resolution", "note"],
+        "properties": {
+          "findingId": { "type": "string", "minLength": 1 },
+          "resolution": { "enum": ["fixed", "disputed", "deferred"] },
+          "note": { "type": "string" }
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "blocked" } } },
+      "then": { "properties": { "questions": { "minItems": 1 } } }
+    }
+  ]
+}
