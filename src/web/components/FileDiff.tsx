@@ -36,9 +36,9 @@ export const fileAnchorId = (path: string): string => `file-${path}`;
 const EXPAND_STEP = 20;
 
 const STATUS_BADGE: Record<string, string> = {
-  added: 'bg-green-100 text-green-800 dark:bg-green-900/50 dark:text-green-300',
-  removed: 'bg-red-100 text-red-800 dark:bg-red-900/50 dark:text-red-300',
-  renamed: 'bg-blue-100 text-blue-800 dark:bg-blue-900/50 dark:text-blue-300',
+  added: 'bg-success-soft text-success',
+  removed: 'bg-error-soft text-error',
+  renamed: 'bg-accent-soft text-accent',
 };
 
 function diffTypeFor(status: ParsedFile['status']): DiffType {
@@ -130,8 +130,8 @@ export function FileDiff({
   return (
     <section
       id={anchorId}
-      className={`scroll-mt-[calc(var(--header-h)+8px)] overflow-hidden rounded-md border border-gray-200 dark:border-gray-800 ${
-        fileFocused ? 'ring-2 ring-blue-500' : ''
+      className={`scroll-mt-[calc(var(--header-h)+8px)] overflow-hidden rounded-md border border-line ${
+        fileFocused ? 'ring-2 ring-accent' : ''
       }`}
       data-testid="file-diff"
       data-hunk-id={fileKey}
@@ -139,10 +139,10 @@ export function FileDiff({
       data-path={file.path}
       data-hunk-ids={hunks.map((h) => h.id).join(' ')}
     >
-      <div className="flex items-center gap-2 border-b border-gray-200 bg-gray-50 px-3 py-1.5 text-sm dark:border-gray-800 dark:bg-gray-900">
+      <div className="flex items-center gap-2 border-b border-line bg-surface-elevated px-3 py-1.5 text-sm">
         <button
           type="button"
-          className="w-4 text-gray-500"
+          className="w-4 text-muted"
           aria-label={collapsed ? 'Expand file' : 'Collapse file'}
           aria-expanded={!collapsed}
           onClick={() => setCollapsed(!collapsed)}
@@ -155,8 +155,8 @@ export function FileDiff({
         </span>
         {file.status !== 'modified' && (
           <span
-            className={`rounded px-1.5 text-xs ${
-              STATUS_BADGE[file.status] ?? 'bg-gray-200 text-gray-700 dark:bg-gray-800'
+            className={`rounded-md px-1.5 text-xs ${
+              STATUS_BADGE[file.status] ?? 'bg-surface-elevated text-fg'
             }`}
           >
             {file.status}
@@ -168,16 +168,16 @@ export function FileDiff({
           fileKey && <HunkCheckbox ids={[fileKey]} label="File reviewed" />
         )}
         <span className="shrink-0 font-mono text-xs">
-          <span className="text-green-700 dark:text-green-400">+{file.additions}</span>{' '}
-          <span className="text-red-700 dark:text-red-400">−{file.deletions}</span>
+          <span className="text-success">+{file.additions}</span>{' '}
+          <span className="text-error">−{file.deletions}</span>
         </span>
       </div>
       {!collapsed && showFileThreads && placement.fileLevel.length > 0 && (
         <div
-          className="border-b border-gray-200 bg-gray-50/50 py-1 dark:border-gray-800 dark:bg-gray-900/40"
+          className="border-b border-line bg-surface-elevated/50 py-1"
           data-testid="file-discussion"
         >
-          <p className="px-3 text-xs font-semibold text-gray-500 dark:text-gray-400">Discussion</p>
+          <p className="px-3 text-xs font-semibold text-muted">Discussion</p>
           {placement.fileLevel.map((t) => (
             <ThreadWidget key={t.id} thread={t} showLocation />
           ))}
@@ -190,15 +190,10 @@ export function FileDiff({
 
 function Placeholder({ children, link }: { children: ReactNode; link?: string }) {
   return (
-    <div className="px-4 py-6 text-center text-sm text-gray-500 dark:text-gray-400">
+    <div className="px-4 py-6 text-center text-sm text-muted">
       {children}{' '}
       {link && (
-        <a
-          href={link}
-          target="_blank"
-          rel="noreferrer"
-          className="text-blue-600 hover:underline dark:text-blue-400"
-        >
+        <a href={link} target="_blank" rel="noreferrer" className="text-accent hover:underline">
           View on GitHub ↗
         </a>
       )}
@@ -433,15 +428,13 @@ const FileDiffBody = memo(function FileDiffBody({
   return (
     <div className="rd-diff overflow-x-auto text-[12.5px]">
       {expandError && (
-        <p className="bg-red-50 px-3 py-1 text-xs text-red-700 dark:bg-red-950 dark:text-red-300">
+        <p className="bg-error-soft px-3 py-1 text-xs text-error">
           Could not load file for context: {expandError}
         </p>
       )}
       {unplaced.length > 0 && (
-        <div className="border-b border-gray-200 bg-gray-50/50 py-1 dark:border-gray-800 dark:bg-gray-900/40">
-          <p className="px-3 text-xs text-gray-500 dark:text-gray-400">
-            Comments on lines not shown in the diff below:
-          </p>
+        <div className="border-b border-line bg-surface-elevated/50 py-1">
+          <p className="px-3 text-xs text-muted">Comments on lines not shown in the diff below:</p>
           {unplaced}
         </div>
       )}
@@ -485,8 +478,8 @@ function HunkCheckbox({ ids, label = 'Reviewed' }: { ids: string[]; label?: stri
   const auto = done && statuses.every((s) => s === 'auto');
   return (
     <label
-      className={`flex shrink-0 cursor-pointer items-center gap-1 rounded px-1 font-sans text-xs ${
-        auto ? 'text-sky-700 dark:text-sky-300' : 'text-gray-600 dark:text-gray-300'
+      className={`flex shrink-0 cursor-pointer items-center gap-1 rounded-md px-1 font-sans text-xs ${
+        auto ? 'text-info' : 'text-muted'
       }`}
       title={
         auto ? 'Auto-cleared (not reviewed by you). Uncheck to review it yourself.' : undefined
@@ -498,7 +491,7 @@ function HunkCheckbox({ ids, label = 'Reviewed' }: { ids: string[]; label?: stri
         aria-label={label}
         data-testid="hunk-reviewed"
         data-state={auto ? 'auto' : done ? 'reviewed' : 'none'}
-        className={auto ? 'accent-sky-500' : 'accent-green-600'}
+        className={auto ? 'accent-info' : 'accent-success'}
         onChange={() => setHunks(ids, !done)}
       />
       {auto ? 'auto-cleared' : label.toLowerCase()}
@@ -522,14 +515,13 @@ function ExpandBar({
   onDown?: () => void;
   onAll?: () => void;
 }) {
-  const b =
-    'rounded px-1.5 py-0.5 text-blue-700 hover:bg-blue-100 dark:text-blue-300 dark:hover:bg-blue-900/50';
+  const b = 'rounded-md px-1.5 py-0.5 text-accent hover:bg-accent-soft';
   const { hunkId: focused } = useFocusedHunk();
   const isFocused = !!hunkIds && focused !== null && hunkIds.includes(focused);
   return (
     <div
-      className={`flex scroll-mt-[calc(var(--header-h)+8px)] items-center gap-1 bg-blue-50/70 px-2 py-0.5 font-sans text-xs text-slate-600 dark:bg-slate-800/60 dark:text-slate-300 ${
-        isFocused ? 'ring-2 ring-blue-500 ring-inset' : ''
+      className={`flex scroll-mt-[calc(var(--header-h)+8px)] items-center gap-1 bg-surface px-2 py-0.5 font-sans text-xs text-muted ${
+        isFocused ? 'ring-2 ring-accent ring-inset' : ''
       }`}
       data-hunk-id={hunkIds?.join(' ')}
       data-focused={isFocused ? 'true' : undefined}

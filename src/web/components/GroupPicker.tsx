@@ -28,7 +28,7 @@ export function GroupPicker({
       <span className="shrink-0 font-semibold">Group</span>
       <select
         aria-label="Select group"
-        className="min-w-0 flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 dark:border-gray-700 dark:bg-gray-900"
+        className="min-w-0 flex-1 rounded-md border border-line bg-surface px-2 py-1.5"
         value={selectedKey ?? ''}
         onChange={(e) => onSelect(e.target.value)}
       >

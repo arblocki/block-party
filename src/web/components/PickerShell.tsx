@@ -1,17 +1,14 @@
 import type { KeyboardEvent, ReactNode } from 'react';
 
 const btn =
-  'rounded border border-gray-300 bg-white px-2.5 py-1 text-sm hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800';
+  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
 
 /** Row styling shared by the pickers' list items. */
 export function rowClass(active: boolean): string {
-  return `block px-3 py-2 ${
-    active ? 'bg-blue-50 dark:bg-blue-950/50' : 'hover:bg-gray-50 dark:hover:bg-gray-900'
-  }`;
+  return `block px-3 py-2 ${active ? 'bg-accent-soft' : 'hover:bg-surface-hover'}`;
 }
 
-export const listClass =
-  'divide-y divide-gray-200 rounded border border-gray-200 dark:divide-gray-800 dark:border-gray-800';
+export const listClass = 'divide-y divide-line rounded-md border border-line';
 
 /** Page frame for the repository and PR pickers: title row, filter box, error, then the list. */
 export function PickerShell(props: {
@@ -49,13 +46,10 @@ export function PickerShell(props: {
         onKeyDown={props.onKeyDown}
         placeholder={props.placeholder}
         aria-label={props.filterLabel}
-        className="mb-3 w-full rounded border border-gray-300 bg-white px-3 py-1.5 text-sm dark:border-gray-700 dark:bg-gray-900"
+        className="mb-3 w-full rounded-md border border-line bg-surface px-3 py-1.5 text-sm"
       />
       {props.error && (
-        <p
-          role="alert"
-          className="mb-3 rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
-        >
+        <p role="alert" className="mb-3 rounded-md bg-error-soft px-3 py-2 text-sm text-error">
           {props.error}
         </p>
       )}

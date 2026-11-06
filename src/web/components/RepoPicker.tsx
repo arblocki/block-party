@@ -8,8 +8,7 @@ import { useListNav } from '../useListNav';
 import { useLoader } from '../useLoader';
 import { listClass, PickerShell, rowClass } from './PickerShell';
 
-const badge =
-  'shrink-0 rounded border border-gray-300 px-1.5 text-xs text-gray-600 dark:border-gray-600 dark:text-gray-300';
+const badge = 'shrink-0 rounded-md border border-line px-1.5 text-xs text-muted';
 
 /** Repositories the viewer can access; picking one lists its open pull requests. */
 export function RepoPicker() {
@@ -44,12 +43,10 @@ export function RepoPicker() {
       filterLabel="Filter repositories"
       error={error && `Could not list your repositories: ${error}`}
     >
-      {repos === null && !error && (
-        <p className="mb-3 text-sm text-gray-500 dark:text-gray-400">Loading repositories…</p>
-      )}
+      {repos === null && !error && <p className="mb-3 text-sm text-muted">Loading repositories…</p>}
 
       {repos !== null && entries.length === 0 && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">
+        <p className="text-sm text-muted">
           {repos.length === 0 && recent.length === 0
             ? 'No repositories found. Type owner/repo to open one.'
             : 'No repositories match. Type owner/repo to open any repository.'}
@@ -69,11 +66,7 @@ export function RepoPicker() {
                   className={rowClass(i === current)}
                 >
                   <div className="flex items-baseline gap-2">
-                    {e.typed && (
-                      <span className="shrink-0 text-sm text-gray-500 dark:text-gray-400">
-                        Open
-                      </span>
-                    )}
+                    {e.typed && <span className="shrink-0 text-sm text-muted">Open</span>}
                     <span className="min-w-0 truncate font-mono text-sm font-medium">
                       {e.repo.owner}/{e.repo.repo}
                     </span>
@@ -83,19 +76,13 @@ export function RepoPicker() {
                     {s?.archived && <span className={badge}>Archived</span>}
                     <span className="flex-1" />
                     {s?.pushedAt && (
-                      <span
-                        className="shrink-0 text-xs text-gray-500 dark:text-gray-400"
-                        title={s.pushedAt}
-                      >
+                      <span className="shrink-0 text-xs text-muted" title={s.pushedAt}>
                         pushed {relativeTime(s.pushedAt)}
                       </span>
                     )}
                   </div>
                   {s?.description && (
-                    <div
-                      className="mt-0.5 truncate text-xs text-gray-500 dark:text-gray-400"
-                      title={s.description}
-                    >
+                    <div className="mt-0.5 truncate text-xs text-muted" title={s.description}>
                       {s.description}
                     </div>
                   )}
@@ -106,7 +93,7 @@ export function RepoPicker() {
         </ul>
       )}
       {repos !== null && repos.length >= 500 && (
-        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        <p className="mt-2 text-xs text-muted">
           Showing your 500 most recently pushed repositories. Type owner/repo to open any other.
         </p>
       )}

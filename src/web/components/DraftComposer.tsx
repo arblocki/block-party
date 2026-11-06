@@ -30,10 +30,10 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
 
   return (
     <div
-      className="my-1 mr-2 ml-16 max-w-3xl rounded-md border border-blue-300 bg-white p-2 font-sans text-sm shadow-sm dark:border-blue-700 dark:bg-gray-900"
+      className="my-1 mr-2 ml-16 max-w-3xl rounded-md border border-accent/40 bg-surface p-2 font-sans text-sm shadow-sm"
       data-testid="draft-composer"
     >
-      <div className="mb-1 flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
+      <div className="mb-1 flex items-center justify-between text-xs text-muted">
         <span>
           Draft comment on {draft.side === 'LEFT' ? 'old ' : ''}
           {range}
@@ -42,10 +42,10 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
       </div>
       {draft.outdated && (
         <p
-          className="mb-1 rounded bg-amber-100 px-2 py-1 text-xs text-amber-900 dark:bg-amber-900/40 dark:text-amber-200"
+          className="mb-1 rounded-md bg-warning-soft px-2 py-1 text-xs text-warning"
           data-testid="draft-outdated"
         >
-          <span className="mr-1 rounded bg-amber-300 px-1 font-semibold uppercase dark:bg-amber-700">
+          <span className="mr-1 rounded-md bg-warning px-1 font-semibold text-accent-fg uppercase">
             outdated
           </span>
           The code under this comment changed in a newer push. It will be added to the review body
@@ -53,7 +53,7 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
         </p>
       )}
       {!inline && !draft.outdated && (
-        <p className="mb-1 rounded bg-amber-100 px-2 py-1 text-xs text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
+        <p className="mb-1 rounded-md bg-warning-soft px-2 py-1 text-xs text-warning">
           This line is outside the diff, so GitHub can't show it inline. The comment will be added
           to the review body as <code>path:line — comment</code>.
         </p>
@@ -63,7 +63,7 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
         value={body}
         rows={3}
         placeholder="Leave a comment"
-        className="w-full resize-y rounded border border-gray-300 bg-white p-1.5 font-sans dark:border-gray-700 dark:bg-gray-950"
+        className="w-full resize-y rounded-md border border-line bg-surface p-1.5 font-sans"
         onChange={(e) => {
           setBody(e.target.value);
           updateDraftBody(draftId, e.target.value);
@@ -72,7 +72,7 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
       <div className="mt-1 flex justify-end">
         <button
           type="button"
-          className="rounded px-2 py-0.5 text-xs text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-950"
+          className="rounded-md px-2 py-0.5 text-xs text-error hover:bg-error-soft"
           onClick={() => void deleteDraft(draftId)}
         >
           {draft.persisted ? 'Delete draft' : 'Cancel'}

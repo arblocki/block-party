@@ -32,14 +32,14 @@ export function GroupRail({
     return (
       <div className="space-y-2 p-3" aria-label="Loading groups">
         {Array.from({ length: 6 }, (_, i) => (
-          <div key={i} className="h-6 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+          <div key={i} className="h-6 animate-pulse rounded-md bg-surface-elevated" />
         ))}
       </div>
     );
   }
   return (
     <nav className="py-2 text-sm">
-      <div className="px-3 pb-1 text-xs font-semibold tracking-wide text-gray-500 uppercase dark:text-gray-400">
+      <div className="px-3 pb-1 text-xs font-semibold tracking-wide text-muted uppercase">
         Groups ({groups.length})
       </div>
       <ul>
@@ -54,8 +54,8 @@ export function GroupRail({
                 title={`${g.title} (${itemCounts(g)})`}
                 aria-current={selected ? 'true' : undefined}
                 onClick={() => onSelect(g.key)}
-                className={`flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left hover:bg-gray-100 dark:hover:bg-gray-900 ${
-                  selected ? 'border-blue-600 bg-gray-100 dark:bg-gray-900' : 'border-transparent'
+                className={`flex w-full items-center gap-2 border-l-2 px-3 py-1.5 text-left hover:bg-surface-hover ${
+                  selected ? 'border-accent bg-accent-soft' : 'border-transparent'
                 } ${muted ? 'opacity-60' : ''}`}
               >
                 <RiskBadge group={g} />
@@ -63,7 +63,7 @@ export function GroupRail({
                   {g.title}
                 </span>
                 <span
-                  className="shrink-0 font-mono text-xs text-gray-500 dark:text-gray-400"
+                  className="shrink-0 font-mono text-xs text-muted"
                   data-testid="group-progress"
                   title={
                     p
@@ -73,11 +73,7 @@ export function GroupRail({
                 >
                   {p?.complete ? (
                     <span
-                      className={
-                        p.reviewed === 0
-                          ? 'text-sky-600 dark:text-sky-400'
-                          : 'font-bold text-green-600 dark:text-green-400'
-                      }
+                      className={p.reviewed === 0 ? 'text-info' : 'font-bold text-success'}
                       aria-label={p.reviewed === 0 ? 'auto-cleared' : 'complete'}
                     >
                       ✓
@@ -92,7 +88,7 @@ export function GroupRail({
         })}
       </ul>
       {unrelated.length > 0 && (
-        <div className="m-3 rounded border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+        <div className="m-3 rounded-md border border-warning/40 bg-warning-soft p-2 text-xs text-warning">
           <div className="mb-1 font-semibold">Unrelated or suspicious</div>
           <ul className="list-disc space-y-1 pl-4">
             {unrelated.map((u, i) => (

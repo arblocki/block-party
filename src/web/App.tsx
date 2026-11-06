@@ -187,13 +187,13 @@ function Review() {
         main={
           <>
             {threadsError && (
-              <p className="mb-3 rounded bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <p className="mb-3 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning">
                 Existing review threads could not be loaded: {threadsError}
               </p>
             )}
             {stateError && (
               <p
-                className="mb-3 flex items-start gap-2 rounded bg-red-50 px-3 py-2 text-sm text-red-800 dark:bg-red-950 dark:text-red-200"
+                className="mb-3 flex items-start gap-2 rounded-md bg-error-soft px-3 py-2 text-sm text-error"
                 role="alert"
               >
                 <span className="min-w-0 flex-1">{stateError}</span>
@@ -247,10 +247,10 @@ export function App() {
   if (error) {
     return (
       <div className="mx-auto max-w-xl p-8">
-        <p className="text-red-600 dark:text-red-400">Failed to load: {error}</p>
+        <p className="text-error">Failed to load: {error}</p>
         <button
           type="button"
-          className="mt-3 rounded border border-gray-300 px-3 py-1 text-sm dark:border-gray-600"
+          className="mt-3 rounded-md border border-line px-3 py-1 text-sm"
           onClick={load}
         >
           Retry
@@ -258,7 +258,7 @@ export function App() {
       </div>
     );
   }
-  if (!session) return <p className="p-8 text-gray-500 dark:text-gray-400">Loading…</p>;
+  if (!session) return <p className="p-8 text-muted">Loading…</p>;
 
   const route = routeFromSearch(location.search, session);
   if (route.kind === 'repos') return <RepoPicker />;

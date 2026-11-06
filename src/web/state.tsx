@@ -410,19 +410,16 @@ export function ReviewProvider(props: { session: SessionInfo; children: ReactNod
   if (error) {
     return (
       <div className="mx-auto max-w-xl p-8">
-        <p className="text-red-600 dark:text-red-400">Failed to load: {error}</p>
+        <p className="text-error">Failed to load: {error}</p>
         <div className="mt-3 flex items-center gap-3">
           <button
             type="button"
-            className="rounded border border-gray-300 px-3 py-1 text-sm dark:border-gray-600"
+            className="rounded-md border border-line px-3 py-1 text-sm"
             onClick={() => void loadAll()}
           >
             Retry
           </button>
-          <a
-            href={pullsHref(session.pr)}
-            className="text-sm text-blue-600 hover:underline dark:text-blue-400"
-          >
+          <a href={pullsHref(session.pr)} className="text-sm text-accent hover:underline">
             Open pull requests
           </a>
         </div>
@@ -430,7 +427,7 @@ export function ReviewProvider(props: { session: SessionInfo; children: ReactNod
     );
   }
   if (!value) {
-    return <p className="p-8 text-gray-500 dark:text-gray-400">Loading pull request…</p>;
+    return <p className="p-8 text-muted">Loading pull request…</p>;
   }
   return (
     <ReviewContext.Provider value={value}>

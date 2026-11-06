@@ -1,87 +1,224 @@
 @import 'tailwindcss';
 
-:root {
-  color-scheme: light dark;
-  --header-h: 56px;
-  --diff-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  --diff-background-color: #fff;
-  --diff-text-color: #1f2328;
-  --tok-comment: #6e7781;
-  --tok-keyword: #cf222e;
-  --tok-string: #0a3069;
-  --tok-number: #0550ae;
-  --tok-function: #8250df;
-  --tok-class: #953800;
-  --tok-punct: #57606a;
+/*
+ * Block Party — Sea Glass theme.
+ *
+ * Semantic tokens live here and nowhere else. Dark is the default; light is
+ * applied by `html[data-theme='light']`. The theme is resolved before first
+ * paint by the inline script in index.html and managed at runtime by lib/theme.ts.
+ * Components use the Tailwind utilities generated from these tokens
+ * (bg-surface, text-muted, border-line, text-accent, bg-error-soft, ...).
+ */
+@theme static {
+  --font-sans: Inter, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+
+  --color-bg: #10191b;
+  --color-surface: #1a282a;
+  --color-surface-elevated: #243537;
+  --color-surface-hover: #293a3b;
+  --color-border: #34494a;
+  --color-border-strong: #4d6663;
+  --color-text: #eff5f2;
+  --color-text-muted: #9fb2ae;
+  --color-accent: #69d5bc;
+  --color-accent-hover: #55c2a9;
+  --color-accent-soft: #203e37;
+  --color-accent-foreground: #102820;
+
+  --color-success: #73d8a6;
+  --color-error: #fa988f;
+  --color-warning: #f1c17a;
+  --color-info: #87b8fa;
+
+  /* Tinted backgrounds for badges/banners, derived so they follow the theme. */
+  --color-success-soft: color-mix(in srgb, var(--color-success) 14%, var(--color-surface));
+  --color-error-soft: color-mix(in srgb, var(--color-error) 14%, var(--color-surface));
+  --color-warning-soft: color-mix(in srgb, var(--color-warning) 14%, var(--color-surface));
+  --color-info-soft: color-mix(in srgb, var(--color-info) 14%, var(--color-surface));
+
+  --color-diff-added-bg: #11241a;
+  --color-diff-deleted-bg: #2b1618;
+  --color-code-bg: #0c1011;
+
+  /* Risk levels use a conventional red / amber / green so they scan at a glance. */
+  --color-risk-high: #e5534b;
+  --color-risk-medium: #e3a72f;
+  --color-risk-low: #3fb36b;
+  --color-risk-fg: #0c1011;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --diff-background-color: #0d1117;
-    --diff-text-color: #e6edf3;
-    --diff-selection-background-color: #264f78;
-    --diff-gutter-insert-background-color: #12361f;
-    --diff-gutter-delete-background-color: #4a1d22;
-    --diff-gutter-selected-background-color: #4d4413;
-    --diff-code-insert-background-color: #0f2a19;
-    --diff-code-delete-background-color: #3a171b;
-    --diff-code-insert-edit-background-color: #1f6a35;
-    --diff-code-delete-edit-background-color: #8a2a33;
-    --diff-code-selected-background-color: #3b350f;
-    --diff-omit-gutter-line-color: #f85149;
-    --tok-comment: #8b949e;
-    --tok-keyword: #ff7b72;
-    --tok-string: #a5d6ff;
-    --tok-number: #79c0ff;
-    --tok-function: #d2a8ff;
-    --tok-class: #ffa657;
-    --tok-punct: #8b949e;
-  }
+/* Short aliases so utilities read bg-surface / text-muted / border-line / text-fg. */
+@theme static inline {
+  --color-line: var(--color-border);
+  --color-line-strong: var(--color-border-strong);
+  --color-muted: var(--color-text-muted);
+  --color-fg: var(--color-text);
+  --color-accent-fg: var(--color-accent-foreground);
+  --color-risk-on: var(--color-risk-fg);
+}
+
+:root {
+  --header-h: 56px;
+  color-scheme: dark;
+  --focus-ring: var(--color-accent);
+  --overlay: rgb(5 12 13 / 0.6);
+
+  --diff-font-family: var(--font-mono);
+  --diff-background-color: var(--color-code-bg);
+  --diff-text-color: var(--color-text);
+  --diff-selection-background-color: #1f3a40;
+  --diff-gutter-insert-background-color: #163223;
+  --diff-gutter-delete-background-color: #3a1f21;
+  --diff-gutter-selected-background-color: #2e2e1c;
+  --diff-code-insert-background-color: var(--color-diff-added-bg);
+  --diff-code-delete-background-color: var(--color-diff-deleted-bg);
+  --diff-code-insert-edit-background-color: #1f4a32;
+  --diff-code-delete-edit-background-color: #5a2d2f;
+  --diff-code-selected-background-color: #24271a;
+  --diff-omit-gutter-line-color: var(--color-error);
+
+  --tok-comment: #7e9490;
+  --tok-keyword: #e59a8f;
+  --tok-string: #8fd9a8;
+  --tok-number: #8dbcf0;
+  --tok-function: #69d5bc;
+  --tok-class: #e8c387;
+  --tok-punct: #93a8a4;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+  --color-bg: #f3f7f5;
+  --color-surface: #ffffff;
+  --color-surface-elevated: #eaf2ee;
+  --color-surface-hover: #e7f0ec;
+  --color-border: #d6e4de;
+  --color-border-strong: #b5cdc3;
+  --color-text: #20322d;
+  --color-text-muted: #667e75;
+  --color-accent: #167b68;
+  --color-accent-hover: #0f6656;
+  --color-accent-soft: #e0f1e9;
+  --color-accent-foreground: #ffffff;
+
+  --color-success: #167449;
+  --color-error: #b44745;
+  --color-warning: #936012;
+  --color-info: #2e62b1;
+
+  --color-risk-high: #c9403d;
+  --color-risk-medium: #a86a06;
+  --color-risk-low: #2b9a5a;
+  --color-risk-fg: #ffffff;
+
+  --color-diff-added-bg: #e7f5eb;
+  --color-diff-deleted-bg: #fff0ee;
+  --color-code-bg: #fbfcfa;
+
+  --overlay: rgb(32 50 45 / 0.4);
+
+  --diff-selection-background-color: #cfe8e0;
+  --diff-gutter-insert-background-color: #d3ecdb;
+  --diff-gutter-delete-background-color: #fbdcd8;
+  --diff-gutter-selected-background-color: #f5ecc8;
+  --diff-code-insert-edit-background-color: #b9e3c8;
+  --diff-code-delete-edit-background-color: #f4bdb7;
+  --diff-code-selected-background-color: #f7f1d6;
+
+  --tok-comment: #6b8179;
+  --tok-keyword: #b44745;
+  --tok-string: #1f6a46;
+  --tok-number: #2e62b1;
+  --tok-function: #167b68;
+  --tok-class: #8a5a10;
+  --tok-punct: #5c746b;
 }
 
 body {
-  background: #fff;
-  color: #1f2328;
-  font-family:
-    system-ui,
-    -apple-system,
-    'Segoe UI',
-    Roboto,
-    sans-serif;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
-@media (prefers-color-scheme: dark) {
-  body {
-    background: #0d1117;
-    color: #e6edf3;
-  }
+
+/* Visible keyboard focus in both themes. */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+::selection {
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+input,
+textarea,
+select {
+  color: var(--color-text);
+  font-family: inherit;
+}
+input::placeholder,
+textarea::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.85;
+}
+input[type='checkbox'],
+input[type='radio'] {
+  accent-color: var(--color-accent);
+}
+button:disabled {
+  cursor: not-allowed;
+}
+a {
+  text-underline-offset: 2px;
+}
+
+/* Scrollbars. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border-strong) transparent;
 }
 
 /* Diff: dense, readable. */
+.rd-diff {
+  background: var(--color-code-bg);
+  font-size: 12.5px;
+}
 .rd-diff .diff-line {
-  line-height: 1.45;
+  line-height: 1.5;
 }
 .rd-diff .diff-gutter {
   min-width: 3.5em;
-  color: #6e7781;
+  color: var(--color-text-muted);
   font-size: 11.5px;
 }
 .rd-diff .diff-gutter-col {
   width: 4.5em;
 }
+.rd-diff .diff-decoration {
+  background: var(--color-surface-elevated);
+  color: var(--color-text-muted);
+}
 .rd-diff .diff-decoration-content {
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-sans);
 }
 .rd-diff .diff-gutter .rd-add {
   display: inline-block;
   width: 1.4em;
   border-radius: 3px;
-  background: #0969da;
-  color: #fff;
+  background: var(--color-accent);
+  color: var(--color-accent-foreground);
   font-weight: 700;
   text-align: center;
 }
 .rd-diff .diff-widget-content {
-  background: var(--diff-background-color);
+  background: var(--color-code-bg);
   white-space: normal;
 }
 .rd-diff .diff-widget-content > * {

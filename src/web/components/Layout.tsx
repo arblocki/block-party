@@ -15,12 +15,12 @@ export function Layout({
 }) {
   return (
     <div className="min-h-screen">
-      <header className="sticky top-0 z-30 border-b border-gray-200 bg-white/95 backdrop-blur dark:border-gray-800 dark:bg-gray-950/95">
+      <header className="sticky top-0 z-30 border-b border-line bg-surface/95 backdrop-blur">
         {header}
       </header>
       <div className="flex items-start">
         <aside
-          className="sticky top-[var(--header-h)] hidden h-[calc(100vh-var(--header-h))] w-72 shrink-0 overflow-y-auto border-r border-gray-200 md:block dark:border-gray-800"
+          className="sticky top-[var(--header-h)] hidden h-[calc(100vh-var(--header-h))] w-72 shrink-0 overflow-y-auto border-r border-line md:block"
           aria-label="Navigation"
         >
           {rail}

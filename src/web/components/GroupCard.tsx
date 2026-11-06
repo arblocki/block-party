@@ -10,7 +10,7 @@ import { AllReviewed, countHunks, HunkList } from './HunkList';
 import { RiskBadge } from './RiskBadge';
 
 const stepBtn =
-  'rounded border border-gray-300 bg-white px-2 py-0.5 text-sm hover:bg-gray-50 disabled:opacity-40 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800';
+  'rounded-md border border-line bg-surface-elevated px-2 py-0.5 text-sm hover:bg-surface-hover disabled:opacity-40';
 
 /**
  * Main-pane card for one group, with its progress and a "Mark group reviewed" button. Mount with
@@ -53,11 +53,11 @@ export function GroupCard({
 
   return (
     <article>
-      <div className="rounded border border-gray-200 p-4 dark:border-gray-800">
+      <div className="rounded-md border border-line p-4">
         <div className="flex flex-wrap items-center gap-2">
           <RiskBadge group={group} />
           <h2 className="min-w-[12rem] flex-1 text-lg font-semibold">{group.title}</h2>
-          <span className="rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+          <span className="rounded-md bg-surface-hover px-2 py-0.5 text-xs text-muted">
             {group.kind}
           </span>
           <div className="flex items-center gap-1 md:hidden" data-testid="group-stepper">
@@ -70,7 +70,7 @@ export function GroupCard({
             >
               ‹
             </button>
-            <span className="text-xs text-gray-500 tabular-nums dark:text-gray-400">
+            <span className="text-xs text-muted tabular-nums">
               {neighbors.position}/{neighbors.total}
             </span>
             <button
@@ -83,9 +83,9 @@ export function GroupCard({
               ›
             </button>
           </div>
-          <span className="text-xs text-gray-500 dark:text-gray-400" data-testid="card-progress">
+          <span className="text-xs text-muted" data-testid="card-progress">
             {progress.complete && progress.total > 0 ? (
-              <span className="font-medium text-green-700 dark:text-green-400">
+              <span className="font-medium text-success">
                 ✓ {progress.reviewed === 0 ? 'auto-cleared' : 'reviewed'} ·{' '}
               </span>
             ) : null}
@@ -96,7 +96,7 @@ export function GroupCard({
           {progress.total > 0 && (
             <button
               type="button"
-              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+              className="rounded-md border border-line bg-surface-elevated px-2 py-0.5 text-xs hover:bg-surface-hover"
               onClick={() => setHunks(ids, progress.reviewed !== progress.total)}
             >
               {progress.reviewed === progress.total ? 'Unmark group' : 'Mark group reviewed'}
@@ -112,7 +112,7 @@ export function GroupCard({
         {group.riskReasons.length > 0 && (
           <div className="mt-2 text-sm">
             <div className="font-semibold">Why risky</div>
-            <ul className="list-disc pl-5 text-gray-700 dark:text-gray-300">
+            <ul className="list-disc pl-5 text-fg">
               {group.riskReasons.map((r, i) => (
                 <li key={i}>{r}</li>
               ))}
@@ -134,9 +134,7 @@ export function GroupCard({
                         checked={checked.has(id)}
                         onChange={() => onToggleVerify(id)}
                       />
-                      <span className={checked.has(id) ? 'text-gray-500 line-through' : ''}>
-                        {v}
-                      </span>
+                      <span className={checked.has(id) ? 'text-muted line-through' : ''}>{v}</span>
                     </label>
                   </li>
                 );
@@ -145,13 +143,13 @@ export function GroupCard({
           </div>
         )}
         {isFilesWithoutDiff(group) && (
-          <p className="mt-2 rounded border border-amber-300 bg-amber-50 p-2 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-200">
+          <p className="mt-2 rounded-md border border-warning/40 bg-warning-soft p-2 text-sm text-warning">
             GitHub didn't return a diff for these files — open them on GitHub to review.{' '}
             <a
               href={`${pr.url}/files`}
               target="_blank"
               rel="noreferrer"
-              className="text-blue-600 hover:underline dark:text-blue-400"
+              className="text-accent hover:underline"
             >
               PR files ↗
             </a>
@@ -165,7 +163,7 @@ export function GroupCard({
                 key={d.key}
                 type="button"
                 onClick={() => onSelect(d.key)}
-                className="text-blue-600 hover:underline dark:text-blue-400"
+                className="text-accent hover:underline"
               >
                 {d.title}
               </button>
@@ -181,7 +179,7 @@ export function GroupCard({
             {group.autoClear && (
               <button
                 type="button"
-                className="mb-3 text-sm text-blue-600 hover:underline dark:text-blue-400"
+                className="mb-3 text-sm text-accent hover:underline"
                 onClick={() => setExpanded(false)}
               >
                 Hide hunks
@@ -192,7 +190,7 @@ export function GroupCard({
         ) : (
           <button
             type="button"
-            className="rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+            className="rounded-md border border-line bg-surface-elevated px-3 py-1.5 text-sm hover:bg-surface-hover"
             onClick={() => setExpanded(true)}
           >
             Show{' '}

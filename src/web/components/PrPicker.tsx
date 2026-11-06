@@ -35,7 +35,7 @@ export function PrPicker({ repo }: { repo: RepoRef }) {
     <PickerShell
       title="Open pull requests"
       back={
-        <a href={REPOS_HREF} className="text-sm text-blue-600 hover:underline dark:text-blue-400">
+        <a href={REPOS_HREF} className="text-sm text-accent hover:underline">
           ← Repos
         </a>
       }
@@ -44,7 +44,7 @@ export function PrPicker({ repo }: { repo: RepoRef }) {
           href={`https://github.com/${repoLabel}/pulls`}
           target="_blank"
           rel="noreferrer"
-          className="font-mono text-sm text-gray-500 hover:underline dark:text-gray-400"
+          className="font-mono text-sm text-muted hover:underline"
         >
           {repoLabel} ↗
         </a>
@@ -61,20 +61,15 @@ export function PrPicker({ repo }: { repo: RepoRef }) {
       filterLabel="Filter pull requests"
       error={error && `Could not list pull requests: ${error}`}
     >
-      {pulls === null && !error && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">Loading pull requests…</p>
-      )}
+      {pulls === null && !error && <p className="text-sm text-muted">Loading pull requests…</p>}
 
       {pulls !== null && shown.length === 0 && (
-        <p className="text-sm text-gray-500 dark:text-gray-400">
+        <p className="text-sm text-muted">
           {pulls.length === 0 ? 'No open pull requests.' : 'No open pull requests match.'}
           {typedNumber && (
             <>
               {' '}
-              <a
-                href={prHref(repo, Number(typedNumber))}
-                className="text-blue-600 hover:underline dark:text-blue-400"
-              >
+              <a href={prHref(repo, Number(typedNumber))} className="text-accent hover:underline">
                 Open #{typedNumber} anyway
               </a>
             </>
@@ -93,27 +88,25 @@ export function PrPicker({ repo }: { repo: RepoRef }) {
                 className={rowClass(i === current)}
               >
                 <div className="flex items-baseline gap-2">
-                  <span className="shrink-0 font-mono text-sm text-gray-500 dark:text-gray-400">
-                    #{p.number}
-                  </span>
+                  <span className="shrink-0 font-mono text-sm text-muted">#{p.number}</span>
                   <span className="min-w-0 truncate font-medium" title={p.title}>
                     {p.title}
                   </span>
                   {p.draft && (
-                    <span className="shrink-0 rounded border border-gray-300 px-1.5 text-xs text-gray-600 dark:border-gray-600 dark:text-gray-300">
+                    <span className="shrink-0 rounded-md border border-line px-1.5 text-xs text-muted">
                       Draft
                     </span>
                   )}
                   {p.labels.map((l) => (
                     <span
                       key={l}
-                      className="shrink-0 rounded-full bg-gray-100 px-2 text-xs text-gray-700 dark:bg-gray-800 dark:text-gray-300"
+                      className="shrink-0 rounded-full bg-surface-hover px-2 text-xs text-fg"
                     >
                       {l}
                     </span>
                   ))}
                 </div>
-                <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-gray-500 dark:text-gray-400">
+                <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted">
                   <span>{p.author}</span>
                   <span className="font-mono">
                     {p.headRef} → {p.baseRef}
@@ -129,7 +122,7 @@ export function PrPicker({ repo }: { repo: RepoRef }) {
         </ul>
       )}
       {pulls !== null && pulls.length >= 500 && (
-        <p className="mt-2 text-xs text-gray-500 dark:text-gray-400">
+        <p className="mt-2 text-xs text-muted">
           Showing the 500 most recently updated open pull requests.
         </p>
       )}

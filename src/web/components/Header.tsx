@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { pullsHref } from '../lib/route';
 import { useDraftCount, useReview } from '../state';
+import { ThemeToggle } from './ThemeToggle';
 
 const btn =
-  'rounded border border-gray-300 bg-white px-2.5 py-1 text-sm hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800';
+  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
 
 export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: ReactNode }) {
   const {
@@ -42,7 +43,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
         <div
           role="alert"
           data-testid="incomplete-banner"
-          className="border-b border-red-300 bg-red-100 px-4 py-2 text-sm font-medium text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+          className="border-b border-error/40 bg-error-soft px-4 py-2 text-sm font-medium text-error"
         >
           GitHub only returned {incomplete.fetchedFiles} of {incomplete.changedFiles} changed files.
           This view is incomplete — review the rest on GitHub.{' '}
@@ -60,14 +61,14 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
         <div
           role="alert"
           data-testid="refresh-error"
-          className="flex items-center gap-2 border-b border-red-300 bg-red-50 px-4 py-1.5 text-sm text-red-900 dark:border-red-800 dark:bg-red-950 dark:text-red-200"
+          className="flex items-center gap-2 border-b border-error/40 bg-error-soft px-4 py-1.5 text-sm text-error"
         >
           <span className="min-w-0 flex-1">
             Refresh failed, showing the previous data: {refreshError}
           </span>
           <button
             type="button"
-            className="shrink-0 rounded px-1.5 hover:bg-red-100 dark:hover:bg-red-900"
+            className="shrink-0 rounded-md px-1.5 hover:bg-error-soft"
             aria-label="Dismiss"
             onClick={dismissRefreshError}
           >
@@ -80,7 +81,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
           <div className="flex items-baseline gap-2">
             <a
               href={pullsHref(session.pr)}
-              className="shrink-0 text-sm text-blue-600 hover:underline dark:text-blue-400"
+              className="shrink-0 text-sm text-accent hover:underline"
               title="All open pull requests"
               onClick={(e) => {
                 if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return;
@@ -98,17 +99,17 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
             >
               ← PRs
             </a>
-            <span className="shrink-0 font-mono text-sm text-gray-500 dark:text-gray-400">
+            <span className="shrink-0 font-mono text-sm text-muted">
               {session.pr.owner}/{session.pr.repo} #{session.pr.number}
             </span>
             <h1 className="truncate text-base font-semibold" title={pr.title}>
               {pr.title}
             </h1>
           </div>
-          <div className="flex flex-wrap items-center gap-x-3 text-xs text-gray-500 dark:text-gray-400">
+          <div className="flex flex-wrap items-center gap-x-3 text-xs text-muted">
             <span>
-              <span className="text-green-700 dark:text-green-400">+{pr.additions}</span>{' '}
-              <span className="text-red-700 dark:text-red-400">−{pr.deletions}</span>
+              <span className="text-success">+{pr.additions}</span>{' '}
+              <span className="text-error">−{pr.deletions}</span>
             </span>
             <span>
               {incomplete
@@ -125,14 +126,14 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
               href={pr.url}
               target="_blank"
               rel="noreferrer"
-              className="text-blue-600 hover:underline dark:text-blue-400"
+              className="text-accent hover:underline"
             >
               View on GitHub ↗
             </a>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <label className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
+          <label className="flex items-center gap-1 text-sm text-muted">
             <input
               type="checkbox"
               checked={hideWhitespace}
@@ -140,7 +141,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
             />
             Hide whitespace
           </label>
-          <div className="flex overflow-hidden rounded border border-gray-300 text-sm dark:border-gray-700">
+          <div className="flex overflow-hidden rounded-md border border-line text-sm">
             {(['unified', 'split'] as const).map((v) => (
               <button
                 key={v}
@@ -148,8 +149,8 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
                 aria-pressed={viewType === v}
                 className={`px-2.5 py-1 capitalize ${
                   viewType === v
-                    ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900'
-                    : 'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+                    ? 'bg-accent-soft text-accent'
+                    : 'bg-surface-elevated hover:bg-surface-hover'
                 }`}
                 onClick={() => setViewType(v)}
               >
@@ -157,6 +158,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
               </button>
             ))}
           </div>
+          <ThemeToggle />
           <button
             type="button"
             className={btn}
@@ -167,7 +169,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
           </button>
           <button
             type="button"
-            className="rounded bg-green-600 px-3 py-1 text-sm font-medium text-white hover:bg-green-700"
+            className="rounded-md bg-accent px-3 py-1 text-sm font-medium text-accent-fg hover:bg-accent-hover"
             onClick={onSubmit}
           >
             Submit review ({draftCount} {draftCount === 1 ? 'draft' : 'drafts'})

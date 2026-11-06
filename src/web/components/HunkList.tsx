@@ -55,12 +55,12 @@ export function AllReviewed({ sections }: { sections: DiffSection[] }) {
   const files = sections.length - sections.filter((s) => s.hunks.length > 0).length;
   const count = hunks + files;
   return (
-    <div className="rounded border border-green-300 bg-green-50 p-3 text-sm text-green-900 dark:border-green-800 dark:bg-green-950/50 dark:text-green-200">
+    <div className="rounded-md border border-success/40 bg-success-soft p-3 text-sm text-success">
       All {count} {itemsLabel(count, hunks > 0, files > 0)} {count === 1 ? 'is' : 'are'} reviewed
       and hidden.{' '}
       <button
         type="button"
-        className="text-blue-600 hover:underline dark:text-blue-400"
+        className="text-accent hover:underline"
         onClick={() => setHideReviewed(false)}
       >
         Show reviewed

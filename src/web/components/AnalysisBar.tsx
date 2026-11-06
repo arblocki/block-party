@@ -4,9 +4,8 @@ import { HideReviewedToggle } from './ReReviewBanner';
 import { usageParts, VIEW_LABELS, type ViewMode } from '../lib/groups';
 
 const btn =
-  'rounded border border-gray-300 bg-white px-2.5 py-1 text-sm hover:bg-gray-50 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800';
-const input =
-  'rounded border border-gray-300 bg-white px-1.5 py-1 text-sm dark:border-gray-700 dark:bg-gray-900';
+  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
+const input = 'rounded-md border border-line bg-surface px-1.5 py-1 text-sm';
 
 /** Second header row: view switcher, provider/model, Re-analyze, usage line, and PR summary. */
 export function AnalysisBar({
@@ -45,9 +44,9 @@ export function AnalysisBar({
   };
 
   return (
-    <div className="border-t border-gray-100 px-4 py-1.5 dark:border-gray-900">
+    <div className="border-t border-line px-4 py-1.5">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-        <div className="flex overflow-hidden rounded border border-gray-300 text-sm dark:border-gray-700">
+        <div className="flex overflow-hidden rounded-md border border-line text-sm">
           {(Object.keys(VIEW_LABELS) as ViewMode[]).map((v) => (
             <button
               key={v}
@@ -55,8 +54,8 @@ export function AnalysisBar({
               aria-pressed={view === v}
               className={`px-2.5 py-1 ${
                 view === v
-                  ? 'bg-gray-900 text-white dark:bg-gray-100 dark:text-gray-900'
-                  : 'bg-white hover:bg-gray-50 dark:bg-gray-900 dark:hover:bg-gray-800'
+                  ? 'bg-accent-soft text-accent'
+                  : 'bg-surface-elevated hover:bg-surface-hover'
               }`}
               onClick={() => onView(v)}
             >
@@ -97,7 +96,7 @@ export function AnalysisBar({
         {idle || !result ? (
           <button
             type="button"
-            className="rounded bg-blue-600 px-2.5 py-1 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+            className="rounded-md bg-accent px-2.5 py-1 text-sm font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50"
             disabled={loading || checking}
             title="Run the provider to group this PR's hunks (uses your quota)"
             onClick={analyze}
@@ -122,20 +121,18 @@ export function AnalysisBar({
           </button>
         )}
         {analysis && (
-          <div className="flex flex-wrap items-center gap-x-2 text-xs text-gray-500 dark:text-gray-400">
+          <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
             <span>{usageParts(analysis).join(' · ')}</span>
             {result?.cached && (
-              <span className="rounded bg-blue-100 px-1.5 py-0.5 text-blue-800 dark:bg-blue-950 dark:text-blue-200">
-                cached
-              </span>
+              <span className="rounded-md bg-accent-soft px-1.5 py-0.5 text-accent">cached</span>
             )}
             {analysis.fallback && (
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <span className="rounded-md bg-warning-soft px-1.5 py-0.5 text-warning">
                 fallback grouping
               </span>
             )}
             {analysis.backfilled > 0 && (
-              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-amber-900 dark:bg-amber-950 dark:text-amber-200">
+              <span className="rounded-md bg-warning-soft px-1.5 py-0.5 text-warning">
                 {analysis.backfilled} {analysis.backfilled === 1 ? 'hunk' : 'hunks'} back-filled
               </span>
             )}
@@ -144,7 +141,7 @@ export function AnalysisBar({
       </div>
       {result?.configNotice && (
         <p
-          className="mt-1 rounded bg-blue-50 px-2 py-1 text-sm text-blue-950 dark:bg-blue-950/50 dark:text-blue-100"
+          className="mt-1 rounded-md bg-accent-soft px-2 py-1 text-sm text-accent"
           role="status"
           data-testid="config-notice"
         >
@@ -153,7 +150,7 @@ export function AnalysisBar({
       )}
       {result?.configWarning && result.configWarning !== dismissedWarning && (
         <div
-          className="mt-1 flex items-start gap-2 rounded bg-amber-50 px-2 py-1 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+          className="mt-1 flex items-start gap-2 rounded-md bg-warning-soft px-2 py-1 text-sm text-warning"
           role="alert"
           data-testid="config-warning"
         >
@@ -171,7 +168,7 @@ export function AnalysisBar({
       {analysis?.summary && (
         <div className="mt-1 flex items-start gap-2 text-sm">
           <p
-            className={`min-w-0 flex-1 text-gray-700 dark:text-gray-300 ${
+            className={`min-w-0 flex-1 text-fg ${
               summaryOpen ? 'max-h-40 overflow-y-auto' : 'line-clamp-1'
             }`}
           >
@@ -180,7 +177,7 @@ export function AnalysisBar({
           </p>
           <button
             type="button"
-            className="shrink-0 text-xs text-blue-600 hover:underline dark:text-blue-400"
+            className="shrink-0 text-xs text-accent hover:underline"
             onClick={() => setSummaryOpen((o) => !o)}
           >
             {summaryOpen ? 'Collapse' : 'Expand'}

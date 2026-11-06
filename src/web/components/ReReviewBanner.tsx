@@ -5,7 +5,7 @@ import { useReviewState } from '../reviewState';
 export function HideReviewedToggle() {
   const { hideReviewed, setHideReviewed } = useReviewState();
   return (
-    <label className="flex items-center gap-1 text-sm text-gray-600 dark:text-gray-300">
+    <label className="flex items-center gap-1 text-sm text-muted">
       <input
         type="checkbox"
         checked={hideReviewed}
@@ -25,7 +25,7 @@ export function ReReviewBanner() {
   const detail = reReview.kind === 'commits' && interdiff.newCommits.length > 0;
   return (
     <div
-      className="mb-3 rounded border border-blue-300 bg-blue-50 p-3 text-sm text-blue-950 dark:border-blue-800 dark:bg-blue-950/50 dark:text-blue-100"
+      className="mb-3 rounded-md border border-accent/40 bg-accent-soft p-3 text-sm text-accent"
       data-testid="rereview-banner"
     >
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
@@ -36,7 +36,7 @@ export function ReReviewBanner() {
         {(detail || interdiff.changedFiles.length > 0) && (
           <button
             type="button"
-            className="text-blue-700 hover:underline dark:text-blue-300"
+            className="text-accent hover:underline"
             aria-expanded={open}
             onClick={() => setOpen(!open)}
           >
@@ -47,7 +47,7 @@ export function ReReviewBanner() {
           <HideReviewedToggle />
           <button
             type="button"
-            className="rounded border border-blue-400 px-2 py-0.5 text-blue-900 hover:bg-blue-100 dark:border-blue-700 dark:text-blue-100 dark:hover:bg-blue-900/50"
+            className="rounded-md border border-accent/40 px-2 py-0.5 text-accent hover:bg-accent-soft"
             onClick={() => void markDoneReviewing()}
           >
             Done reviewing these changes

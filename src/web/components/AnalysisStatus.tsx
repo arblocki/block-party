@@ -8,17 +8,17 @@ export function AnalysisSkeleton() {
   const { elapsedS, checking } = useAnalysis();
   return (
     <div aria-busy="true" aria-label="Analyzing pull request">
-      <p className="mb-4 text-sm text-gray-600 dark:text-gray-300">
+      <p className="mb-4 text-sm text-muted">
         {checking
           ? 'Looking for a cached analysis…'
           : `Grouping hunks… ${elapsedS}s elapsed (usually 10–60s). The By file view works meanwhile.`}
       </p>
       <div className="space-y-3">
-        <div className="h-8 w-2/3 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-        <div className="h-4 w-full animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-        <div className="h-4 w-5/6 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-        <div className="h-48 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
-        <div className="h-32 animate-pulse rounded bg-gray-200 dark:bg-gray-800" />
+        <div className="h-8 w-2/3 animate-pulse rounded-md bg-surface-elevated" />
+        <div className="h-4 w-full animate-pulse rounded-md bg-surface-elevated" />
+        <div className="h-4 w-5/6 animate-pulse rounded-md bg-surface-elevated" />
+        <div className="h-48 animate-pulse rounded-md bg-surface-elevated" />
+        <div className="h-32 animate-pulse rounded-md bg-surface-elevated" />
       </div>
     </div>
   );
@@ -35,18 +35,15 @@ export function AnalysisIdle({ onView }: { onView(v: ViewMode): void }) {
   const { analyze, loading } = useAnalysis();
   const provider = useRequestedProvider();
   return (
-    <div
-      data-testid="analysis-idle"
-      className="rounded border border-gray-200 p-4 text-sm dark:border-gray-800"
-    >
-      <p className="text-gray-700 dark:text-gray-300">
+    <div data-testid="analysis-idle" className="rounded-md border border-line p-4 text-sm">
+      <p className="text-fg">
         This PR hasn't been analyzed{provider ? ` with ${provider}` : ''} yet. Grouping runs the
         provider and uses your subscription or API quota, so it only starts when you ask.
       </p>
       <div className="mt-3 flex gap-2">
         <button
           type="button"
-          className="rounded bg-blue-600 px-3 py-1.5 font-medium text-white hover:bg-blue-700 disabled:opacity-50"
+          className="rounded-md bg-accent px-3 py-1.5 font-medium text-accent-fg hover:bg-accent-hover disabled:opacity-50"
           disabled={loading}
           onClick={analyze}
         >
@@ -54,7 +51,7 @@ export function AnalysisIdle({ onView }: { onView(v: ViewMode): void }) {
         </button>
         <button
           type="button"
-          className="rounded border border-gray-300 bg-white px-3 py-1.5 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+          className="rounded-md border border-line bg-surface px-3 py-1.5 hover:bg-surface-hover"
           onClick={() => onView('file')}
         >
           Review by file
@@ -72,7 +69,7 @@ export function AnalysisError({ view, onView }: { view: ViewMode; onView(v: View
   return (
     <div
       role="alert"
-      className="mb-3 rounded border border-red-300 bg-red-50 p-3 text-sm text-red-900 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+      className="mb-3 rounded-md border border-error/40 bg-error-soft p-3 text-sm text-error"
     >
       <div className="font-semibold">{info.title}</div>
       <p className="mt-1">{info.hint}</p>
@@ -94,22 +91,17 @@ export function AnalysisError({ view, onView }: { view: ViewMode; onView(v: View
 /** A successful analysis that found nothing to group. */
 export function AnalysisEmpty({ summary, onView }: { summary: string; onView(v: ViewMode): void }) {
   return (
-    <div
-      data-testid="analysis-empty"
-      className="rounded border border-gray-200 p-4 dark:border-gray-800"
-    >
+    <div data-testid="analysis-empty" className="rounded-md border border-line p-4">
       {summary && (
         <p className="mb-3 text-sm">
           <span className="font-semibold">Summary: </span>
           {summary}
         </p>
       )}
-      <p className="text-sm text-gray-700 dark:text-gray-300">
-        No groups to review — the analysis found nothing to group.
-      </p>
+      <p className="text-sm text-fg">No groups to review — the analysis found nothing to group.</p>
       <button
         type="button"
-        className="mt-3 rounded border border-gray-300 bg-white px-3 py-1.5 text-sm hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-900 dark:hover:bg-gray-800"
+        className="mt-3 rounded-md border border-line bg-surface-elevated px-3 py-1.5 text-sm hover:bg-surface-hover"
         onClick={() => onView('file')}
       >
         Review by file
@@ -135,7 +127,7 @@ export function ProviderNotice() {
     <p
       role="status"
       data-testid="provider-notice"
-      className="mb-3 rounded bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+      className="mb-3 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning"
     >
       {text}
     </p>
@@ -152,7 +144,7 @@ export function AnalysisBanner() {
       <p
         role="status"
         data-testid="stale-banner"
-        className="mb-3 flex items-center gap-2 rounded bg-amber-50 px-3 py-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+        className="mb-3 flex items-center gap-2 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning"
       >
         {loading && (
           <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
@@ -172,7 +164,7 @@ export function AnalysisBanner() {
       <p
         role="status"
         data-testid="idle-banner"
-        className="mb-3 flex flex-wrap items-center gap-2 rounded bg-gray-50 px-3 py-2 text-sm text-gray-700 dark:bg-gray-900 dark:text-gray-300"
+        className="mb-3 flex flex-wrap items-center gap-2 rounded-md bg-surface-elevated px-3 py-2 text-sm text-fg"
       >
         Not analyzed yet. Grouping by intent and risk uses your provider quota.
         <button type="button" className="font-medium underline" onClick={analyze}>
@@ -183,7 +175,7 @@ export function AnalysisBanner() {
   }
   if (!loading) return null;
   return (
-    <p className="mb-3 flex items-center gap-2 rounded bg-blue-50 px-3 py-2 text-sm text-blue-900 dark:bg-blue-950 dark:text-blue-200">
+    <p className="mb-3 flex items-center gap-2 rounded-md bg-accent-soft px-3 py-2 text-sm text-accent">
       <span className="inline-block size-3 animate-spin rounded-full border-2 border-current border-t-transparent" />
       Grouping in the background… {elapsedS}s. Keep reviewing by file; groups appear when ready.
     </p>

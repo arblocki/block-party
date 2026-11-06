@@ -136,40 +136,40 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
   const done = phase.kind === 'done';
   const fallbackCount = items.filter((i) => i.kind === 'fallback').length;
   const outdatedCount = items.filter((i) => i.kind === 'outdated').length;
-  const btn = 'rounded px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50';
+  const btn = 'rounded-md px-3 py-1.5 text-sm font-medium text-accent-fg disabled:opacity-50';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/50 p-4 sm:pt-16"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-[var(--overlay)] p-4 sm:pt-16"
       role="dialog"
       aria-modal="true"
       aria-label="Submit review"
       onClick={(e) => e.target === e.currentTarget && closable && onClose()}
     >
-      <div className="w-full max-w-2xl rounded-lg border border-gray-200 bg-white p-4 shadow-xl dark:border-gray-700 dark:bg-gray-900">
+      <div className="w-full max-w-2xl rounded-xl border border-line bg-surface p-4 shadow-xl">
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Submit review</h2>
-          <button type="button" className="text-gray-500" aria-label="Close" onClick={onClose}>
+          <button type="button" className="text-muted" aria-label="Close" onClick={onClose}>
             ✕
           </button>
         </div>
 
         {done ? (
           <div data-testid="submit-success">
-            <p className="text-green-700 dark:text-green-400">Review submitted.</p>
+            <p className="text-success">Review submitted.</p>
             <p className="mt-1 text-sm">
               <a
                 href={phase.result.reviewUrl}
                 target="_blank"
                 rel="noreferrer"
-                className="text-blue-600 hover:underline dark:text-blue-400"
+                className="text-accent hover:underline"
               >
                 View the review on GitHub ↗
               </a>
             </p>
             {phase.refreshError !== undefined && (
               <div
-                className="mt-2 rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                className="mt-2 rounded-md border border-warning/40 bg-warning-soft p-2 text-sm text-warning"
                 role="alert"
                 data-testid="refresh-warning"
               >
@@ -178,7 +178,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                   <button
                     type="button"
                     disabled={retryingRefresh}
-                    className={`${btn} bg-amber-600 hover:bg-amber-700`}
+                    className={`${btn} bg-warning hover:bg-warning/85`}
                     onClick={() => void retryRefresh()}
                   >
                     {retryingRefresh ? 'Refreshing…' : 'Retry refresh'}
@@ -187,18 +187,18 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
             {phase.result.fallbacks.length > 0 && (
-              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+              <p className="mt-1 text-sm text-muted">
                 {phase.result.fallbacks.length} comment(s) outside the diff were added to the review
                 body.
               </p>
             )}
             {phase.result.outdated.length > 0 && (
-              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+              <p className="mt-1 text-sm text-muted">
                 {phase.result.outdated.length} outdated comment(s) were added to the review body.
               </p>
             )}
             {phase.result.keptDrafts.length > 0 && (
-              <p className="mt-1 text-sm text-gray-600 dark:text-gray-300">
+              <p className="mt-1 text-sm text-muted">
                 {phase.result.keptDrafts.length} draft(s) were edited during submission and were
                 kept as drafts.
               </p>
@@ -206,7 +206,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
             <div className="mt-4 text-right">
               <button
                 type="button"
-                className="rounded border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+                className="rounded-md border border-line px-3 py-1.5 text-sm"
                 onClick={onClose}
               >
                 Close
@@ -215,24 +215,21 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
           </div>
         ) : (
           <>
-            <h3 className="text-xs font-semibold tracking-wide text-gray-500 uppercase dark:text-gray-400">
+            <h3 className="text-xs font-semibold tracking-wide text-muted uppercase">
               Drafts ({items.length})
             </h3>
             {items.length === 0 ? (
-              <p className="py-2 text-sm text-gray-500 dark:text-gray-400">No inline drafts.</p>
+              <p className="py-2 text-sm text-muted">No inline drafts.</p>
             ) : (
               <ul className="mt-1 max-h-64 space-y-1 overflow-y-auto">
                 {items.map(({ draft, kind }) => (
-                  <li
-                    key={draft.id}
-                    className="rounded border border-gray-200 p-2 text-sm dark:border-gray-700"
-                  >
+                  <li key={draft.id} className="rounded-md border border-line p-2 text-sm">
                     <div className="flex items-center gap-2 font-mono text-xs">
                       <span className="min-w-0 flex-1 truncate">
                         {draft.path}:{rangeLabel(draft)}
                       </span>
                       {kind !== 'inline' && (
-                        <span className="shrink-0 rounded bg-amber-100 px-1.5 font-sans text-amber-900 dark:bg-amber-900/40 dark:text-amber-200">
+                        <span className="shrink-0 rounded-md bg-warning-soft px-1.5 font-sans text-warning">
                           {kind === 'outdated'
                             ? 'outdated — will go into the review body'
                             : 'goes in review body'}
@@ -245,14 +242,14 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
               </ul>
             )}
             {fallbackCount > 0 && (
-              <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+              <p className="mt-2 text-xs text-warning">
                 {fallbackCount} comment(s) are outside the diff, so GitHub can&apos;t place them
                 inline. They are appended to the review body as <code>path:line — comment</code>.
               </p>
             )}
             {headMoved && (
               <div
-                className="mt-3 rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                className="mt-3 rounded-md border border-warning/40 bg-warning-soft p-2 text-sm text-warning"
                 data-testid="head-moved-warning"
               >
                 The PR head moved to <code>{liveHead.slice(0, 7)}</code> since this page loaded (
@@ -262,7 +259,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                   <button
                     type="button"
                     disabled={refreshing}
-                    className={`${btn} bg-amber-600 hover:bg-amber-700`}
+                    className={`${btn} bg-warning hover:bg-warning/85`}
                     onClick={() => void refresh()}
                   >
                     {refreshing ? 'Refreshing…' : 'Refresh PR'}
@@ -272,7 +269,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
             )}
 
             {outdatedCount > 0 && (
-              <p className="mt-2 text-xs text-amber-800 dark:text-amber-300">
+              <p className="mt-2 text-xs text-warning">
                 {outdatedCount} comment(s) were written against an older head, so their line numbers
                 may not match. They are appended to the review body, never posted inline.
               </p>
@@ -285,13 +282,13 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
               id="review-body"
               value={body}
               rows={4}
-              className="mt-1 w-full resize-y rounded border border-gray-300 bg-white p-2 text-sm dark:border-gray-700 dark:bg-gray-950"
+              className="mt-1 w-full resize-y rounded-md border border-line bg-surface p-2 text-sm"
               onChange={(e) => setBody(e.target.value)}
             />
 
             {phase.kind === 'head_moved' && (
               <div
-                className="mt-3 rounded border border-amber-400 bg-amber-50 p-2 text-sm text-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                className="mt-3 rounded-md border border-warning/40 bg-warning-soft p-2 text-sm text-warning"
                 data-testid="head-moved"
               >
                 The PR head moved to <code>{phase.currentHeadSha.slice(0, 7)}</code> since you
@@ -300,7 +297,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                 <div className="mt-2">
                   <button
                     type="button"
-                    className={`${btn} bg-amber-600 hover:bg-amber-700`}
+                    className={`${btn} bg-warning hover:bg-warning/85`}
                     onClick={() => void submit(phase.event, true)}
                   >
                     Submit anyway
@@ -310,7 +307,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
             )}
             {phase.kind === 'unsynced' && (
               <div
-                className="mt-3 rounded border border-red-400 bg-red-50 p-2 text-sm text-red-900 dark:bg-red-950 dark:text-red-200"
+                className="mt-3 rounded-md border border-error/40 bg-error-soft p-2 text-sm text-error"
                 role="alert"
                 data-testid="unsynced-drafts"
               >
@@ -325,7 +322,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                 <div className="mt-2">
                   <button
                     type="button"
-                    className={`${btn} bg-red-600 hover:bg-red-700`}
+                    className={`${btn} bg-error hover:bg-error/85`}
                     onClick={() => void retrySaving()}
                   >
                     Retry saving
@@ -334,7 +331,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
             {phase.kind === 'error' && (
-              <p className="mt-3 text-sm text-red-600 dark:text-red-400" role="alert">
+              <p className="mt-3 text-sm text-error" role="alert">
                 {phase.message}
               </p>
             )}
@@ -342,7 +339,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
             <div className="mt-4 flex flex-wrap justify-end gap-2">
               <button
                 type="button"
-                className="rounded border border-gray-300 px-3 py-1.5 text-sm dark:border-gray-700"
+                className="rounded-md border border-line px-3 py-1.5 text-sm"
                 onClick={onClose}
                 disabled={phase.kind === 'submitting'}
               >
@@ -353,7 +350,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                   <button
                     type="button"
                     disabled={busy}
-                    className={`${btn} bg-red-600 hover:bg-red-700`}
+                    className={`${btn} bg-error hover:bg-error/85`}
                     onClick={() => void submit('REQUEST_CHANGES')}
                   >
                     Request changes
@@ -361,7 +358,7 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
                   <button
                     type="button"
                     disabled={busy}
-                    className={`${btn} bg-green-600 hover:bg-green-700`}
+                    className={`${btn} bg-success hover:bg-success/85`}
                     onClick={() => void submit('APPROVE')}
                   >
                     Approve
@@ -371,14 +368,14 @@ export function SubmitModal({ onClose }: { onClose: () => void }) {
               <button
                 type="button"
                 disabled={busy}
-                className={`${btn} bg-blue-600 hover:bg-blue-700`}
+                className={`${btn} bg-accent hover:bg-accent-hover`}
                 onClick={() => void submit('COMMENT')}
               >
                 {phase.kind === 'submitting' ? 'Submitting…' : 'Comment'}
               </button>
             </div>
             {isSelfReview && (
-              <p className="mt-2 text-right text-xs text-gray-500 dark:text-gray-400">
+              <p className="mt-2 text-right text-xs text-muted">
                 This is your own PR, so GitHub only allows submitting as a comment.
               </p>
             )}
