@@ -366,3 +366,106 @@ checks:
     expect(d.warnings[0]).toMatch(/bad\.yml/);
   });
 });
+
+describe('fix round 1 regressions', () => {
+  it('round-trips commands with commas, braces, brackets, colons, quotes and #', () => {
+    const runs = [
+      'echo a,b',
+      'echo {foo}',
+      'echo [x, y]',
+      'echo "a: b" # c',
+      "echo 'it''s' && echo {a,b}",
+      'node -e "console.log({a:1})"',
+      'printf a\nprintf b,c',
+    ];
+    const p = {
+      source: 'workflows' as const,
+      workflows: [],
+      warnings: [],
+      checks: runs.map((run, i) => ({
+        name: `c${i}`,
+        run,
+        ci: `ci.yml#j/${i}`,
+        workingDirectory: 'a, b: {c}',
+      })),
+    };
+    const parsed = parseChecksConfig(renderChecksYaml(p));
+    expect(parsed?.required.map((c) => c.run)).toEqual(runs);
+    expect(parsed?.required.every((c) => c.cwd === 'a, b: {c}')).toBe(true);
+    expect(parsed?.required).toHaveLength(runs.length);
+  });
+
+  it('resolves working-directory: step > job defaults > workflow defaults', () => {
+    const r = wf(
+      'ci.yml',
+      `on: pull_request
+defaults:
+  run:
+    working-directory: root
+jobs:
+  a:
+    steps:
+      - run: npm test
+  b:
+    defaults:
+      run:
+        working-directory: packages/b
+    steps:
+      - run: npm test
+      - run: npm run lint
+        working-directory: other
+`,
+    );
+    const p = proposeFromWorkflows([r]);
+    expect(p.checks.map((c) => c.workingDirectory)).toEqual(['root', 'packages/b', 'other']);
+  });
+
+  it('flags expression working directories for review', () => {
+    const p = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request
+jobs:
+  a:
+    defaults:
+      run:
+        working-directory: \${{ matrix.pkg }}
+    steps:
+      - run: npm test
+`,
+      ),
+    ]);
+    expect(p.checks[0]?.needsReview).toContain('working directory');
+  });
+
+  it('does not emit guarded or expression install commands as active setup', () => {
+    const expr = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request\njobs:\n  a:\n    steps:\n      - run: npm ci --prefix \${{ matrix.package }}\n      - run: npm test\n`,
+      ),
+    ]);
+    expect(expr.setup).toBeUndefined();
+    expect(expr.setupNeedsReview?.reason).toContain('${{ }}');
+    const yaml = renderChecksYaml(expr);
+    expect(yaml).toContain('# NEEDS REVIEW');
+    expect(parseChecksConfig(yaml)?.setup).toBeUndefined();
+
+    const guarded = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request\njobs:\n  a:\n    steps:\n      - if: github.ref == 'refs/heads/main'\n        run: npm ci\n      - run: npm test\n`,
+      ),
+    ]);
+    expect(guarded.setup).toBeUndefined();
+    expect(guarded.setupNeedsReview?.reason).toContain('condition');
+
+    const jobGuarded = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request\njobs:\n  a:\n    if: false\n    steps:\n      - run: npm ci\n  b:\n    steps:\n      - run: yarn install --frozen-lockfile\n`,
+      ),
+    ]);
+    expect(jobGuarded.setup).toBe('yarn install --frozen-lockfile');
+  });
+});

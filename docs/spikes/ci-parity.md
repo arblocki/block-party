@@ -48,6 +48,9 @@ checks:
   steps inside them are invisible to proposal and drift.
 - Env, secrets, services containers, and `runs-on` are ignored, so a proposed command may need
   environment the local run lacks.
+- Working directory resolves step > job `defaults.run` > workflow `defaults.run`. Install steps with a
+  condition, `${{ }}`, or their own working directory are not emitted as `setup`; they are rendered
+  as a commented-out `setup` with a review note.
 - `cwd` is the name chosen for a step's `working-directory`; ARCHITECTURE 5.4 does not specify it.
 
 ## Notes for Phase 1

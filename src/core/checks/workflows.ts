@@ -79,16 +79,31 @@ function parseMatrix(strategy: unknown): { keys: string[]; dynamic: boolean } {
   return { keys: Object.keys(matrix), dynamic: false };
 }
 
-function parseStep(raw: unknown, index: number): WorkflowStep | undefined {
+function runDefaults(raw: unknown): { workingDirectory?: string; shell?: string } {
+  if (!isObj(raw) || !isObj(raw['defaults'])) return {};
+  const run = raw['defaults']['run'];
+  if (!isObj(run)) return {};
+  const out: { workingDirectory?: string; shell?: string } = {};
+  const wd = str(run['working-directory']);
+  if (wd !== undefined) out.workingDirectory = wd;
+  const shell = str(run['shell']);
+  if (shell !== undefined) out.shell = shell;
+  return out;
+}
+
+type RunDefaults = ReturnType<typeof runDefaults>;
+
+function parseStep(raw: unknown, index: number, defaults: RunDefaults): WorkflowStep | undefined {
   if (!isObj(raw)) return undefined;
   const name = str(raw['name']);
   const base = name !== undefined ? { name } : {};
   const run = raw['run'];
   if (typeof run === 'string') {
     const step: RunStep = { kind: 'run', index, ...base, command: run.trim() };
-    const wd = str(raw['working-directory']);
+    // Effective values: step > job defaults.run > workflow defaults.run.
+    const wd = str(raw['working-directory']) ?? defaults.workingDirectory;
     if (wd !== undefined) step.workingDirectory = wd;
-    const shell = str(raw['shell']);
+    const shell = str(raw['shell']) ?? defaults.shell;
     if (shell !== undefined) step.shell = shell;
     const cond = str(raw['if']);
     if (cond !== undefined) step.condition = cond;
@@ -99,7 +114,7 @@ function parseStep(raw: unknown, index: number): WorkflowStep | undefined {
   return undefined;
 }
 
-function parseJob(id: string, raw: unknown): WorkflowJob | undefined {
+function parseJob(id: string, raw: unknown, wfDefaults: RunDefaults): WorkflowJob | undefined {
   if (!isObj(raw)) return undefined;
   const needsRaw = raw['needs'];
   const needs =
@@ -109,10 +124,11 @@ function parseJob(id: string, raw: unknown): WorkflowJob | undefined {
         ? needsRaw.filter((n): n is string => typeof n === 'string')
         : [];
   const matrix = parseMatrix(raw['strategy']);
+  const defaults = { ...wfDefaults, ...runDefaults(raw) };
   const steps: WorkflowStep[] = [];
   if (Array.isArray(raw['steps'])) {
     raw['steps'].forEach((s: unknown, i) => {
-      const step = parseStep(s, i);
+      const step = parseStep(s, i, defaults);
       if (step) steps.push(step);
     });
   }
@@ -152,7 +168,7 @@ export function parseWorkflow(file: string, text: string): ParseWorkflowResult {
   const events = triggerEvents(raw['on'] ?? raw['true']);
   const jobs: WorkflowJob[] = [];
   for (const [id, j] of Object.entries(jobsRaw)) {
-    const job = parseJob(id, j);
+    const job = parseJob(id, j, runDefaults(raw));
     if (job) jobs.push(job);
   }
   const workflow: Workflow = {

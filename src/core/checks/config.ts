@@ -47,16 +47,23 @@ export function parseChecksConfig(text: string): ChecksConfig | undefined {
   return parsed.data;
 }
 
+/** Block-context scalar (used for top-level keys). */
 function scalar(s: string): string {
-  // Multi-line strings stay inside the flow mapping as a double-quoted scalar with \n escapes.
   if (s.includes('\n')) return JSON.stringify(s);
   return stringifyYaml(s, { lineWidth: 0 }).trimEnd();
 }
 
+/** Scalar safe inside a flow mapping: the yaml library quotes commas, braces, colons, etc. */
+function flowScalar(s: string): string {
+  if (s.includes('\n')) return JSON.stringify(s);
+  const out = stringifyYaml({ v: s }, { collectionStyle: 'flow', lineWidth: 0 }).trimEnd();
+  return out.replace(/^\{ v: /, '').replace(/ \}$/, '');
+}
+
 function renderCheck(c: ProposedCheck): string {
-  const parts = [`name: ${scalar(c.name)}`, `run: ${scalar(c.run)}`];
-  if (c.ci) parts.push(`ci: ${scalar(c.ci)}`);
-  if (c.workingDirectory) parts.push(`cwd: ${scalar(c.workingDirectory)}`);
+  const parts = [`name: ${flowScalar(c.name)}`, `run: ${flowScalar(c.run)}`];
+  if (c.ci) parts.push(`ci: ${flowScalar(c.ci)}`);
+  if (c.workingDirectory) parts.push(`cwd: ${flowScalar(c.workingDirectory)}`);
   return `{ ${parts.join(', ')} }`;
 }
 
@@ -69,6 +76,10 @@ export function renderChecksYaml(p: ChecksProposal): string {
   for (const w of p.warnings) lines.push(`# ${w}`);
   lines.push('checks:');
   if (p.setup) lines.push(`  setup: ${scalar(p.setup)}`);
+  else if (p.setupNeedsReview) {
+    lines.push(`  # NEEDS REVIEW: ${p.setupNeedsReview.reason}`);
+    lines.push(`  # setup: ${scalar(p.setupNeedsReview.command)}`);
+  }
   lines.push(p.checks.some((c) => !c.needsReview) ? '  required:' : '  required: []');
   for (const c of p.checks) {
     for (const n of c.notes ?? []) lines.push(`    # ${n}`);

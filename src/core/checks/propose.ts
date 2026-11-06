@@ -23,6 +23,8 @@ export interface ChecksProposal {
   /** `package-scripts` means no workflows were found, so CI parity cannot be measured. */
   source: 'workflows' | 'package-scripts';
   setup?: string;
+  /** Set when the only setup found cannot be used as-is; `setup` is then left unset. */
+  setupNeedsReview?: { command: string; reason: string };
   checks: ProposedCheck[];
   /** Workflow files (as `.github/workflows/<file>`) parity is measured against. */
   workflows: string[];
@@ -77,6 +79,9 @@ function reviewReason(job: WorkflowJob, step: RunStep): string | undefined {
   if (hasExpression(step.command)) {
     return 'command contains a ${{ }} expression that cannot be evaluated locally';
   }
+  if (step.workingDirectory !== undefined && hasExpression(step.workingDirectory)) {
+    return 'working directory contains a ${{ }} expression that cannot be evaluated locally';
+  }
   if (step.condition !== undefined) return `step has a condition (if: ${step.condition})`;
   if (job.condition !== undefined) return `job has a condition (if: ${job.condition})`;
   return undefined;
@@ -97,12 +102,20 @@ export function proposeFromWorkflows(results: readonly ParseWorkflowResult[]): C
   const checks: ProposedCheck[] = [];
   const used = new Set<string>();
   let setup: string | undefined;
+  let setupReview: { command: string; reason: string } | undefined;
   for (const w of prWorkflows) {
     for (const job of w.jobs) {
       for (const step of job.steps) {
         if (step.kind !== 'run') continue;
         if (isSetupCommand(step.command)) {
-          setup ??= extractSetup(step.command);
+          const command = extractSetup(step.command);
+          if (!command || setup) continue;
+          let reason = reviewReason(job, step);
+          if (!reason && step.workingDirectory) {
+            reason = `install runs in working directory ${step.workingDirectory}, which setup cannot express`;
+          }
+          if (reason) setupReview ??= { command, reason };
+          else setup = command;
           continue;
         }
         const check: ProposedCheck = {
@@ -133,6 +146,7 @@ export function proposeFromWorkflows(results: readonly ParseWorkflowResult[]): C
     warnings,
   };
   if (setup) proposal.setup = setup;
+  else if (setupReview) proposal.setupNeedsReview = setupReview;
   return proposal;
 }
 
