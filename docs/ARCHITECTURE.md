@@ -9,9 +9,10 @@ This doc is updated as the system is built. Each phase in the [roadmap](#10-road
 checkboxes, and every non-obvious choice goes in the [decision log](#12-decision-log). When
 the code and this doc disagree, fix whichever one is wrong in the same PR.
 
-- **Status:** Phase 0 (design and spikes). Review UI (M0–M3 of `PLAN.md`) is shipped.
+- **Status:** Phase 0 complete (spike write-ups in [`docs/spikes/`](spikes/)); Phase 1 next.
+  Review UI (M0–M3 of `PLAN.md`) is shipped.
 - **Owner:** Drew Blocki
-- **Last updated:** 2026-11-05
+- **Last updated:** 2026-11-06
 - **Related:** [`PLAN.md`](PLAN.md) is the detailed spec for the review subsystem (diff
   grouping, risk, comments, re-review). This doc covers everything around it.
 
@@ -373,7 +374,10 @@ see [5.2.1](#521-terminal-host-herdr-or-tmux)), not a headless pipe:
   condensed for the UI (tool calls, subagent dispatches, file edits), without showing every
   token.
 - **Completion detection:** the `Stop` hook fires whenever Claude ends a turn, which does
-  not mean the stage is done. On `Stop`, block-party checks for `report.json`:
+  not mean the stage is done. The spike showed a first `Stop` while a background subagent
+  was still running (`background_tasks` non-empty), followed by a second turn. So a `Stop`
+  only counts when its `background_tasks` is empty. Then block-party checks for
+  `report.json`:
   - report present → validate it, then verify against git (section 3.2) → advance or
     escalate.
   - no report → the agent is idle mid-task (asked a question, gave up, or misunderstood).
@@ -382,10 +386,22 @@ see [5.2.1](#521-terminal-host-herdr-or-tmux)), not a headless pipe:
   permission. That becomes an inbox item immediately, since an unattended run otherwise
   stalls silently. To make prompts rare, each role gets a permission profile (edit
   freely in the worktree; allowlisted commands for checks, git, package manager; no
-  network-affecting or out-of-tree writes).
+  network-affecting or out-of-tree writes). Always pass `--permission-mode` explicitly: my
+  global default is `auto`, which silently changes what prompts. herdr reports `blocked`
+  about 2s after a permission prompt appears, several seconds before the `Notification`
+  hook, so it raises the inbox item first.
+- **Folder trust:** the first launch in an untrusted directory shows Claude Code's trust
+  dialog (default answer: exit), which blocks every hook. Trust is inherited by
+  subdirectories, so block-party trusts the worktree root
+  (`~/.block-party/worktrees`) once during setup instead of answering dialogs per run.
+- **Launching:** use herdr `layout.apply` with an argv (`{command: [...]}`) so `claude` is
+  exec'd directly in the pane. Typing a command into a fresh shell pane raced zsh startup
+  in the spike and arrived as literal bracketed-paste text.
 - **Sending a message** (e.g. fix-round findings): once the session is idle, type a short
   pointer into it through the terminal host ("Read findings at <path> and fix them per the
-  brief."), never long pasted text. If the process has exited, `claude --resume <sessionId>`
+  brief."), never long pasted text. Measured: `pane.send_input` (text plus Enter) after
+  herdr reports `idle` was submitted reliably in ~0.2s; input sent while Claude is working
+  is queued. If the process has exited, `claude --resume <sessionId>`
   in a new pane with the message. Long content always goes in files; messages only point at
   files.
 
@@ -417,7 +433,8 @@ Its control surface fits this interface closely: a local Unix socket with newlin
 JSON (`workspace.create` with `cwd`, `pane.split`, `pane.send_text`, `pane.send_keys`,
 `pane.read`, `pane.close`, `pane.wait_for_output`), a matching CLI (`herdr pane run`,
 `herdr wait agent-state`), and `events.subscribe`, which pushes events such as
-`pane.agent_state_changed`, `pane.exited` and `pane.output_matched`.
+`pane.agent_status_changed` (subscribed per `pane_id`), `pane.exited` and
+`pane.output_matched`. Spike details: [`docs/spikes/herdr-claude.md`](spikes/herdr-claude.md).
 
 | | herdr | tmux |
 |---|---|---|
@@ -428,7 +445,7 @@ JSON (`workspace.create` with `cwd`, `pane.split`, `pane.send_text`, `pane.send_
 | My own use | I'm already using it, and its UI shows every run's agent state at a glance. | Familiar, but no agent awareness. |
 | Remote | Reported to support a remote server with a local client (relevant for the Ableton machine later). Unconfirmed in its API docs. | Run tmux over ssh. |
 | Maturity | Pre-1.0 (v0.9.5 as of 2026-10-14) but widely used (~47k stars, ~100 releases). Fast-moving; the socket API has no stability promise. | Decades old, extremely stable. |
-| Identifiers | Pane IDs like `1-2` are positional and **renumber when panes close**, so they can't be stored as durable references. | Named sessions (`bp-<runId>`) are stable. |
+| Identifiers | Pane and workspace IDs are stable and never reused while the server runs (verified), but **restart from `w1` when the server restarts**. | Named sessions (`bp-<runId>`) survive. |
 | Persistence | Same model as tmux: a background session server owns the panes, so agents keep running when the TUI (or desktop app) detaches or its window closes. A **server** stop, reboot, or logout kills them; herdr then restores only the layout and screen history, not the processes. | Same: server keeps running detached; processes die with the server. |
 | State detection method | Process name + screen heuristics, polled every few hundred ms. Can break when an agent's TUI changes. | N/A |
 | License | Apache-2.0 | ISC |
@@ -442,30 +459,45 @@ inbox item sooner and help with stall detection.
 
 Mitigations for the cons:
 
-- **Unstable IDs:** label each workspace `bp-<runId>-<stage>` and resolve the pane by label
-  and `cwd` through `pane.list` every time. Never store a raw pane ID in SQLite.
+- **IDs across restarts:** label each workspace `bp-<runId>-<stage>`. Pane IDs may be
+  cached for one server lifetime, keyed by the server's start time, but reconciliation
+  always resolves panes by label (and realpath-resolved `cwd`) through `pane.list`.
 - **API churn:** pin the herdr version, and keep all herdr calls inside the one adapter
   with contract tests against a recorded socket transcript.
 - **Server lifetime:** the socket belongs to the background server, not the UI, so block-party
-  can drive herdr with no window open. On startup (and before launching a stage)
-  block-party pings the socket and starts the server if it isn't running. A herdr server
+  can drive herdr with no window open (verified). The CLI does **not** auto-start a server
+  (it returns `server_not_running`), so block-party runs `herdr --session <name> server`
+  itself when `ping` fails, with any `HERDR_*` variables stripped from the environment
+  (herdr refuses to start nested inside one of its own panes). Runs live in a dedicated
+  named session, `block-party`, so they don't crowd my everyday workspaces; I watch them
+  with `herdr --session block-party`. Its socket is
+  `~/.config/herdr/sessions/block-party/herdr.sock`. A herdr server
   restart is treated like a reboot: every pane is gone, so reconciliation marks affected
   stages `interrupted` and resumes them with `claude --resume <sessionId>` in a new pane.
   Restored screen history is never mistaken for a live process.
-- **Closing kills:** `pane.close` and closing a workspace end the processes inside. Only
-  the engine closes panes, and only after a stage has finished or been stopped on purpose.
-  "Hide this run" in the UI never maps to close.
+- **Closing kills:** `pane.close` and closing a workspace end the processes inside
+  (verified: SIGKILL, though `SessionEnd` still fires). A pane also disappears when its
+  process exits, taking the last screen with it, so block-party captures `pane.read`
+  output before closing and Phase 1 tries a wrapper that keeps the pane open after exit.
+  Only the engine closes panes, and only after a stage has finished or been stopped on
+  purpose. "Hide this run" in the UI never maps to close.
 - **Hooks side by side:** herdr's official Claude Code integration installs its own hooks,
-  and block-party adds per-run hooks via `--settings`. The spike confirms both fire and
-  don't interfere (v0.9.5 removed Codex turn hooks after timeout warnings, so hook
-  behavior does change between versions).
+  and block-party adds per-run hooks via `--settings`. Verified: both fire, and herdr's
+  sees the same session ID block-party chose. (v0.9.5 removed Codex turn hooks after
+  timeout warnings, so hook behavior does change between versions.)
 
-Resolved 2026-11-05 (from herdr's docs and release notes): agents survive detach and
-closing the window; the socket is server-owned; closing a pane kills its process; upstream
-is `herdrdev/herdr`, latest v0.9.5. Still to confirm by hand in Phase 0: `ping` with no
-window open, and whether the CLI auto-starts the server.
+Resolved 2026-11-05/06 (herdr docs, then the Phase 0 spike on v0.9.5): agents survive
+detach and closing the window; the socket works headless; the CLI doesn't auto-start the
+server; closing a pane kills its process; upstream is `herdrdev/herdr`. Pinned: v0.9.5.
 
 #### Claude adapter, headless mode (fallback, and for non-interactive roles)
+
+Verified on Claude Code 2.1.319, see [`docs/spikes/claude-headless.md`](spikes/claude-headless.md).
+Spawn with stdin ignored and put `--` before the prompt (variadic flags like
+`--allowedTools` otherwise swallow it). `--resume` must repeat the model and permission
+flags. A run killed by a signal leaves no `result` event, which is how block-party tells
+"interrupted" apart from "finished". Hooks from `--settings` fire in `-p` mode too, and
+denied tools show up as `permission_denied` events instead of hanging.
 
 `claude -p --model <m> --session-id <uuid> --output-format stream-json --verbose --agents …`
 spawned through `spawn-cli`. Events come from the JSON stream; completion is process exit
@@ -477,8 +509,9 @@ interface, so the engine doesn't care which mode is used.
 block-party supervises the Opus process; Opus supervises its Sonnet children. block-party
 doesn't micromanage subagents in Phase 1–3.
 
-- Subagents are defined in a generated `agents.json` passed via `--agents` (or written to
-  the worktree's `.claude/agents/` if that proves more reliable), with model `sonnet`, a
+- Subagents are defined in a generated `agents.json` in the run directory, passed as
+  `--agents <path>` (verified: a file path works, and unlike `.claude/agents/` it doesn't
+  leave files in the worktree), with model `sonnet`, a
   focused prompt, and restricted tools. Roles to start with: a general `implementer`, a
   `test-writer`, and a read-only `explorer`.
 - Model choices come from config (`roles.implementer.model`, `roles.subagents.*.model`), so
@@ -486,24 +519,29 @@ doesn't micromanage subagents in Phase 1–3.
 - Subagents share one worktree, so the brief requires Opus to assign disjoint file/module
   ownership when it parallelizes. Separate worktrees per subagent are a Phase 4+ idea, only
   if collisions show up in practice.
-- `SubagentStop` hook events give the UI a "3 subtasks, 2 done" view without parsing
-  conversation text.
+- `SubagentStop` hook events (with `agent_id`, `agent_type`) give the UI a "3 subtasks, 2
+  done" view without parsing conversation text. Filter out events with an empty
+  `agent_type`; Claude Code's internal agents emit those too.
 
 #### Codex adapter (reviewer)
 
 Always headless. No need to attach to a reviewer.
 
 - Runs in the run's worktree at the exact `head_sha`, read-only sandbox.
-- Two candidate interfaces, decided by a Phase 0 spike:
-  1. `codex review --base <base_sha>`: the purpose-built review command, but its output is
-     prose, so findings would need a normalization step (an LLM extraction call, which adds
-     a failure mode).
-  2. `codex exec --json --output-schema findings.schema.json -s read-only "<review prompt>"`:
-     I control the prompt (plan, acceptance criteria, prior findings) and get structured
-     output directly.
-
-  Leaning toward (2) because structured findings and plan-aware review matter more than the
-  canned review prompt. Its prompt should borrow the adversarial framing I use today.
+- **Decided (Phase 0, [`docs/spikes/codex-review.md`](spikes/codex-review.md)):**
+  `codex exec --json --output-schema findings.schema.json -s read-only --ignore-user-config -`
+  with the review prompt on stdin (and stdin closed; an open stdin hangs). It's the only
+  option that accepts the plan and prior rulings: `codex review --base` rejects a custom
+  prompt. It returns schema-valid JSON every time with real usage numbers, in 16–19s on a
+  typical change. `codex review` gives prose that only a regex can partly parse.
+- The schema must list every property in `required` (nullable instead of optional), or the
+  turn fails with `invalid_json_schema`. A run without `turn.completed` is a failure.
+- `--ignore-user-config` doesn't stop Codex from reading user skills, so the reviewer gets a
+  dedicated `CODEX_HOME` in Phase 1.
+- **Quality is not yet proven.** On two real past commits, the `exec` reviewer found
+  nothing, while bare `codex review` found one plausible P2. Both caught planted bugs.
+  Before an empty findings list is trusted, Phase 1 runs a small eval on past PRs with
+  known issues and tunes the prompt.
 - Output is validated with zod. Invalid output → one retry with the validation error →
   then the stage fails and escalates. No silently empty findings lists.
 
@@ -821,19 +859,17 @@ guesses for AI-assisted development.
 Verify the risky integration assumptions before building on them.
 
 - [x] This doc.
-- [ ] Spike: interactive Claude in a herdr pane with `--session-id`, per-run `--settings`
-      hooks writing to `events.jsonl`, `--agents` Sonnet subagents. Confirm: hook payloads
-      for `Stop`/`SubagentStop`/`Notification`, idle detection, `send_text` reliability,
-      resume. Confirm herdr `ping` with no window open, server auto-start, and that
-      herdr's own Claude hooks coexist with ours. Pin the herdr version.
-- [ ] Spike: headless `claude -p --output-format stream-json` with the same agents file
-      (the fallback), including what subagent activity shows up in the stream.
-- [ ] Spike: `codex exec --output-schema` vs `codex review --base` on a real PR of mine.
-      Compare finding quality and parse reliability. Record the decision in section 12.
-- [ ] Spike: `block-party checks init` on this repo: derive local checks from
-      `.github/workflows`, compare to what CI actually runs.
-- [ ] Draft the `plan.md` format (required sections, acceptance criteria) and the task brief
-      template.
+- [x] Spike: interactive Claude in a herdr pane: hooks, subagents, agent state, follow-up
+      messages, resume, close. [Findings](spikes/herdr-claude.md).
+- [x] Spike: headless `claude -p --output-format stream-json` fallback and a permission
+      profile for the implementer. [Findings](spikes/claude-headless.md).
+- [x] Spike: `codex exec --output-schema` vs `codex review --base`. Decision: `exec`.
+      [Findings](spikes/codex-review.md).
+- [x] CI parity core (`src/core/checks`): parse workflows, propose checks, detect drift,
+      with a `package.json` fallback for repos without CI (this one).
+      [Notes](spikes/ci-parity.md).
+- [x] Plan format, task brief template, and report schema in
+      [`docs/templates/`](templates/).
 
 ### Phase 1: One linear run from the CLI (≈1 week)
 
@@ -845,6 +881,8 @@ with no UI beyond the terminal, logs, and artifacts.
       and `report.json` completion; headless fallback.
 - [ ] Local CI runner from `.block-party.yaml`, with `checks init` and CI drift warnings.
 - [ ] Codex reviewer adapter with schema-validated findings; only runs on green local CI.
+- [ ] Reviewer eval: a few past PRs with known issues, to tune the prompt before trusting
+      "no findings".
 - [ ] One automatic fix round for P0/P1 findings, then local CI and re-review.
 - [ ] Push + draft PR at the end + head SHA confirmation + wait for GitHub CI.
 - [ ] All artifacts saved under `~/.block-party/runs/<runId>/`.
@@ -935,6 +973,12 @@ See 5.7. Built driver by driver, in the order I need them:
 
 Newest first. Each entry: date, decision, why, and what would make us revisit it.
 
+- **2026-11-06: Phase 0 results.** Reviewer uses `codex exec --output-schema`. Agents
+  file lives in the run dir and is passed as `--agents <path>`; `report.json` lives in the
+  run dir. Runs use a dedicated herdr named session (`block-party`) that block-party
+  starts itself. Panes are launched via `layout.apply` argv, not typed commands. A `Stop`
+  counts only with no background tasks. Plan format: four required sections plus at
+  least one acceptance criterion (`docs/templates/plan.md`).
 - **2026-11-05: herdr (`herdrdev/herdr`, pinned) is the default terminal host, tmux the
   fallback, behind a `TerminalHost` adapter.** Its socket API and agent-state events fit a
   Node server better than shelling out to tmux, it has the same detach/persistence model,
@@ -989,19 +1033,13 @@ Newest first. Each entry: date, decision, why, and what would make us revisit it
 
 **Open questions**
 
-- `codex review` vs `codex exec` with an output schema (Phase 0 spike).
-- `--agents` JSON vs generated `.claude/agents/*.md` in the worktree: which is more
-  reliable, and should it pollute the worktree?
-- Where should `report.json` live: in the worktree (needs a `.gitignore` entry or
-  `.git/info/exclude`) or in the run dir (needs an absolute path in the brief)? Leaning
-  toward the run dir.
 - How should the QA agent choose between several verify profiles when a diff touches
   multiple areas: run all matching profiles, or let it pick? Leaning toward all matching.
 - Computer-use driver: OpenAI's or Claude's computer-use model, and what runs on the
   remote host (VNC plus a local driver, or a small agent on the host)? Decide when that
   driver is built.
-- Plan format: how strict? Required sections (Goal, Approach, Acceptance criteria,
-  Out of scope) at minimum.
+- Implementer permissions: the spike's `Bash(pnpm:*)` allowlist would also allow
+  `pnpm add`, which the brief forbids. Phase 1 should list specific scripts instead.
 - Does block-party develop itself? Dogfooding from Phase 1 onward is the best test, but a
   run that modifies block-party while block-party is supervising it needs care (separate
   worktree, rebuild-then-restart).
