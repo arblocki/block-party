@@ -91,6 +91,9 @@ export function implementerPermissions(checkCommands: string[]): {
   disallowedTools: string[];
 } {
   const checks = checkCommands.map((c) => c.trim()).filter((c) => c.length > 0);
+  // This allowlist is not a sandbox: check commands (and `node`) already run arbitrary repo
+  // code. Its job is to keep the agent off the network, away from publishing, and from
+  // changing dependencies, and to avoid approval prompts for routine read-only commands.
   const allowedTools = [
     'Read',
     'Edit',
@@ -100,9 +103,16 @@ export function implementerPermissions(checkCommands: string[]): {
     'Bash(git status:*)',
     'Bash(git diff:*)',
     'Bash(git log:*)',
+    'Bash(git show:*)',
+    'Bash(git rev-parse:*)',
     'Bash(git add:*)',
     'Bash(git commit:*)',
     'Bash(pnpm install --frozen-lockfile)',
+    'Bash(node:*)',
+    'Bash(ls:*)',
+    'Bash(cat:*)',
+    'Bash(grep:*)',
+    'Bash(find:*)',
     ...checks.map((c) => `Bash(${c}:*)`),
   ];
   const disallowedTools = [

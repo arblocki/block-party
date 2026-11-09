@@ -22,6 +22,11 @@ export interface ImplementerStartInput {
   signal?: AbortSignal;
   /** Called as soon as the session exists (pane opened / process spawned), before the turn ends. */
   onSession?: (session: ImplementerSession) => void;
+  /**
+   * Pane mode only: called when the agent is waiting for a human permission decision. The
+   * adapter keeps waiting for the turn to end (until the timeout or abort).
+   */
+  onPermission?: (message: string) => void;
 }
 
 export type TurnOutcome =

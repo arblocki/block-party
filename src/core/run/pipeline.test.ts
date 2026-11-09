@@ -85,6 +85,7 @@ interface Opts {
   section?: unknown;
   noChecksConfig?: boolean;
   hangFirstTurn?: boolean;
+  permissionPrompts?: number;
   abortInPublish?: AbortController;
   /** Abort the signal (and fail the call) when this step runs. */
   abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
@@ -95,6 +96,7 @@ function harness(o: Opts) {
   const root = mkdtempSync(join(tmpdir(), 'bp-pipeline-'));
   const planFile = join(root, 'plan.md');
   writeFileSync(planFile, PLAN);
+  const echoed: string[] = [];
   const git = { head: 'a'.repeat(40), n: 0, dirty: false };
   const calls = {
     sends: [] as string[],
@@ -121,6 +123,7 @@ function harness(o: Opts) {
     async start(input) {
       calls.starts.push(input.prompt);
       input.onSession?.(session);
+      for (let i = 0; i < (o.permissionPrompts ?? 0); i++) input.onPermission?.(`approve ${i + 1}`);
       if (o.hangFirstTurn) await new Promise(() => undefined);
       return { session, outcome: doTurn(input) };
     },
@@ -220,7 +223,7 @@ function harness(o: Opts) {
     },
     waitForCi: async () => ({ state: o.ci ?? 'success', checks: [] }),
     github: async () => ({}) as GitHubClient,
-    createLog: (dir) => new RunLog(dir),
+    createLog: (dir) => new RunLog(dir, { echo: (l) => echoed.push(l) }),
     hookArgv: ['node', 'hook'],
     paths: {
       runDir: (id) => join(root, 'runs', id),
@@ -238,7 +241,7 @@ function harness(o: Opts) {
       },
       deps,
     );
-  return { run, calls, git, root };
+  return { run, calls, git, root, echoed };
 }
 
 function state(out: RunOutcome) {
@@ -511,5 +514,26 @@ describe('runPipeline', () => {
     expect(state(out).prNumber).toBe(9);
     expect(h.calls.published[0]!.signal).toBe(ac.signal);
     expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain('publish.stopped');
+  });
+
+  it('logs each permission wait prominently and continues once the turn ends', async () => {
+    const h = harness({ turns: [{}], permissionPrompts: 2 });
+    const out = await h.run();
+    expect(out.stage).toBe('complete');
+    const waits = h.echoed.filter((l) => l.includes('implementer.waiting_for_human'));
+    expect(waits).toHaveLength(2);
+    expect(waits[0]).toContain('⏸ Implementer needs your approval — attach: attach-cmd');
+    expect(waits[1]).toContain('approve 2');
+    expect(h.calls.checks).toBe(1);
+  });
+
+  it('tells the implementer which shell commands need no approval', async () => {
+    const out = await harness({ turns: [{}] }).run();
+    const brief = readFileSync(join(out.runDir, 'briefs', 'implement-1.md'), 'utf8');
+    expect(brief).toContain('Edit files with the Edit/Write tools, not shell scripts');
+    expect(brief).toContain('`git status`');
+    expect(brief).toContain('`pnpm test`');
+    expect(brief).toContain('`node`');
+    expect(brief).toContain('Anything else stops the run until a human approves it.');
   });
 });

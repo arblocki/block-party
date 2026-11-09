@@ -137,6 +137,37 @@ afterEach(() => {
 });
 
 describe('createPaneClaude', () => {
+  it('keeps waiting through a permission prompt until the turn ends', async () => {
+    host.onOpen = () => {
+      emitEvent('SessionStart');
+      emitEvent('Notification', { notification_type: 'permission_prompt', message: 'approve?' });
+      host.state = 'blocked';
+      setTimeout(() => {
+        host.state = 'working';
+        writeFileSync(input.reportPath, '{}');
+        emitEvent('Stop', { background_tasks: [] });
+        host.state = 'idle';
+      }, 150);
+    };
+    const prompts: string[] = [];
+    const { outcome } = await adapter().start({
+      ...input,
+      onPermission: (m) => prompts.push(m),
+    });
+    expect(prompts).toEqual(['approve?']);
+    expect(outcome).toEqual({ kind: 'report' });
+  });
+
+  it('ends as timeout when the permission prompt is never answered', async () => {
+    host.onOpen = () => {
+      emitEvent('SessionStart');
+      emitEvent('Notification', { notification_type: 'permission_prompt', message: 'approve?' });
+      host.state = 'blocked';
+    };
+    const { outcome } = await adapter().start({ ...input, timeoutMs: 200 });
+    expect(outcome).toEqual({ kind: 'timeout' });
+  });
+
   it('calls onSession right after the pane opens, before the turn ends', async () => {
     const order: string[] = [];
     host.onOpen = () => {

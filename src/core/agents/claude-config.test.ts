@@ -72,6 +72,9 @@ describe('implementerPermissions', () => {
     expect(p.allowedTools).toContain('Bash(pnpm lint:*)');
     expect(p.allowedTools).toContain('Bash(pnpm install --frozen-lockfile)');
     expect(p.allowedTools).not.toContain('Bash(pnpm:*)');
+    for (const c of ['node', 'git show', 'git rev-parse', 'ls', 'cat', 'grep', 'find']) {
+      expect(p.allowedTools).toContain(`Bash(${c}:*)`);
+    }
     for (const d of ['git push', 'curl', 'wget', 'rm -rf', 'pnpm add', 'npm install', 'gh']) {
       expect(p.disallowedTools).toContain(`Bash(${d}:*)`);
     }

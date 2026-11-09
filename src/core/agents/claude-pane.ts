@@ -222,18 +222,45 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       await sleep(t.loopMs);
     }
 
-    const watcher = opts.watcherFactory(input.eventsPath, offset);
-    const outcome = await waitForTurnEnd({
-      watcher,
-      sessionId,
-      reportPath: input.reportPath,
-      agentState: () => host.agentState(pane),
-      settleMs: t.settleMs,
-      pollMs: t.pollMs,
-      timeoutMs: input.timeoutMs,
-      signal: input.signal,
-    });
+    const outcome = await awaitTurn(pane, sessionId, input, offset);
     return { pane, outcome };
+  }
+
+  /**
+   * Waits for the turn to end. A permission prompt is not the end: report it, wait for the
+   * human to resolve it, and keep waiting within the original timeout.
+   */
+  async function awaitTurn(
+    pane: PaneRef,
+    sessionId: string,
+    input: ImplementerStartInput,
+    offset: number,
+  ): Promise<TurnOutcome> {
+    const deadline = now() + input.timeoutMs;
+    let from = offset;
+    for (;;) {
+      const outcome = await waitForTurnEnd({
+        watcher: opts.watcherFactory(input.eventsPath, from),
+        sessionId,
+        reportPath: input.reportPath,
+        agentState: () => host.agentState(pane),
+        settleMs: t.settleMs,
+        pollMs: t.pollMs,
+        timeoutMs: Math.max(1, deadline - now()),
+        signal: input.signal,
+      });
+      if (outcome.kind !== 'permission') return outcome;
+      from = fileSize(input.eventsPath);
+      emit('agent.permission_wait', { message: outcome.message });
+      input.onPermission?.(outcome.message);
+      for (;;) {
+        if (input.signal?.aborted) return { kind: 'exited', reason: 'aborted' };
+        if (now() >= deadline) return { kind: 'timeout' };
+        const state = await host.agentState(pane).catch(() => undefined);
+        if (state !== 'blocked') break;
+        await sleep(t.pollMs ?? 250);
+      }
+    }
   }
 
   async function waitIdle(pane: PaneRef, signal?: AbortSignal): Promise<boolean> {
@@ -367,16 +394,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       }
       if (got === 'aborted') return aborted;
       if (got === 'timeout') return { kind: 'no_report', detail: 'message was not submitted' };
-      return waitForTurnEnd({
-        watcher: opts.watcherFactory(input.eventsPath, offset),
-        sessionId: session.sessionId,
-        reportPath: input.reportPath,
-        agentState: () => host.agentState(pane),
-        settleMs: t.settleMs,
-        pollMs: t.pollMs,
-        timeoutMs: input.timeoutMs,
-        signal: input.signal,
-      });
+      return awaitTurn(pane, session.sessionId, input, offset);
     },
 
     async stop(session, stopOpts) {
