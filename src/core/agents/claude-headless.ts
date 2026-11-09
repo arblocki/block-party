@@ -96,6 +96,9 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     const parser = new StreamParser();
     let result: ResultEvent | undefined;
     let writes: Promise<unknown> = Promise.resolve();
+    let logError: unknown;
+    const failLog = () =>
+      new Error(`failed to write agent stream log ${streamFile}`, { cause: logError });
     const handle = (events: StreamEvent[]) => {
       for (const ev of events) {
         switch (ev.kind) {
@@ -143,13 +146,22 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
         signal: ctl.signal,
         spawnFn: opts.spawnFn,
         onStdout: (chunk) => {
-          writes = writes.then(() => appendFile(streamFile, chunk));
+          writes = writes.then(async () => {
+            if (logError) return;
+            try {
+              await appendFile(streamFile, chunk);
+            } catch (e) {
+              logError = e;
+              ctl.abort();
+            }
+          });
           handle(parser.push(chunk));
         },
       });
       code = res.code;
     } catch (err) {
-      await writes.catch(() => undefined);
+      await writes;
+      if (logError) throw failLog();
       if (err instanceof LlmError) {
         if (err.kind === 'timeout') return { kind: 'timeout' };
         if (err.kind === 'aborted') return { kind: 'exited', reason: 'stopped' };
@@ -161,6 +173,7 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     }
     handle(parser.flush());
     await writes;
+    if (logError) throw failLog();
 
     if (!result) {
       return {

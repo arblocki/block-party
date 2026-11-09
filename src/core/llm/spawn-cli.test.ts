@@ -198,3 +198,31 @@ describe('spawnCli env and stream callbacks', () => {
     expect(res.stdout).toBe('out');
   });
 });
+
+describe('spawnCli utf8 decoding', () => {
+  it('keeps a multibyte char split across chunks intact', async () => {
+    const bytes = Buffer.from('a😀b');
+    const { EventEmitter } = await import('node:events');
+    const out = new EventEmitter();
+    const ee = new EventEmitter();
+    const child = Object.assign(ee, {
+      stdin: { write: () => undefined, end: () => undefined, on: () => undefined },
+      stdout: out,
+      stderr: new EventEmitter(),
+      kill: () => undefined,
+    });
+    const seen: string[] = [];
+    const p = spawnCli({
+      command: 'x',
+      args: [],
+      onStdout: (c) => seen.push(c),
+      spawnFn: (() => child) as unknown as SpawnFn,
+    });
+    out.emit('data', bytes.subarray(0, 3));
+    out.emit('data', bytes.subarray(3));
+    ee.emit('close', 0, null);
+    const res = await p;
+    expect(seen.join('')).toBe('a😀b');
+    expect(res.stdout).toBe('a😀b');
+  });
+});

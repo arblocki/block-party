@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { LlmError } from './types.js';
 
 /** The slice of ChildProcess that spawnCli uses (easy to fake in tests). */
@@ -169,16 +170,24 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     };
     const onAbort = () => stop(new LlmError('aborted', `${command} aborted`));
 
-    const append = (cur: string, chunk: Buffer | string) =>
-      cur.length >= maxBytes ? cur : (cur + chunk.toString()).slice(0, maxBytes);
-    child.stdout.on('data', (c) => {
-      stdout = append(stdout, c);
-      opts.onStdout?.(c.toString());
-    });
-    child.stderr.on('data', (c) => {
-      stderr = append(stderr, c);
-      opts.onStderr?.(c.toString());
-    });
+    const append = (cur: string, text: string) =>
+      cur.length >= maxBytes ? cur : (cur + text).slice(0, maxBytes);
+    // Persistent decoders so a multibyte char split across chunks survives.
+    const outDec = new StringDecoder('utf8');
+    const errDec = new StringDecoder('utf8');
+    const onOut = (text: string) => {
+      if (!text) return;
+      stdout = append(stdout, text);
+      opts.onStdout?.(text);
+    };
+    const onErr = (text: string) => {
+      if (!text) return;
+      stderr = append(stderr, text);
+      opts.onStderr?.(text);
+    };
+    const dec = (d: StringDecoder, c: Buffer | string) => (typeof c === 'string' ? c : d.write(c));
+    child.stdout.on('data', (c) => onOut(dec(outDec, c)));
+    child.stderr.on('data', (c) => onErr(dec(errDec, c)));
     child.stdin.on('error', () => {
       /* process may exit before reading stdin; surfaced via close/error */
     });
@@ -190,7 +199,11 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     child.on('close', (code) => {
       leaderExited = true;
       if (stopping) settleIfStopped();
-      else finish(() => resolve({ stdout, stderr, code }));
+      else {
+        onOut(outDec.end());
+        onErr(errDec.end());
+        finish(() => resolve({ stdout, stderr, code }));
+      }
     });
 
     signal?.addEventListener('abort', onAbort, { once: true });
