@@ -132,7 +132,7 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     };
 
     const args = [...baseArgs(input), ...sessionFlag, '--', prompt];
-    let code: number | null = null;
+    let code: number | null;
     try {
       const res = await spawnCli({
         command: claudeBin,
