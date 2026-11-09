@@ -68,6 +68,7 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
 
     let settled = false;
     let timedOut = false;
+    let stopping = false;
     let leaderExited = false;
     let code: number | null = null;
     let sig: string | null = null;
@@ -113,7 +114,19 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
       }
     };
     const settleIfStopped = () => {
-      if (timedOut && leaderExited && !(pgid && groupAlive(pgid))) done();
+      if (stopping && leaderExited && !(pgid && groupAlive(pgid))) done();
+    };
+    // SIGTERM the group, SIGKILL after the grace period; settle once the group is gone.
+    const stop = () => {
+      if (stopping || settled) return;
+      stopping = true;
+      clearTimeout(timer);
+      signalTree('SIGTERM');
+      poll = setInterval(settleIfStopped, 25);
+      graceTimer = setTimeout(() => {
+        signalTree('SIGKILL');
+        hardTimer = setTimeout(done, POST_KILL_WAIT_MS);
+      }, killGraceMs);
     };
 
     child.on('error', (err) => finish(() => reject(err)));
@@ -121,19 +134,16 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
       leaderExited = true;
       code = c;
       sig = s;
-      if (timedOut) settleIfStopped();
+      if (stopping) settleIfStopped();
+      else if (pgid && groupAlive(pgid))
+        stop(); // leader left background descendants behind
       else done();
     });
 
     if (Number.isFinite(timeoutMs)) {
       timer = setTimeout(() => {
         timedOut = true;
-        signalTree('SIGTERM');
-        poll = setInterval(settleIfStopped, 25);
-        graceTimer = setTimeout(() => {
-          signalTree('SIGKILL');
-          hardTimer = setTimeout(done, POST_KILL_WAIT_MS);
-        }, killGraceMs);
+        stop();
       }, timeoutMs);
     }
   });

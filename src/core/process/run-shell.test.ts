@@ -75,4 +75,20 @@ describe('runShell', () => {
     expect(r.timedOut).toBe(true);
     expect(r.durationMs).toBeLessThan(5000);
   });
+
+  it('kills background descendants left behind when the leader exits', async () => {
+    const logPath = join(dir, 'bg.log');
+    const started = Date.now();
+    const r = await runShell({
+      command: 'sleep 30 & echo $!; exit 1',
+      cwd: dir,
+      logPath,
+      timeoutMs: 10_000,
+      killGraceMs: 200,
+    });
+    expect(r).toMatchObject({ code: 1, timedOut: false });
+    expect(Date.now() - started).toBeLessThan(5000);
+    const pid = Number(readFileSync(logPath, 'utf8').trim());
+    expect(alive(pid)).toBe(false);
+  });
 });

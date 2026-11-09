@@ -94,6 +94,22 @@ describe('git service', () => {
     expect(await git.fetchBase(local, 'main')).toEqual({ sha, source: 'local' });
   });
 
+  it('fetchBase works in a single-branch clone and refreshes stale tracking refs', async () => {
+    const other = join(root, 'other');
+    sh(root, 'clone', bare, other);
+    sh(other, 'checkout', '-b', 'feature');
+    const f1 = commit(other, 'f.txt', 'f1');
+    sh(other, 'push', 'origin', 'feature');
+
+    const sb = join(root, 'single');
+    sh(root, 'clone', '--single-branch', '--branch', 'main', bare, sb);
+    expect(await git.fetchBase(sb, 'feature')).toEqual({ sha: f1, source: 'origin' });
+
+    const f2 = commit(other, 'f2.txt', 'f2');
+    sh(other, 'push', 'origin', 'feature');
+    expect(await git.fetchBase(sb, 'feature')).toEqual({ sha: f2, source: 'origin' });
+  });
+
   it('fetchBase fails clearly when origin exists but the fetch fails', async () => {
     const r = mkdtempSync(join(root, 'bad-'));
     sh(r, 'init', '-b', 'main');
@@ -104,6 +120,7 @@ describe('git service', () => {
 
   it('rejects invalid branch names', async () => {
     await expect(git.fetchBase(clone, 'bad..name')).rejects.toThrow(/Invalid branch/);
+    await expect(git.fetchBase(clone, 'a:b')).rejects.toThrow(/Invalid branch/);
     await expect(git.fetchBase(clone, '--upload-pack=x')).rejects.toThrow(/Invalid branch/);
   });
 

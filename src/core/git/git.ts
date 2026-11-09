@@ -114,8 +114,11 @@ export function createGit(runner: GitRunner = defaultRunner) {
     ): Promise<{ sha: string; source: 'origin' | 'local' }> {
       await assertBranchName(repo, baseRef);
       if (await hasOrigin(repo)) {
-        await run(repo, ['fetch', 'origin', baseRef]);
-        const sha = (await run(repo, ['rev-parse', `origin/${baseRef}^{commit}`])).trim();
+        // Explicit refspec: single-branch clones only map their own branch, so a plain
+        // `fetch origin <ref>` would not create or update refs/remotes/origin/<ref>.
+        const tracking = `refs/remotes/origin/${baseRef}`;
+        await run(repo, ['fetch', 'origin', `+refs/heads/${baseRef}:${tracking}`]);
+        const sha = (await run(repo, ['rev-parse', `${tracking}^{commit}`])).trim();
         return { sha, source: 'origin' };
       }
       const sha = (await run(repo, ['rev-parse', `${baseRef}^{commit}`])).trim();
