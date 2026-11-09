@@ -1,5 +1,6 @@
 import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
 import { z } from 'zod';
+import type { AgentState } from '../terminal/types.js';
 import type { TurnOutcome } from './types.js';
 
 export const HookEventSchema = z.looseObject({
@@ -77,6 +78,7 @@ export type HookListener = (ev: HookEvent) => void;
 export class HookWatcher {
   private offset: number;
   private timer: ReturnType<typeof setInterval> | undefined;
+
   private listeners = new Set<HookListener>();
   private readonly intervalMs: number;
 
@@ -100,6 +102,10 @@ export class HookWatcher {
     for (const ev of events) for (const l of [...this.listeners]) l(ev);
   }
 
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+
   start(): void {
     if (this.timer) return;
     this.timer = setInterval(() => this.poll(), this.intervalMs);
@@ -115,8 +121,11 @@ export interface WaitForTurnEndOptions {
   watcher: HookWatcher;
   sessionId: string;
   reportPath: string;
-  /** Current herdr agent state (e.g. 'working', 'blocked'), if known. */
-  agentState?: () => string | undefined;
+  /**
+   * Current terminal agent state. Polled at most once per tick with no overlapping calls;
+   * a rejection counts as 'unknown'.
+   */
+  agentState?: () => Promise<AgentState | undefined>;
   settleMs?: number;
   timeoutMs: number;
   signal?: AbortSignal;
@@ -168,28 +177,40 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       }
     });
 
+    let inFlight = false;
     const tick = setInterval(() => {
-      const state = opts.agentState?.();
-      if (state === 'blocked') {
-        blockedSince ??= Date.now();
-        if (Date.now() - blockedSince > BLOCKED_MS) {
-          finish({ kind: 'permission', message: 'agent is blocked awaiting input' });
-          return;
+      if (inFlight || done) return;
+      inFlight = true;
+      const getState = opts.agentState
+        ? opts.agentState().catch((): AgentState => 'unknown')
+        : Promise.resolve<AgentState | undefined>(undefined);
+      void getState.then((state) => {
+        inFlight = false;
+        if (done) return;
+        if (state === 'blocked') {
+          blockedSince ??= Date.now();
+          if (Date.now() - blockedSince > BLOCKED_MS) {
+            finish({ kind: 'permission', message: 'agent is blocked awaiting input' });
+            return;
+          }
+        } else {
+          blockedSince = undefined;
         }
-      } else {
-        blockedSince = undefined;
-      }
-      if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
-        if (existsSync(reportPath)) finish({ kind: 'report' });
-        else if (state !== 'working') {
-          finish({ kind: 'no_report', detail: 'turn ended without report.json' });
+        if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
+          if (existsSync(reportPath)) finish({ kind: 'report' });
+          else if (state !== 'working') {
+            finish({ kind: 'no_report', detail: 'turn ended without report.json' });
+          }
         }
-      }
+      });
     }, pollMs);
 
     const timeout = setTimeout(() => finish({ kind: 'timeout' }), opts.timeoutMs);
-    if (opts.signal?.aborted) onAbort();
-    else opts.signal?.addEventListener('abort', onAbort, { once: true });
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
     watcher.start();
   });
 }

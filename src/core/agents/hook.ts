@@ -1,4 +1,4 @@
-import { appendFileSync, realpathSync } from 'node:fs';
+import { closeSync, constants, openSync, realpathSync, writeSync } from 'node:fs';
 import { basename, dirname, isAbsolute, sep } from 'node:path';
 import type { Readable } from 'node:stream';
 
@@ -58,7 +58,17 @@ export function appendHookEvent(opts: {
   }
   const ts = (opts.now?.() ?? new Date()).toISOString();
   try {
-    appendFileSync(opts.eventsPath, JSON.stringify({ ts, payload }) + '\n');
+    // O_NOFOLLOW: refuse an events.jsonl that is itself a symlink (it could point outside).
+    const fd = openSync(
+      opts.eventsPath,
+      constants.O_WRONLY | constants.O_APPEND | constants.O_CREAT | constants.O_NOFOLLOW,
+      0o600,
+    );
+    try {
+      writeSync(fd, JSON.stringify({ ts, payload }) + '\n');
+    } finally {
+      closeSync(fd);
+    }
   } catch (err) {
     return `block-party hook: append failed: ${(err as Error).message}`;
   }

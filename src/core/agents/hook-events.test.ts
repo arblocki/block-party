@@ -96,7 +96,7 @@ describe('waitForTurnEnd', () => {
 
   it('resolves no_report unless the agent is still working', async () => {
     let state = 'working';
-    const p = start({ agentState: () => state });
+    const p = start({ agentState: () => Promise.resolve(state as 'working' | 'idle') });
     add({ hook_event_name: 'Stop', session_id: 's1' });
     await vi.advanceTimersByTimeAsync(3000);
     state = 'idle';
@@ -117,7 +117,7 @@ describe('waitForTurnEnd', () => {
   });
 
   it('resolves permission when blocked for more than 3 seconds', async () => {
-    const p = start({ agentState: () => 'blocked' });
+    const p = start({ agentState: () => Promise.resolve('blocked' as const) });
     await vi.advanceTimersByTimeAsync(2500);
     await vi.advanceTimersByTimeAsync(1500);
     expect((await p).kind).toBe('permission');
@@ -153,6 +153,33 @@ describe('waitForTurnEnd', () => {
     });
     await vi.advanceTimersByTimeAsync(4000);
     expect(await p).toEqual({ kind: 'timeout' });
+  });
+
+  it('does not start the watcher for a pre-aborted signal', async () => {
+    const watcher = new HookWatcher(eventsPath);
+    const out = await start({ watcher, signal: AbortSignal.abort() });
+    expect(out).toEqual({ kind: 'exited', reason: 'aborted' });
+    expect(watcher.running).toBe(false);
+  });
+
+  it('treats a rejected agentState as unknown and never overlaps calls', async () => {
+    let calls = 0;
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const p = start({
+      agentState: async () => {
+        calls++;
+        maxInFlight = Math.max(maxInFlight, ++inFlight);
+        await new Promise((r) => setTimeout(r, 600));
+        inFlight--;
+        throw new Error('boom');
+      },
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect((await p).kind).toBe('no_report');
+    expect(maxInFlight).toBe(1);
+    expect(calls).toBeGreaterThan(0);
   });
 
   it('resolves exited on abort', async () => {

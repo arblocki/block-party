@@ -1,4 +1,11 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -46,6 +53,14 @@ describe('appendHookEvent', () => {
     mkdirSync(elsewhere);
     symlinkSync(elsewhere, join(root, 'link'));
     expect(ok(join(root, 'link', 'events.jsonl'), '{}')).toMatch(/outside/);
+  });
+
+  it('does not follow an events.jsonl symlink out of the runs root', () => {
+    const external = join(root, '..', 'external.txt');
+    writeFileSync(external, 'orig');
+    symlinkSync(external, join(runDir, 'events.jsonl'));
+    expect(ok(join(runDir, 'events.jsonl'), '{}')).toMatch(/append failed/);
+    expect(readFileSync(external, 'utf8')).toBe('orig');
   });
 
   it('drops non-object, invalid and oversized payloads', () => {
