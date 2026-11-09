@@ -1,0 +1,25 @@
+{
+  "name": "missing-acceptance-criterion",
+  "kind": "synthetic",
+  "plan": "Add a sliding-window RateLimiter.\n\nAcceptance criteria:\n1. allow(key) returns true while fewer than `limit` calls were made for that key in the last `windowMs`, else false.\n2. Limits are tracked per key independently.\n3. The constructor throws a RangeError if `limit` is not a positive integer or `windowMs` is not > 0.",
+  "files": {
+    "src/util/clock.ts": "export type Clock = () => number;\n\nexport const systemClock: Clock = () => Date.now();\n"
+  },
+  "patch": {
+    "src/util/rate-limiter.ts": "import { systemClock, type Clock } from './clock.js';\n\nexport class RateLimiter {\n  private readonly hits = new Map<string, number[]>();\n\n  constructor(\n    private readonly limit: number,\n    private readonly windowMs: number,\n    private readonly now: Clock = systemClock,\n  ) {}\n\n  allow(key: string): boolean {\n    const cutoff = this.now() - this.windowMs;\n    const recent = (this.hits.get(key) ?? []).filter((t) => t > cutoff);\n    if (recent.length >= this.limit) {\n      this.hits.set(key, recent);\n      return false;\n    }\n    recent.push(this.now());\n    this.hits.set(key, recent);\n    return true;\n  }\n}\n"
+  },
+  "expected": [
+    {
+      "path": "src/util/rate-limiter.ts",
+      "minSeverity": "P2",
+      "keywords": [
+        "rangeerror",
+        "constructor",
+        "validat",
+        "acceptance",
+        "positive integer",
+        "windowms"
+      ]
+    }
+  ]
+}

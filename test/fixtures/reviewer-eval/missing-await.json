@@ -1,0 +1,18 @@
+{
+  "name": "missing-await",
+  "kind": "synthetic",
+  "plan": "saveSettings(store, settings) persists settings. If the store write fails it must throw a SettingsError (wrapping the cause) so the caller can show an error; on success it returns true.",
+  "files": {
+    "src/settings/store.ts": "export interface Settings {\n  theme: 'light' | 'dark';\n  notifications: boolean;\n}\n\nexport interface SettingsStore {\n  write(settings: Settings): Promise<void>;\n}\n\nexport class SettingsError extends Error {\n  constructor(message: string, options?: { cause?: unknown }) {\n    super(message, options);\n    this.name = 'SettingsError';\n  }\n}\n"
+  },
+  "patch": {
+    "src/settings/save.ts": "import { SettingsError, type Settings, type SettingsStore } from './store.js';\n\nexport async function saveSettings(store: SettingsStore, settings: Settings): Promise<boolean> {\n  try {\n    store.write(settings);\n  } catch (err) {\n    throw new SettingsError('failed to save settings', { cause: err });\n  }\n  return true;\n}\n"
+  },
+  "expected": [
+    {
+      "path": "src/settings/save.ts",
+      "minSeverity": "P1",
+      "keywords": ["await", "unhandled", "rejection", "promise", "never caught", "not awaited"]
+    }
+  ]
+}

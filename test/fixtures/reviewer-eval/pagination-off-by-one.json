@@ -1,0 +1,28 @@
+{
+  "name": "pagination-off-by-one",
+  "kind": "synthetic",
+  "plan": "Add fetchAll(fetchPage, pageSize) which pages through an API that returns { items, total } and returns every item. It must return all `total` items, including the final partial page.",
+  "files": {
+    "src/api/paginate.ts": "export interface Page<T> {\n  items: T[];\n  total: number;\n}\n\nexport type FetchPage<T> = (offset: number, limit: number) => Promise<Page<T>>;\n"
+  },
+  "patch": {
+    "src/api/paginate.ts": "export interface Page<T> {\n  items: T[];\n  total: number;\n}\n\nexport type FetchPage<T> = (offset: number, limit: number) => Promise<Page<T>>;\n\nexport async function fetchAll<T>(fetchPage: FetchPage<T>, pageSize = 50): Promise<T[]> {\n  if (pageSize < 1) throw new RangeError('pageSize must be >= 1');\n  const all: T[] = [];\n  let offset = 0;\n  let total = Number.POSITIVE_INFINITY;\n  while (offset < total - 1) {\n    const page = await fetchPage(offset, pageSize);\n    all.push(...page.items);\n    total = page.total;\n    offset += pageSize;\n  }\n  return all;\n}\n"
+  },
+  "expected": [
+    {
+      "path": "src/api/paginate.ts",
+      "lines": [13, 13],
+      "minSeverity": "P1",
+      "keywords": [
+        "off-by-one",
+        "off by one",
+        "total - 1",
+        "last item",
+        "final",
+        "last page",
+        "skip",
+        "miss"
+      ]
+    }
+  ]
+}
