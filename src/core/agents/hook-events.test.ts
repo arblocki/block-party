@@ -198,7 +198,7 @@ describe('waitForTurnEnd', () => {
         calls++ === 0 ? Promise.resolve('working' as const) : new Promise<never>(() => undefined),
     });
     add({ hook_event_name: 'Stop', session_id: 's1' });
-    await vi.advanceTimersByTimeAsync(5000);
+    await vi.advanceTimersByTimeAsync(11_000);
     expect(await p).toEqual({ kind: 'timeout' });
   });
 
