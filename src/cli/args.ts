@@ -18,6 +18,8 @@ export interface CliOptions {
 
 export const USAGE = `Usage: block-party [owner/repo#123 | https://github.com/owner/repo/pull/123] [options]
        block-party [owner/repo | https://github.com/owner/repo] [options]
+       block-party checks init [--repo <dir>] [--write]
+       block-party checks run [--repo <dir>]
 
 With only a repository, the UI lists its open pull requests to choose from. With no
 argument, it starts on a list of your repositories.

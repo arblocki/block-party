@@ -1,20 +1,19 @@
-#!/usr/bin/env node
 import 'dotenv/config';
 import open from 'open';
-import { dbPath } from '../core/paths.js';
-import { createGitHubClient, createOctokitClients } from '../core/github/client.js';
-import { resolveToken } from '../core/github/token.js';
-import { createProvider, loadConfig } from '../core/llm/index.js';
-import { openStore } from '../core/store/index.js';
-import { formatPrRef, formatRepoRef } from '../core/pr-ref.js';
-import type { AnalysisDeps } from '../server/analysis.js';
-import { startServer } from '../server/index.js';
-import { parseCli, UsageError, USAGE } from './args.js';
+import { dbPath } from '../../core/paths.js';
+import { createGitHubClient, createOctokitClients } from '../../core/github/client.js';
+import { resolveToken } from '../../core/github/token.js';
+import { createProvider, loadConfig } from '../../core/llm/index.js';
+import { openStore } from '../../core/store/index.js';
+import { formatPrRef, formatRepoRef } from '../../core/pr-ref.js';
+import type { AnalysisDeps } from '../../server/analysis.js';
+import { startServer } from '../../server/index.js';
+import { parseCli, UsageError, USAGE } from '../args.js';
 
-async function main(): Promise<void> {
+export async function reviewMain(argv: string[]): Promise<void> {
   let opts;
   try {
-    opts = parseCli(process.argv.slice(2));
+    opts = parseCli(argv);
   } catch (err) {
     if (!(err instanceof UsageError)) throw err;
     console.error(`${err.message}\n\n${USAGE}`);
@@ -68,8 +67,3 @@ async function main(): Promise<void> {
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
-
-main().catch((err: unknown) => {
-  console.error(err instanceof Error ? err.message : err);
-  process.exit(1);
-});
