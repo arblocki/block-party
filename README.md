@@ -72,6 +72,34 @@ To try the UI without a token, run `pnpm build && pnpm demo` (add `DEMO_REREVIEW
 re-review banner, `--picker` to start on the open-PR list, or `--repos` to start on the
 repository list).
 
+## Running a feature (Phase 1)
+
+```sh
+block-party run --repo . --plan plan.md [--base main] [--mode pane|headless] \
+  [--model opus] [--reviewer-model <m>] [--no-publish] [--no-wait-ci] [--title <t>]
+```
+
+The plan is a Markdown file with an H1 title and the sections Goal, Approach, Acceptance
+criteria (`- [ ]` items) and Out of scope. The run creates a worktree, has Claude implement
+the plan, runs your local checks (with fix rounds), has Codex review it (one fix round for
+P0/P1 findings), pushes the branch, opens a draft PR and waits for GitHub CI. Exit codes: 0
+complete, 3 blocked (attach to the live session and continue by hand), 1 failed, 2 usage.
+
+Prerequisites:
+
+- `herdr` installed (pane mode), `claude` on your PATH, and `codex` logged in (`codex login`).
+- A `checks:` section in `.block-party.yaml`: run `block-party checks init --write`.
+- `~/.block-party/worktrees` trusted once in Claude Code (open `claude` there and accept the
+  trust prompt), so pane sessions don't stop on the trust dialog.
+- A GitHub token (`gh auth login` or `GITHUB_TOKEN`) for pushing and the PR.
+
+Optional defaults live in a `run:` section of `.block-party.yaml` (`implementer`, `subagents`,
+`reviewer`, `policy`, `publish`, `waitForCi`); flags override it.
+
+Artifacts land in `~/.block-party/runs/<runId>/` (`run.json`, `run-events.jsonl`, `plans/`,
+`briefs/`, `reports/`, `checks/`, `reviews/round-N/`, `inputs/`, `logs/`) and the worktree in
+`~/.block-party/worktrees/<owner>__<repo>/<runId>/`. Nothing is deleted automatically.
+
 ## Authentication
 
 The GitHub token is resolved in this order:

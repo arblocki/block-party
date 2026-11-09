@@ -11,7 +11,7 @@ export interface Handlers {
 export const defaultHandlers: Handlers = {
   review: async (argv) => (await import('./commands/review.js')).reviewMain(argv),
   checks: async (argv) => (await import('./commands/checks.js')).checksMain(argv),
-  run: async () => (await import('./commands/run.js')).runMain(),
+  run: async (argv) => (await import('./commands/run.js')).runMain(argv),
   hook: async (argv) => (await import('./commands/hook.js')).hookMain(argv),
 };
 
