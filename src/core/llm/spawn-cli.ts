@@ -52,7 +52,7 @@ export interface SpawnCliResult {
 }
 
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_KILL_GRACE_MS = 2000;
 /** How long to wait for the child to be reaped after SIGKILL before giving up. */
 const POST_KILL_WAIT_MS = 1000;

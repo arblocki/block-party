@@ -201,4 +201,15 @@ describe('reviewWithCodex', () => {
     expect(await readFile(join(o.outDir, 'events.jsonl'), 'utf8')).toContain('thread.started');
     expect(await readFile(join(o.outDir, 'stderr.txt'), 'utf8')).toContain('warn');
   });
+
+  it('caps captured output and marks truncation', async () => {
+    const o = await setup();
+    const big = `${completed}${'x'.repeat(500)}\n`;
+    const fs = fakeSpawn(proc(output([]), big));
+    const r = await reviewWithCodex({ ...o, spawnFn: fs.spawnFn, maxCaptureBytes: 100 });
+    expect(r.ok).toBe(true);
+    const ev = await readFile(join(o.outDir, 'events.jsonl'), 'utf8');
+    expect(ev.length).toBeLessThan(300);
+    expect(ev).toContain('output truncated at 16 MiB');
+  });
 });

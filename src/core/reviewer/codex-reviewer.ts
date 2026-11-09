@@ -4,7 +4,7 @@ import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { scrubbedEnv } from '../agents/claude-headless.js';
 import { createGit, type Git } from '../git/index.js';
 import { stripMcpNoise } from '../llm/codex-cli.js';
-import { spawnCli, type SpawnFn } from '../llm/spawn-cli.js';
+import { DEFAULT_MAX_BYTES, spawnCli, type SpawnFn } from '../llm/spawn-cli.js';
 import {
   lastAgentMessage,
   parseEvents,
@@ -29,6 +29,8 @@ export interface ReviewWithCodexOptions {
   spawnFn?: SpawnFn;
   codexHome: string;
   signal?: AbortSignal;
+  /** Max characters captured per stream (default 16 MiB, like spawnCli). */
+  maxCaptureBytes?: number;
   /** Defaults to the real git service. */
   git?: Pick<Git, 'headSha' | 'isClean'>;
 }
@@ -139,9 +141,14 @@ async function runAttempt(
   let result;
   let out = '';
   let err = '';
+  const cap = opts.maxCaptureBytes ?? DEFAULT_MAX_BYTES;
+  let outCut = false;
+  let errCut = false;
+  const note = '[block-party: output truncated at 16 MiB]\n';
   const persist = async () => {
-    await writeFile(f.eventsFile, out);
-    await writeFile(f.stderrFile, stripMcpNoise(err));
+    await writeFile(f.eventsFile, outCut ? `${out}\n${note}` : out);
+    const e = stripMcpNoise(err);
+    await writeFile(f.stderrFile, errCut ? `${e}\n${note}` : e);
   };
   try {
     result = await spawnCli({
@@ -153,8 +160,15 @@ async function runAttempt(
       timeoutMs: opts.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
       signal: opts.signal,
       spawnFn: opts.spawnFn,
-      onStdout: (c) => void (out += c),
-      onStderr: (c) => void (err += c),
+      maxBytes: cap,
+      onStdout: (c) => {
+        if (out.length + c.length > cap) outCut = true;
+        if (out.length < cap) out = (out + c).slice(0, cap);
+      },
+      onStderr: (c) => {
+        if (err.length + c.length > cap) errCut = true;
+        if (err.length < cap) err = (err + c).slice(0, cap);
+      },
     });
   } catch (e) {
     await persist().catch(() => undefined);
