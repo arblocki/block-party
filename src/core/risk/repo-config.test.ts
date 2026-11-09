@@ -127,3 +127,19 @@ describe('loadRepoConfig', () => {
     expect(c.rules).toBe(BUILTIN_RULES);
   });
 });
+
+describe('parseRepoConfig with a checks section', () => {
+  it('ignores the checks: section', () => {
+    const c = parseRepoConfig(`
+checks:
+  setup: pnpm install
+  required:
+    - { name: test, run: pnpm test }
+rules:
+  - glob: a/**
+    risk: high
+    reason: A
+`);
+    expect(c.rules).toHaveLength(1);
+  });
+});
