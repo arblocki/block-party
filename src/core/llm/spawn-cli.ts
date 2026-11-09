@@ -37,6 +37,11 @@ export interface SpawnCliOptions {
   /** After SIGTERM on timeout/abort, wait this long before SIGKILL (default 2000ms). */
   killGraceMs?: number;
   spawnFn?: SpawnFn;
+  /** Environment for the child (default: inherit). */
+  env?: NodeJS.ProcessEnv;
+  /** Called for every stdout/stderr chunk, in addition to buffering. */
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 export interface SpawnCliResult {
@@ -93,7 +98,7 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     let child: ChildLike;
     try {
       // On POSIX the child leads its own process group so we can signal descendants too.
-      child = spawnFn(command, args, { cwd, detached: POSIX });
+      child = spawnFn(command, args, { cwd, env: opts.env, detached: POSIX });
     } catch (err) {
       reject(mapSpawnError(command, err as NodeJS.ErrnoException));
       return;
@@ -166,8 +171,14 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
 
     const append = (cur: string, chunk: Buffer | string) =>
       cur.length >= maxBytes ? cur : (cur + chunk.toString()).slice(0, maxBytes);
-    child.stdout.on('data', (c) => (stdout = append(stdout, c)));
-    child.stderr.on('data', (c) => (stderr = append(stderr, c)));
+    child.stdout.on('data', (c) => {
+      stdout = append(stdout, c);
+      opts.onStdout?.(c.toString());
+    });
+    child.stderr.on('data', (c) => {
+      stderr = append(stderr, c);
+      opts.onStderr?.(c.toString());
+    });
     child.stdin.on('error', () => {
       /* process may exit before reading stdin; surfaced via close/error */
     });

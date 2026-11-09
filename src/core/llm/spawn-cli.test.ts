@@ -178,3 +178,23 @@ describe('spawnCli termination', () => {
     expect(calls[0]!.detached).toBe(process.platform !== 'win32');
   });
 });
+
+describe('spawnCli env and stream callbacks', () => {
+  it('passes env to spawnFn and invokes onStdout/onStderr per chunk', async () => {
+    const { spawnFn, calls } = fakeSpawn(() => ({ stdout: 'out', stderr: 'err' }));
+    const out: string[] = [];
+    const errs: string[] = [];
+    const res = await spawnCli({
+      command: 'x',
+      args: [],
+      env: { FOO: 'bar' },
+      onStdout: (c) => out.push(c),
+      onStderr: (c) => errs.push(c),
+      spawnFn,
+    });
+    expect(calls[0]?.env).toEqual({ FOO: 'bar' });
+    expect(out).toEqual(['out']);
+    expect(errs).toEqual(['err']);
+    expect(res.stdout).toBe('out');
+  });
+});
