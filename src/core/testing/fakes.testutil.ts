@@ -100,6 +100,18 @@ export function fakeGitHub(overrides: Partial<Fixture> = {}): FakeGitHub {
       fake.calls.submitReview.push(input);
       return { id: 42, url: 'https://github.com/octocat/hello-world/pull/1#pullrequestreview-42' };
     },
+    async findOpenPrForBranch() {
+      return undefined;
+    },
+    async createPr() {
+      throw new Error('fakeGitHub: createPr not supported');
+    },
+    async getPr() {
+      throw new Error('fakeGitHub: getPr not supported');
+    },
+    async getCiStatus() {
+      return { state: 'none', checks: [] };
+    },
     async replyToComment(_ref, id, body) {
       fake.calls.replies.push({ id, body });
       return { id: 99, url: 'https://github.com/octocat/hello-world/pull/1#discussion_r99' };

@@ -3,11 +3,14 @@ import { Octokit } from '@octokit/rest';
 import { extractFilePatch } from '../diff/parse.js';
 import type { RawFile } from '../diff/types.js';
 import type {
+  CiCheck,
+  CiStatus,
   GitHubClient,
   GraphqlLike,
   PrCommit,
   PrMeta,
   PrSummary,
+  PublishedPr,
   RepoSummary,
   RestLike,
   ReviewThread,
@@ -66,6 +69,32 @@ function toThreadComment(c: Json): ThreadComment {
     createdAt: c.createdAt,
     url: c.url,
   };
+}
+
+function toPublishedPr(d: Json): PublishedPr {
+  return {
+    number: d.number,
+    headSha: d.head?.sha ?? '',
+    url: d.html_url ?? '',
+    draft: !!d.draft,
+  };
+}
+
+const OK_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
+
+/**
+ * Combines checks into one state: any completed check without an OK conclusion (failure,
+ * cancelled, timed_out, ...) is `failure` and wins over pending; any incomplete check is
+ * `pending`; no checks at all is `none`.
+ */
+export function combineCiStatus(checks: CiCheck[]): CiStatus['state'] {
+  if (checks.length === 0) return 'none';
+  let pending = false;
+  for (const c of checks) {
+    if (c.status !== 'completed') pending = true;
+    else if (c.conclusion === null || !OK_CONCLUSIONS.has(c.conclusion)) return 'failure';
+  }
+  return pending ? 'pending' : 'success';
 }
 
 /** Builds the REST/GraphQL adapters for a token. The token never leaves these closures. */
@@ -357,6 +386,68 @@ export function createGitHubClient(deps: { rest: RestLike; gql: GraphqlLike }): 
       );
       const d = data as Json;
       return { id: d.id, url: d.html_url };
+    },
+
+    async findOpenPrForBranch(repo, branch) {
+      const { data } = await rest.request('GET /repos/{owner}/{repo}/pulls', {
+        owner: repo.owner,
+        repo: repo.repo,
+        head: `${repo.owner}:${branch}`,
+        state: 'open',
+      });
+      const first = (data as Json[])[0];
+      return first ? toPublishedPr(first) : undefined;
+    },
+
+    async createPr(repo, input) {
+      const { data } = await rest.request('POST /repos/{owner}/{repo}/pulls', {
+        owner: repo.owner,
+        repo: repo.repo,
+        head: input.head,
+        base: input.base,
+        title: input.title,
+        body: input.body,
+        draft: input.draft,
+      });
+      return toPublishedPr(data as Json);
+    },
+
+    async getPr(repo, number) {
+      const { data } = await rest.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner: repo.owner,
+        repo: repo.repo,
+        pull_number: number,
+      });
+      return toPublishedPr(data as Json);
+    },
+
+    async getCiStatus(repo, sha) {
+      const base = { owner: repo.owner, repo: repo.repo, ref: sha };
+      // Phase 1: only the first 100 check runs are considered; no pagination beyond that.
+      const runs = await rest.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
+        ...base,
+        per_page: PER_PAGE,
+      });
+      const status = await rest.request('GET /repos/{owner}/{repo}/commits/{ref}/status', base);
+      const checks: CiCheck[] = [];
+      for (const r of ((runs.data as Json).check_runs ?? []) as Json[]) {
+        checks.push({
+          name: String(r.name ?? ''),
+          status: String(r.status ?? ''),
+          conclusion: typeof r.conclusion === 'string' ? r.conclusion : null,
+          url: String(r.html_url ?? ''),
+        });
+      }
+      for (const s of ((status.data as Json).statuses ?? []) as Json[]) {
+        const st = String(s.state ?? '');
+        checks.push({
+          name: String(s.context ?? ''),
+          status: st === 'pending' ? 'in_progress' : 'completed',
+          conclusion: st === 'pending' ? null : st === 'success' ? 'success' : 'failure',
+          url: String(s.target_url ?? ''),
+        });
+      }
+      return { state: combineCiStatus(checks), checks };
     },
 
     async replyToComment(ref, commentId, body) {

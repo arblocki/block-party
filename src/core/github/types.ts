@@ -107,6 +107,34 @@ export interface SubmittedReview {
   url: string;
 }
 
+/** A pull request as the publish flow sees it. */
+export interface PublishedPr {
+  number: number;
+  headSha: string;
+  url: string;
+  draft: boolean;
+}
+
+export interface CreatePrInput {
+  head: string;
+  base: string;
+  title: string;
+  body: string;
+  draft: true;
+}
+
+export interface CiCheck {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string;
+}
+
+export interface CiStatus {
+  state: 'pending' | 'success' | 'failure' | 'none';
+  checks: CiCheck[];
+}
+
 /** Everything the app needs from GitHub. Implemented by the Octokit client; faked in tests. */
 export interface GitHubClient {
   /** Repositories the viewer owns, collaborates on, or can see through an org; latest push first. */
@@ -127,6 +155,12 @@ export interface GitHubClient {
   getViewerLogin(): Promise<string>;
   submitReview(ref: PrRef, input: SubmitReviewInput): Promise<SubmittedReview>;
   replyToComment(ref: PrRef, commentId: number, body: string): Promise<{ id: number; url: string }>;
+  /** The open PR whose head is `branch` in the same repo, if any. */
+  findOpenPrForBranch(repo: RepoRef, branch: string): Promise<PublishedPr | undefined>;
+  createPr(repo: RepoRef, input: CreatePrInput): Promise<PublishedPr>;
+  getPr(repo: RepoRef, number: number): Promise<PublishedPr>;
+  /** Check runs and commit statuses for `sha`, combined into one state. */
+  getCiStatus(repo: RepoRef, sha: string): Promise<CiStatus>;
 }
 
 /** Minimal REST surface (an adapter over Octokit's `request`); trivially fakeable. */
