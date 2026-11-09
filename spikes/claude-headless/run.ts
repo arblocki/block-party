@@ -1,5 +1,5 @@
 /**
- * Spike driver: run `claude -p` headless in a directory, parse the stream with stream.ts, print
+ * Spike driver: run `claude -p` headless in a directory, parse the stream with claude-stream.ts, print
  * a summary, and optionally SIGTERM after N ms. Usage:
  *   npx tsx spikes/claude-headless/run.ts --cwd DIR [--session-id U | --resume U] [--sigterm-after MS]
  *     [--raw FILE] -- <claude flags...> "<prompt>"
@@ -8,7 +8,7 @@
 import { spawn } from 'node:child_process';
 import { createWriteStream } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { StreamParser, summarize, type ResultEvent } from './stream.js';
+import { StreamParser, summarize, type ResultEvent } from '../../src/core/agents/claude-stream.js';
 
 interface Opts {
   cwd: string;
