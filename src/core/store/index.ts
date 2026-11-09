@@ -227,10 +227,10 @@ export function openStore(file: string): Store {
   );
   const baseline = db.prepare<[string, number, string, number], { head_sha: string }>(
     `SELECT head_sha FROM (
-       SELECT head_sha, created_at AS at FROM review_checkpoints WHERE repo = ? AND pr = ?
+       SELECT head_sha, created_at AS at, id FROM review_checkpoints WHERE repo = ? AND pr = ?
        UNION ALL
-       SELECT head_sha, submitted_at AS at FROM reviews_submitted WHERE repo = ? AND pr = ?
-     ) ORDER BY at DESC LIMIT 1`,
+       SELECT head_sha, submitted_at AS at, id FROM reviews_submitted WHERE repo = ? AND pr = ?
+     ) ORDER BY at DESC, id DESC LIMIT 1`, // timestamps are ms-resolution and can tie; autoincrement id breaks the tie
   );
   const firstMark = db.prepare<[string, number], { head_sha: string }>(
     `SELECT head_sha FROM reviewed_hunks WHERE repo = ? AND pr = ?
