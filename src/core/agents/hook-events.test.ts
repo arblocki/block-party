@@ -202,6 +202,37 @@ describe('waitForTurnEnd', () => {
     expect(await p).toEqual({ kind: 'timeout' });
   });
 
+  it('does not emit no_report when the first state query resolves working after settle', async () => {
+    let resolveFirst: (s: 'working') => void = () => undefined;
+    let calls = 0;
+    const p = start({
+      timeoutMs: 20_000,
+      agentState: () =>
+        calls++ === 0
+          ? new Promise<'working'>((r) => (resolveFirst = r))
+          : Promise.resolve('working' as const),
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    resolveFirst('working');
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
+  it('emits no_report once a post-Stop query resolves idle', async () => {
+    const p = start({ agentState: () => Promise.resolve('idle' as const) });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await p).kind).toBe('no_report');
+  });
+
+  it('emits no_report without agentState', async () => {
+    const p = start();
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await p).kind).toBe('no_report');
+  });
+
   it('resolves exited on abort', async () => {
     const ac = new AbortController();
     const p = start({ signal: ac.signal });

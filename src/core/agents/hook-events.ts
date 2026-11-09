@@ -148,6 +148,10 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
     let finalStopAt: number | undefined;
     let blockedSince: number | undefined;
     let done = false;
+    // Bumped whenever the final-Stop status changes; state results are only trusted for
+    // no_report if their query was started after the current final Stop was observed.
+    let stopGen = 0;
+    let stateAfterStop: AgentState | undefined;
 
     const finish = (outcome: TurnOutcome): void => {
       if (done) return;
@@ -172,8 +176,12 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
         finish({ kind: 'permission', message: ev.message ?? 'permission prompt' });
       } else if (isFinalStop(ev)) {
         finalStopAt = Date.now();
+        stopGen++;
+        stateAfterStop = undefined;
       } else if (ev.hook_event_name === 'UserPromptSubmit') {
         finalStopAt = undefined;
+        stopGen++;
+        stateAfterStop = undefined;
       }
     });
 
@@ -191,7 +199,9 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       }
       if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
         if (existsSync(reportPath)) finish({ kind: 'report' });
-        else if (lastState !== 'working') {
+        else if (
+          opts.agentState ? stateAfterStop !== undefined && stateAfterStop !== 'working' : true
+        ) {
           finish({ kind: 'no_report', detail: 'turn ended without report.json' });
         }
       }
@@ -201,12 +211,15 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       // State polling is non-overlapping and never gates the report check below.
       if (opts.agentState && !inFlight) {
         inFlight = true;
+        const startedGen = stopGen;
+        const startedAfterStop = finalStopAt !== undefined;
         opts
           .agentState()
           .catch((): AgentState => 'unknown')
           .then((state) => {
             inFlight = false;
             lastState = state;
+            if (startedAfterStop && startedGen === stopGen) stateAfterStop = state;
             if (!done) evaluate();
           });
       }
