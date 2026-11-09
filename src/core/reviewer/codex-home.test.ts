@@ -19,7 +19,7 @@ describe('ensureReviewerCodexHome', () => {
     await ensureReviewerCodexHome({ dir, userCodexHome: user });
     expect(await readdir(dir)).toEqual(['auth.json']);
     expect((await lstat(join(dir, 'auth.json'))).isSymbolicLink()).toBe(true);
-    expect(await readlink(join(dir, 'auth.json'))).toBe(join(user, 'auth.json'));
+    expect(await readlink(join(dir, 'auth.json'))).toBe(await realpath(join(user, 'auth.json')));
     expect(((await lstat(dir)).mode & 0o777).toString(8)).toBe('700');
   });
 
@@ -38,7 +38,7 @@ describe('ensureReviewerCodexHome', () => {
     await unlink(join(dir, 'auth.json'));
     await symlink(join(root, 'elsewhere'), join(dir, 'auth.json'));
     await ensureReviewerCodexHome({ dir, userCodexHome: user });
-    expect(await readlink(join(dir, 'auth.json'))).toBe(join(user, 'auth.json'));
+    expect(await readlink(join(dir, 'auth.json'))).toBe(await realpath(join(user, 'auth.json')));
   });
 
   it('throws on a regular auth.json', async () => {
