@@ -107,6 +107,9 @@ describe('ensureServer', () => {
   it('spawns detached with clean env and polls until up', async () => {
     const path2 = path.join(path.dirname(fake.socketPath), 'late.sock');
     process.env.HERDR_TEST_LEAK = '1';
+    process.env.GITHUB_TOKEN = 'x';
+    process.env.GH_TOKEN = 'x';
+    process.env.BLOCK_PARTY_TOKEN = 'x';
     const calls: { command: string; args: string[]; env: NodeJS.ProcessEnv }[] = [];
     const spawnFn: HerdrSpawnFn = (command, args, o) => {
       calls.push({ command, args, env: o.env });
@@ -120,10 +123,15 @@ describe('ensureServer', () => {
       expect(started).toBe(true);
     } finally {
       delete process.env.HERDR_TEST_LEAK;
+      delete process.env.GITHUB_TOKEN;
+      delete process.env.GH_TOKEN;
+      delete process.env.BLOCK_PARTY_TOKEN;
     }
     expect(calls[0]?.command).toBe('hb');
     expect(calls[0]?.args).toEqual(['--session', 'bp-x', 'server']);
     expect(calls[0]?.env.HERDR_TEST_LEAK).toBeUndefined();
+    for (const k of ['GITHUB_TOKEN', 'GH_TOKEN', 'BLOCK_PARTY_TOKEN'])
+      expect(calls[0]?.env[k]).toBeUndefined();
   });
 
   it.each([

@@ -37,17 +37,22 @@ class FakeHost implements TerminalHost {
   aliveLabels = new Set<string>();
   onOpen?: (label: string) => void;
   onText?: (text: string) => void;
+  private check(p: PaneRef) {
+    if (p.session !== 's') throw new HerdrError('wrong_session', `session ${p.session}`);
+  }
   async open(o: { label: string; cwd: string; argv: string[]; env?: Record<string, string> }) {
     this.opens.push(o);
     this.aliveLabels.add(o.label);
     this.onOpen?.(o.label);
     return { session: 's', label: o.label, cwd: o.cwd };
   }
-  async sendText(_p: PaneRef, text: string) {
+  async sendText(p: PaneRef, text: string) {
+    this.check(p);
     this.texts.push(text);
     this.onText?.(text);
   }
-  async sendKeys(_p: PaneRef, keys: string[]) {
+  async sendKeys(p: PaneRef, keys: string[]) {
+    this.check(p);
     this.keys.push(keys);
   }
   async read() {
@@ -57,18 +62,21 @@ class FakeHost implements TerminalHost {
     return this.stateQueue.shift() ?? this.state;
   }
   async isAlive(p: PaneRef) {
+    this.check(p);
     return this.aliveLabels.has(p.label);
   }
   async close(p: PaneRef) {
+    this.check(p);
     if (!this.aliveLabels.delete(p.label)) throw new HerdrError('pane_not_found', 'gone');
     this.closed.push(p.label);
   }
   attachCommand(p: PaneRef) {
     return `herdr attach ${p.label}`;
   }
-  async list() {
-    return [];
+  async list(): Promise<PaneRef[]> {
+    return [...this.aliveLabels].map((label) => ({ session: 's', label, cwd: this.cwd }));
   }
+  cwd = '';
 }
 
 let dir: string;
@@ -118,6 +126,7 @@ beforeEach(() => {
     timeoutMs: 5000,
   };
   host = new FakeHost();
+  host.cwd = cwd;
 });
 afterEach(() => {
   delete process.env.BLOCK_PARTY_HOME;
@@ -212,31 +221,77 @@ describe('createPaneClaude', () => {
     return { a, session };
   }
 
-  it('send waits for idle, retries once when UserPromptSubmit is missing', async () => {
+  it('send waits for idle, presses Enter once when UserPromptSubmit is missing', async () => {
     const { a, session } = await started();
     host.stateQueue = ['working', 'working', 'idle'];
-    let n = 0;
-    host.onText = () => {
-      if (++n === 2) {
-        emitEvent('UserPromptSubmit');
-        emitEvent('Stop', { background_tasks: [] });
-      }
+    host.sendKeys = async (_p, keys) => {
+      host.keys.push(keys);
+      emitEvent('UserPromptSubmit');
+      emitEvent('Stop', { background_tasks: [] });
     };
     const outcome = await a.send(session, input, 'see msg.md');
-    expect(host.texts).toEqual(['see msg.md', 'see msg.md']);
+    expect(host.texts).toEqual(['see msg.md']);
+    expect(host.keys).toEqual([['Enter']]);
     expect(outcome.kind).toBe('report');
     expect(host.stateQueue).toEqual([]);
   });
 
-  it('send returns timeout when never idle, and no_report when never submitted', async () => {
+  it('send returns timeout when never idle, and not-submitted when unconfirmed', async () => {
     const { a, session } = await started();
     host.state = 'working';
     expect(await a.send(session, input, 'x')).toEqual({ kind: 'timeout' });
     expect(host.texts).toEqual([]);
     host.state = 'idle';
     const o = await a.send(session, input, 'x');
-    expect(o.kind).toBe('no_report');
-    expect(host.texts).toHaveLength(2);
+    expect(o).toEqual({ kind: 'no_report', detail: 'message was not submitted' });
+    expect(host.texts).toEqual(['x']);
+    expect(host.keys).toEqual([['Enter']]);
+  });
+
+  it('a pre-aborted signal sends and opens nothing', async () => {
+    const { a, session } = await started();
+    const ctl = new AbortController();
+    ctl.abort();
+    const o = await a.send(session, { ...input, signal: ctl.signal }, 'x');
+    expect(o).toEqual({ kind: 'exited', reason: 'aborted' });
+    host.aliveLabels.clear();
+    expect(await a.send(session, { ...input, signal: ctl.signal }, 'x')).toEqual(o);
+    expect(host.texts).toEqual([]);
+    expect(host.opens).toEqual([]);
+  });
+
+  it('abort during confirmation does not press Enter', async () => {
+    const { a, session } = await started();
+    const ctl = new AbortController();
+    host.onText = () => setTimeout(() => ctl.abort(), 20);
+    const o = await a.send(session, { ...input, signal: ctl.signal }, 'x');
+    expect(o).toEqual({ kind: 'exited', reason: 'aborted' });
+    expect(host.keys).toEqual([]);
+  });
+
+  it('a fresh adapter attaches to a live pane found via list()', async () => {
+    const { session } = await started();
+    const b = adapter();
+    host.onText = () => {
+      emitEvent('UserPromptSubmit');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    expect((await b.send(session, input, 'hello')).kind).toBe('report');
+    expect(host.texts).toEqual(['hello']);
+    expect(host.opens).toEqual([]);
+  });
+
+  it('a fresh adapter resumes when the pane is gone', async () => {
+    const { session } = await started();
+    host.aliveLabels.clear();
+    host.onOpen = () => {
+      emitEvent('SessionStart', { source: 'resume' });
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const b = adapter();
+    expect((await b.send(session, input, 'hello')).kind).toBe('report');
+    expect(host.opens[0]!.label).toBe('bp-r1-impl-r2');
+    expect(session.paneLabel).toBe('bp-r1-impl-r2');
   });
 
   it('rejects over-long messages', async () => {

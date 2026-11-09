@@ -46,6 +46,8 @@ interface SessionState {
   runDir: string;
   eventsPath: string;
   resumes: number;
+  /** False when `pane` is a placeholder (session recovered by a fresh adapter, pane not found). */
+  known?: boolean;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -93,6 +95,18 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
   };
   const emit = (type: string, data: Record<string, unknown>) => opts.onEvent?.({ type, data });
   const sessions = new Map<string, SessionState>();
+
+  async function findPane(label: string, cwd: string): Promise<PaneRef | undefined> {
+    try {
+      const want = await real(cwd);
+      for (const p of await host.list()) {
+        if (p.label === label && (await real(p.cwd)) === want) return p;
+      }
+    } catch {
+      // server down or unreadable: treat as gone
+    }
+    return undefined;
+  }
 
   async function flags(input: ImplementerStartInput): Promise<string[]> {
     // Interactive claude takes --agents as inline JSON only (a file path works with --print).
@@ -142,11 +156,12 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     name: string,
     maxMs: number,
     signal?: AbortSignal,
-  ): Promise<boolean> {
+  ): Promise<'ok' | 'timeout' | 'aborted'> {
     const deadline = now() + maxMs;
     for (;;) {
-      if (hasEvent(eventsPath, offset, sessionId, name)) return true;
-      if (now() >= deadline || signal?.aborted) return false;
+      if (hasEvent(eventsPath, offset, sessionId, name)) return 'ok';
+      if (signal?.aborted) return 'aborted';
+      if (now() >= deadline) return 'timeout';
       await sleep(t.loopMs);
     }
   }
@@ -237,6 +252,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         runDir: input.runDir,
         eventsPath: input.eventsPath,
         resumes: 1,
+        known: true,
       };
       const { pane, outcome } = await launch(
         st,
@@ -263,18 +279,20 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           `message too long for a pane (${message.length} > ${MAX_MESSAGE_CHARS} chars); send a pointer to a file`,
         );
       }
+      const aborted: TurnOutcome = { kind: 'exited', reason: 'aborted' };
+      if (input.signal?.aborted) return aborted;
       let st = sessions.get(session.sessionId);
       if (!st) {
+        const label = session.paneLabel ?? `bp-${input.runId}-impl`;
+        const m = /-r(\d+)$/.exec(label);
+        const found = await findPane(label, session.cwd);
         st = {
-          pane: {
-            session: '',
-            label: session.paneLabel ?? `bp-${input.runId}-impl`,
-            cwd: session.cwd,
-          },
+          pane: found ?? { session: '', label, cwd: session.cwd },
           runId: input.runId,
           runDir: input.runDir,
           eventsPath: input.eventsPath,
-          resumes: 1,
+          resumes: m ? Number(m[1]) : 1,
+          known: found !== undefined,
         };
         sessions.set(session.sessionId, st);
       } else {
@@ -282,8 +300,9 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         st.eventsPath = input.eventsPath;
       }
 
-      if (!(await alive(st.pane))) {
+      if (!st.known || !(await alive(st.pane))) {
         st.resumes += 1;
+        st.known = true;
         const label = `bp-${st.runId}-impl-r${st.resumes}`;
         const { outcome } = await launch(
           st,
@@ -298,12 +317,13 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       }
 
       const pane = st.pane;
-      if (!(await waitIdle(pane, input.signal))) return { kind: 'timeout' };
+      if (!(await waitIdle(pane, input.signal))) {
+        return input.signal?.aborted ? aborted : { kind: 'timeout' };
+      }
+      if (input.signal?.aborted) return aborted;
       const offset = fileSize(input.eventsPath);
-      let submitted = false;
-      for (let attempt = 0; attempt < 2 && !submitted; attempt++) {
-        await host.sendText(pane, message, { submit: true });
-        submitted = await waitEvent(
+      const confirm = () =>
+        waitEvent(
           input.eventsPath,
           offset,
           session.sessionId,
@@ -311,11 +331,17 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           t.confirmMs,
           input.signal,
         );
-        if (!submitted) emit('agent.send_unconfirmed', { attempt: attempt + 1 });
+      await host.sendText(pane, message, { submit: true });
+      let got = await confirm();
+      if (got === 'timeout') {
+        emit('agent.send_unconfirmed', { attempt: 1 });
+        // The text may be typed but not submitted; press Enter rather than retyping it.
+        await host.sendKeys(pane, ['Enter']);
+        got = await confirm();
+        if (got === 'timeout') emit('agent.send_unconfirmed', { attempt: 2 });
       }
-      if (!submitted) {
-        return { kind: 'no_report', detail: 'message not confirmed by UserPromptSubmit hook' };
-      }
+      if (got === 'aborted') return aborted;
+      if (got === 'timeout') return { kind: 'no_report', detail: 'message was not submitted' };
       return waitForTurnEnd({
         watcher: opts.watcherFactory(input.eventsPath, offset),
         sessionId: session.sessionId,
@@ -330,7 +356,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
 
     async stop(session, stopOpts) {
       const st = sessions.get(session.sessionId);
-      if (!st) return;
+      if (!st || st.known === false) return;
       const { pane } = st;
       await saveFinal(st);
       let ended = false;
@@ -338,13 +364,14 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         const offset = fileSize(st.eventsPath);
         try {
           await host.sendText(pane, '/exit', { submit: true });
-          ended = await waitEvent(
-            st.eventsPath,
-            offset,
-            session.sessionId,
-            'SessionEnd',
-            t.stopWaitMs,
-          );
+          ended =
+            (await waitEvent(
+              st.eventsPath,
+              offset,
+              session.sessionId,
+              'SessionEnd',
+              t.stopWaitMs,
+            )) === 'ok';
         } catch {
           ended = false;
         }

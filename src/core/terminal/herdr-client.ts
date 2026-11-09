@@ -194,11 +194,15 @@ export class HerdrClient implements HerdrCaller {
   }
 }
 
+/** Never inherited by panes (the herdr server's env is what panes start with). */
+const SECRET_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'BLOCK_PARTY_TOKEN'];
+
 /** Environment for spawning herdr from inside a herdr pane: HERDR_* makes the CLI refuse ("nested herdr"). */
 export function cleanHerdrEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(env)) {
     if (k.startsWith('HERDR_') || k === 'TERM_PROGRAM' || k === 'SSH_AUTH_SOCK') continue;
+    if (SECRET_ENV.includes(k)) continue;
     out[k] = v;
   }
   return out;
