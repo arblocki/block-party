@@ -65,28 +65,42 @@ function candidate(
  * Pure scoring of one case. A finding matches an expectation when its path equals the
  * expectation's, its severity is at least `minSeverity`, and either its line range overlaps
  * `lines` or any keyword appears in its title/body. Each finding satisfies at most one
- * expectation and each expectation is satisfied once: candidate pairs are assigned greedily,
- * best score first (line overlap beats keyword-only, then more keyword hits), ties broken by
- * input order.
+ * expectation and each expectation is satisfied once. The assignment is a maximum-cardinality
+ * bipartite matching (Kuhn's augmenting paths), so recall is never under-reported because of
+ * an unlucky greedy choice. Match quality only breaks ties: candidates are tried best first
+ * (line overlap beats keyword-only, then more keyword hits), which biases, but never reduces,
+ * the matching size.
  */
 export function scoreCase(expected: Expectation[], findings: Finding[]): CaseScore {
-  const cands: Candidate[] = [];
+  const byExp: Candidate[][] = expected.map(() => []);
   expected.forEach((exp, e) =>
     findings.forEach((finding, f) => {
       const c = candidate(exp, e, finding, f);
-      if (c) cands.push(c);
+      if (c) byExp[e]!.push(c);
     }),
   );
-  cands.sort((a, b) => b.score - a.score || a.e - b.e || a.f - b.f);
-  const usedE = new Set<number>();
-  const usedF = new Set<number>();
-  const matched: Match[] = [];
-  for (const c of cands) {
-    if (usedE.has(c.e) || usedF.has(c.f)) continue;
-    usedE.add(c.e);
-    usedF.add(c.f);
-    matched.push({ expectation: c.e, findingId: findings[c.f]!.id, by: c.by });
-  }
+  for (const list of byExp) list.sort((a, b) => b.score - a.score || a.f - b.f);
+  const owner = new Map<number, Candidate>(); // finding index -> chosen candidate
+  const tryAssign = (e: number, seen: Set<number>): boolean => {
+    for (const c of byExp[e]!) {
+      if (seen.has(c.f)) continue;
+      seen.add(c.f);
+      const cur = owner.get(c.f);
+      if (!cur || tryAssign(cur.e, seen)) {
+        owner.set(c.f, c);
+        return true;
+      }
+    }
+    return false;
+  };
+  for (let e = 0; e < expected.length; e++) tryAssign(e, new Set());
+  const usedE = new Set([...owner.values()].map((c) => c.e));
+  const usedF = new Set(owner.keys());
+  const matched: Match[] = [...owner.values()].map((c) => ({
+    expectation: c.e,
+    findingId: findings[c.f]!.id,
+    by: c.by,
+  }));
   matched.sort((a, b) => a.expectation - b.expectation);
   const extra = findings.filter((_, i) => !usedF.has(i));
   return {

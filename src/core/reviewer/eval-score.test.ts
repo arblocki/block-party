@@ -72,7 +72,19 @@ describe('scoreCase', () => {
     expect(s.recall).toBe(0.5);
   });
 
-  it('assigns greedily by best match so a strong match is not stolen', () => {
+  it('finds a maximum matching, not a greedy one (regression)', () => {
+    const both = finding({ body: 'alpha beta' });
+    const alphaOnly = finding({ body: 'alpha' });
+    const s = scoreCase(
+      [exp({ keywords: ['alpha'] }), exp({ keywords: ['beta'] })],
+      [both, alphaOnly],
+    );
+    expect(s.recall).toBe(1);
+    expect(s.missed).toEqual([]);
+    expect(s.matched.map((m) => m.findingId)).toEqual([alphaOnly.id, both.id]);
+  });
+
+  it('prefers the better match when matchings are the same size', () => {
     const e0 = exp({ keywords: ['inject'] });
     const e1 = exp({ lines: [5, 6], keywords: ['inject'] });
     const generic = finding({ start: 90, end: 90, body: 'inject' });

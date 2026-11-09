@@ -15,18 +15,18 @@ Date: 2026-11-09. Codex: `codex-cli 0.162.1`, default model (no `--model`), revi
 | missing-acceptance-criterion (plan requires constructor `RangeError`) | synthetic | 1 | 1 (P1) | n/a | 22.3 s |
 | negative-slugify (correct util + tests) | negative | 0 | n/a | 0 | 21.4 s |
 | negative-correct-query-and-pagination (parameterized, validated) | negative | 0 | n/a | 0 | 22.1 s |
-| real-codex-cli-config (`f03fe43`, fixed later by `f5195e2`) | git | 2 | 0 | n/a | 49.0 s |
+| real-codex-cli-adapter (`f03fe43`; bugs fixed later by `d1697ab` and `bf0bc09`) | git | 2 | 1 (P2, cwd) | n/a | 49.0 s |
 
-Headline: recall 4/4 on planted bugs, 0/2 on the real-history case (4/6 overall), 0 false positives
+Headline: recall 4/4 on planted bugs, 1/2 on the real-history case (5/6 overall), 0 false positives
 on 2 negative cases, 0 failed runs. Cost was roughly 60-80k input tokens per synthetic case
 (mostly cached) and 168k for the real range.
 
 Extra findings (not matched to an expectation):
 
 - sql-injection: P2 "Escape LIKE metacharacters", a legitimate secondary issue.
-- real-codex-cli-config: P2 `--cd` unavailable so the checkout is not honored
-  (`codex-cli.ts:83`), P1 `--allowedTools` is not a read-only restriction (`claude-cli.ts`),
-  P2 abort/timeout errors lost while reading the response body (`openrouter.ts`).
+- real-codex-cli-adapter: P1 `--allowedTools` is not a read-only restriction (`claude-cli.ts`) and
+  P2 abort/timeout errors lost while reading the response body (`openrouter.ts`); plausible,
+  unverified.
 
 ## Interpretation
 
@@ -36,21 +36,20 @@ off-by-one (found and anchored on the exact `while` line) and the plan-vs-code g
 and flagged the missing constructor validation). It also volunteered a real secondary issue on the
 SQL case.
 
-What it misses: both expectations on the real-history case. Those two expectations were what
-`f5195e2` fixed: the codex adapter not passing `--ignore-user-config` (a user's MCP plugins needing
-OAuth break `codex exec`), and the default model `gpt-5-codex` being rejected on ChatGPT-account
-logins. Both are environment-dependent failures that cannot be derived from the diff alone, so a
-miss is not strong evidence of weakness; they do show the reviewer does not reason about "what
-happens on a real developer machine" unprompted. The review was not empty, though: its first extra
-finding (`--cd` unsupported, so the child inherits the wrong cwd) is the bug fixed by `d1697ab`, a
-genuine real-history hit that the expectation list did not include (the case was written from
-`f5195e2` only). The other two extras are plausible but unverified. Treat the 0/2 as "the
-expectations were unobservable", not as a measured recall of 0.
+What it misses: one of the two real bugs in the real-history case. The reviewed range is `f03fe43`
+(1,450 lines, 19 files). Two bugs visible in its diff were fixed later: `d1697ab` (without `--cd`
+support the codex child inherits the wrong cwd; `cwd: req.cwd ? undefined : dir`), which Codex found
+at P2, and `bf0bc09` (`--json` only requested when `--output-last-message` is unsupported, so usage
+is lost on the preferred path), which it missed. Note `f5195e2` is deliberately not used for
+expectations: it fixed environment-dependent problems (user MCP config breaking `codex exec`,
+`gpt-5-codex` rejected on ChatGPT logins) that cannot be seen in any diff. The first version of this
+eval used those and scored 0/2, which measured nothing; the saved results were re-scored against the
+visible-bug expectations without re-running Codex.
 
 Can empty findings be trusted yet? Not as "clean". The sample is small (4 planted bugs, 2
 negatives, one run each, no variance measurement), the planted bugs are textbook-shaped and 1-3
-files long, and the single real case was a 1,450-line, 19-file change where it found real but
-different issues and missed environment-dependent ones. The data supports: on small, local,
+files long, and the single real case was a 1,450-line, 19-file change where it found one of two known
+bugs plus unverified extras. The data supports: on small, local,
 well-specified diffs, an empty result is meaningful and false positives are rare. It does not
 support: large diffs, bugs that depend on runtime environment, or subtle cross-file interactions.
 Keep the PR body wording "Codex found nothing" rather than "clean" until a larger eval says
@@ -58,11 +57,13 @@ otherwise.
 
 ## Suggested next steps
 
-Recall on planted bugs is strong, so no prompt change is warranted from this data. For the gap the
-real case exposed, a concrete prompt addition to try (and re-measure with this harness): "For each
-external process or service the change calls, consider how it behaves on a machine with a normal
-user configuration and different account type (user-level config files, plugins, auth, model
-availability), and report assumptions the code makes about them." Before relying on recall
-numbers, extend the eval with: several runs per case to measure variance, 5+ more negatives
-including larger correct diffs, and more real-history cases whose bug is visible in the diff
-(add `d1697ab` and `bf0bc09`, both fixes to `f03fe43`, as expectations for the real case).
+Recall on planted bugs is strong, so no prompt change is warranted from this data. The one real
+miss (`bf0bc09`) is a "declared-but-unused data path" bug: usage is parsed from the event stream,
+but the flag that produces that stream is conditionally omitted. A prompt addition to try (and
+re-measure with this harness): "For every value the code reads or parses, trace where it is
+produced and check each branch that decides whether it is produced at all." Also consider a
+larger-diff strategy (review per directory) since attention on a 19-file change is thinner.
+Before relying on recall numbers, extend the eval with: several runs per case to measure variance,
+5+ more negatives including larger correct diffs, and more real-history cases whose bug is visible
+in the diff. Environment-dependent bugs (like those `f5195e2` fixed) need a different kind of check,
+not diff review.
