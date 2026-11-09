@@ -1,4 +1,13 @@
-import { chmod, lstat, mkdir, readlink, realpath, symlink, unlink } from 'node:fs/promises';
+import {
+  chmod,
+  readdir,
+  lstat,
+  mkdir,
+  readlink,
+  realpath,
+  symlink,
+  unlink,
+} from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { dataDir } from '../paths.js';
@@ -9,6 +18,11 @@ export interface EnsureCodexHomeOptions {
 }
 
 /**
+ * Codex itself populates CODEX_HOME at runtime (observed with codex-cli 0.162.1): `skills/.system/`
+ * (bundled system skills), `plugins/`, `cache/`, sqlite files, `installation_id`,
+ * `.sandbox_migration`, sessions/log state. Those are tolerated; only user customization
+ * (config.toml, AGENTS.md, prompts, rules, or skills other than `.system`) is rejected.
+ *
  * Create a minimal CODEX_HOME for the reviewer: only a symlink `auth.json` to the user's, so
  * token refreshes are shared but no user skills, config, or MCP servers are visible.
  */
@@ -22,7 +36,16 @@ export async function ensureReviewerCodexHome(opts: EnsureCodexHomeOptions = {})
   }
   await mkdir(dir, { recursive: true, mode: 0o700 });
   await chmod(dir, 0o700);
-  for (const name of ['config.toml', 'AGENTS.md', 'skills', 'prompts', 'rules']) {
+  const extra = await readdir(join(dir, 'skills')).then(
+    (names) => names.find((n) => n !== '.system'),
+    () => undefined,
+  );
+  if (extra) {
+    throw new Error(
+      `Reviewer CODEX_HOME ${dir} contains skills/${extra}; remove it so the reviewer runs without user skills.`,
+    );
+  }
+  for (const name of ['config.toml', 'AGENTS.md', 'prompts', 'rules']) {
     if (
       await lstat(join(dir, name)).then(
         () => true,

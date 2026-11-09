@@ -75,4 +75,27 @@ describe('ensureReviewerCodexHome', () => {
     await ensureReviewerCodexHome({ dir, userCodexHome: user });
     expect(await readlink(join(dir, 'auth.json'))).toBe(await realpath(join(root, 'real.json')));
   });
+
+  it('accepts the layout codex leaves behind after a run', async () => {
+    const { user, dir } = await setup();
+    await writeFile(join(user, 'auth.json'), '{}');
+    await ensureReviewerCodexHome({ dir, userCodexHome: user });
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(dir, 'skills/.system/review-agent'), { recursive: true });
+    await mkdir(join(dir, 'plugins'));
+    await mkdir(join(dir, 'cache'));
+    await writeFile(join(dir, 'installation_id'), 'x');
+    await ensureReviewerCodexHome({ dir, userCodexHome: user });
+  });
+
+  it('rejects user-installed skills', async () => {
+    const { user, dir } = await setup();
+    await writeFile(join(user, 'auth.json'), '{}');
+    const { mkdir } = await import('node:fs/promises');
+    await mkdir(join(dir, 'skills/.system'), { recursive: true });
+    await mkdir(join(dir, 'skills/my-skill'));
+    await expect(ensureReviewerCodexHome({ dir, userCodexHome: user })).rejects.toThrow(
+      /skills\/my-skill/,
+    );
+  });
 });
