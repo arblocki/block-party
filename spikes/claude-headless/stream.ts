@@ -6,6 +6,7 @@
  * that does not match a known shape is surfaced as `{ kind: 'unknown' }` instead of throwing, so a
  * CLI upgrade degrades the UI rather than crashing a run.
  */
+import { StringDecoder } from 'node:string_decoder';
 import { z } from 'zod';
 
 const usage = z.looseObject({
@@ -193,16 +194,18 @@ export function parseEvent(raw: unknown): StreamEvent {
  */
 export class StreamParser {
   private buf = '';
+  /** Persists across chunks so a multibyte UTF-8 character split between Buffers survives. */
+  private decoder = new StringDecoder('utf8');
 
   push(chunk: string | Buffer): StreamEvent[] {
-    this.buf += chunk.toString();
+    this.buf += typeof chunk === 'string' ? chunk : this.decoder.write(chunk);
     const lines = this.buf.split('\n');
     this.buf = lines.pop() ?? '';
     return lines.flatMap((l) => this.line(l));
   }
 
   flush(): StreamEvent[] {
-    const rest = this.buf;
+    const rest = this.buf + this.decoder.end();
     this.buf = '';
     return this.line(rest);
   }
