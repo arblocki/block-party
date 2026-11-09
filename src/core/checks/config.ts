@@ -1,0 +1,106 @@
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { z } from 'zod';
+import type { ChecksProposal, ProposedCheck } from './propose.js';
+
+const checkSchema = z.object({
+  name: z.string().trim().min(1),
+  run: z.string().trim().min(1),
+  /** Reference to the mirrored CI step: `ci.yml#<job>` or `ci.yml#<job>/<step>`. */
+  ci: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+});
+
+export const checksSchema = z.object({
+  setup: z.string().trim().min(1).optional(),
+  required: z.array(checkSchema).default([]),
+  optional: z.array(checkSchema).optional(),
+  ciParity: z
+    .object({
+      workflows: z.array(z.string().min(1)).optional(),
+      ignore: z.array(z.string().min(1)).optional(),
+    })
+    .optional(),
+});
+
+export type CheckConfig = z.infer<typeof checkSchema>;
+export type ChecksConfig = z.infer<typeof checksSchema>;
+
+/** Parses the text of a .block-party.yaml and returns its `checks:` section, if any. */
+export function parseChecksConfig(text: string): ChecksConfig | undefined {
+  let raw: unknown;
+  try {
+    raw = parseYaml(text);
+  } catch (err) {
+    throw new Error(`invalid YAML: ${(err as Error).message.split('\n')[0]}`, { cause: err });
+  }
+  const section =
+    typeof raw === 'object' && raw !== null ? (raw as { checks?: unknown }).checks : undefined;
+  if (section === undefined || section === null) return undefined;
+  const parsed = checksSchema.safeParse(section);
+  if (!parsed.success) {
+    throw new Error(
+      parsed.error.issues
+        .map((i) => `checks.${i.path.join('.') || '(root)'}: ${i.message}`)
+        .join('; '),
+    );
+  }
+  return parsed.data;
+}
+
+/** Block-context scalar (used for top-level keys). */
+function scalar(s: string): string {
+  if (s.includes('\n')) return JSON.stringify(s);
+  return stringifyYaml(s, { lineWidth: 0 }).trimEnd();
+}
+
+/** Scalar safe inside a flow mapping: the yaml library quotes commas, braces, colons, etc. */
+function flowScalar(s: string): string {
+  if (s.includes('\n')) return JSON.stringify(s);
+  const out = stringifyYaml({ v: s }, { collectionStyle: 'flow', lineWidth: 0 }).trimEnd();
+  return out.replace(/^\{ v: /, '').replace(/ \}$/, '');
+}
+
+/** One YAML comment line per line of `text`, so embedded newlines cannot escape the comment. */
+function comment(indent: string, text: string): string[] {
+  return text.split(/\r?\n/).map((l) => `${indent}# ${l}`.trimEnd());
+}
+
+function renderCheck(c: ProposedCheck): string {
+  const parts = [`name: ${flowScalar(c.name)}`, `run: ${flowScalar(c.run)}`];
+  if (c.ci) parts.push(`ci: ${flowScalar(c.ci)}`);
+  if (c.workingDirectory) parts.push(`cwd: ${flowScalar(c.workingDirectory)}`);
+  return `{ ${parts.join(', ')} }`;
+}
+
+/**
+ * Renders a proposal as `.block-party.yaml` text for the user to review. Checks that need review
+ * are commented out with the reason so they cannot be accepted by accident.
+ */
+export function renderChecksYaml(p: ChecksProposal): string {
+  const lines: string[] = [];
+  for (const w of p.warnings) lines.push(...comment('', w));
+  lines.push('checks:');
+  if (p.setup) lines.push(`  setup: ${scalar(p.setup)}`);
+  else if (p.setupNeedsReview) {
+    lines.push(...comment('  ', `NEEDS REVIEW: ${p.setupNeedsReview.reason}`));
+    lines.push(`  # setup: ${scalar(p.setupNeedsReview.command)}`);
+  }
+  lines.push(p.checks.some((c) => !c.needsReview) ? '  required:' : '  required: []');
+  for (const c of p.checks) {
+    for (const n of c.notes ?? []) lines.push(...comment('    ', n));
+    if (c.needsReview) {
+      lines.push(...comment('    ', `NEEDS REVIEW: ${c.needsReview}`));
+      lines.push(`    # - ${renderCheck(c)}`);
+    } else {
+      lines.push(`    - ${renderCheck(c)}`);
+    }
+  }
+  if (p.source === 'workflows') {
+    lines.push('  ciParity:');
+    lines.push(
+      `    workflows: ${stringifyYaml(p.workflows, { collectionStyle: 'flow', lineWidth: 0 }).trimEnd()}`,
+    );
+    lines.push('    ignore: []');
+  }
+  return `${lines.join('\n')}\n`;
+}
