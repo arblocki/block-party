@@ -43,6 +43,10 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
   const { command, cwd, logPath, timeoutMs } = opts;
   const killGraceMs = opts.killGraceMs ?? 2000;
   const started = Date.now();
+  // Already cancelled: never start the process.
+  if (opts.signal?.aborted) {
+    return Promise.resolve({ code: null, signal: 'SIGTERM', durationMs: 0, timedOut: false });
+  }
 
   return new Promise((resolve, reject) => {
     let fd: number;

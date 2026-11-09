@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -123,15 +123,16 @@ describe('runShell abort', () => {
     expect(await goneWithin(Number(readFileSync(pidFile, 'utf8').trim()))).toBe(true);
   });
 
-  it('does not start when already aborted', async () => {
+  it('does not start the command when already aborted', async () => {
+    const marker = join(dir, 'ran');
     const res = await runShell({
-      command: 'sleep 30',
+      command: `touch ${marker}`,
       cwd: dir,
       logPath: join(dir, 'log'),
       timeoutMs: 60_000,
-      killGraceMs: 100,
       signal: AbortSignal.abort(),
     });
-    expect(res.code === 0).toBe(false);
+    expect(res.code).toBeNull();
+    expect(existsSync(marker)).toBe(false);
   });
 });

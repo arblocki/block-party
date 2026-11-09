@@ -163,10 +163,11 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     }
   } catch (e) {
     await ctx.pending.catch(() => undefined);
-    if (e instanceof Halt) {
-      await setStage(ctx, e.stage, e.message);
-    } else if (e instanceof InterruptedError || input.signal?.aborted) {
+    if (input.signal?.aborted || e instanceof InterruptedError) {
+      // Cancellation wins over whatever failure the killed work produced.
       await setStage(ctx, 'blocked', 'interrupted');
+    } else if (e instanceof Halt) {
+      await setStage(ctx, e.stage, e.message);
     } else {
       await setStage(ctx, 'failed', (e as Error).message);
     }

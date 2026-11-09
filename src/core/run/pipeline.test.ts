@@ -85,6 +85,8 @@ interface Opts {
   section?: unknown;
   noChecksConfig?: boolean;
   hangFirstTurn?: boolean;
+  /** Abort the signal (and fail the call) when this step runs. */
+  abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
 }
 
@@ -147,11 +149,19 @@ function harness(o: Opts) {
     },
     runShell: async () => {
       calls.setup++;
+      if (o.abortAt?.step === 'setup') {
+        o.abortAt.ac.abort();
+        return { code: null, signal: 'SIGTERM', durationMs: 1, timedOut: false };
+      }
       return { code: 0, signal: null, durationMs: 1, timedOut: false };
     },
     runChecks: async (opts): Promise<ChecksRunResult> => {
       calls.checks++;
-      const passed = checkPlan.length ? checkPlan.shift()! : true;
+      let passed = checkPlan.length ? checkPlan.shift()! : true;
+      if (o.abortAt?.step === 'checks') {
+        o.abortAt.ac.abort();
+        passed = false;
+      }
       const logPath = join(root, `check-${calls.checks}.log`);
       writeFileSync(logPath, 'line one\nboom\n');
       return {
@@ -188,6 +198,10 @@ function harness(o: Opts) {
         headSha: opts.headSha,
       });
       o.onReview?.(git);
+      if (o.abortAt?.step === 'review') {
+        o.abortAt.ac.abort();
+        return { ok: false, error: 'codex killed', attempts: 1 };
+      }
       const r = reviews.shift() ?? review([]);
       if (r instanceof Error) throw r;
       return r;
@@ -467,4 +481,16 @@ describe('runPipeline', () => {
       'implementer.session',
     );
   });
+
+  it.each(['setup', 'checks', 'review'] as const)(
+    'records blocked/interrupted when aborted during %s',
+    async (step) => {
+      const ac = new AbortController();
+      const h = harness({ turns: [{}, {}, {}], abortAt: { step, ac } });
+      const out = await h.run(ac.signal);
+      expect(out.stage).toBe('blocked');
+      expect(out.note).toBe('interrupted');
+      expect(h.calls.published).toHaveLength(0);
+    },
+  );
 });
