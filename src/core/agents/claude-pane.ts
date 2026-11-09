@@ -5,7 +5,7 @@ import path from 'node:path';
 import { worktreesRoot } from '../run/paths.js';
 import { HerdrError } from '../terminal/herdr-client.js';
 import type { PaneRef, TerminalHost } from '../terminal/types.js';
-import { scrubbedEnv } from './claude-headless.js';
+import { scrubbedEnv } from '../process/env.js';
 import { readHookEvents, waitForTurnEnd, type HookWatcher } from './hook-events.js';
 import type {
   ImplementerAdapter,

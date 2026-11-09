@@ -15,7 +15,7 @@ import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
 import { RunLog } from './events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
-import type { CiWaitState, PublishOptions } from './publish.js';
+import { PublishError, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 
 const PLAN = `# Add widgets
@@ -85,6 +85,7 @@ interface Opts {
   section?: unknown;
   noChecksConfig?: boolean;
   hangFirstTurn?: boolean;
+  abortInPublish?: AbortController;
   /** Abort the signal (and fail the call) when this step runs. */
   abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
@@ -208,6 +209,13 @@ function harness(o: Opts) {
     },
     publishRun: async (p) => {
       calls.published.push(p);
+      if (o.abortInPublish) {
+        o.abortInPublish.abort();
+        throw new PublishError('interrupted', 'Publishing interrupted', {
+          pushed: true,
+          prNumber: 9,
+        });
+      }
       return { prNumber: 7, url: 'https://x/pr/7', headSha: git.head, created: true };
     },
     waitForCi: async () => ({ state: o.ci ?? 'success', checks: [] }),
@@ -493,4 +501,15 @@ describe('runPipeline', () => {
       expect(h.calls.published).toHaveLength(0);
     },
   );
+
+  it('records the PR number when interrupted during publishing', async () => {
+    const ac = new AbortController();
+    const h = harness({ turns: [{}], abortInPublish: ac });
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toBe('interrupted');
+    expect(state(out).prNumber).toBe(9);
+    expect(h.calls.published[0]!.signal).toBe(ac.signal);
+    expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain('publish.stopped');
+  });
 });

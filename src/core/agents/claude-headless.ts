@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
 import { appendFile, mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { scrubbedEnv } from '../process/env.js';
 import { LlmError } from '../llm/types.js';
 import { spawnCli, type SpawnFn } from '../llm/spawn-cli.js';
 import { StreamParser, type ResultEvent, type StreamEvent } from './claude-stream.js';
@@ -23,13 +24,7 @@ export interface HeadlessClaudeOptions {
   onEvent?: (event: HeadlessEvent) => void;
 }
 
-const SCRUBBED_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'BLOCK_PARTY_TOKEN'];
-
-export function scrubbedEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const k of SCRUBBED_ENV) delete env[k];
-  return env;
-}
+export { scrubbedEnv };
 
 async function exists(p: string): Promise<boolean> {
   try {

@@ -16,6 +16,23 @@ function tmp(): string {
 }
 
 describe('runChecks', () => {
+  it('does not leak credentials into check processes', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_secret');
+    vi.stubEnv('GH_TOKEN', 'ghp_secret2');
+    try {
+      const logDir = join(tmp(), 'logs');
+      const res = await runChecks({
+        cwd: tmp(),
+        logDir,
+        headSha: 'abc',
+        checks: [{ name: 'leak', run: 'echo "t=$GITHUB_TOKEN$GH_TOKEN"; exit 1' }],
+      });
+      expect(readFileSync(res.results[0]!.logPath, 'utf8')).toBe('t=\n');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('kills a running check promptly when aborted and skips the rest', async () => {
     const cwd = tmp();
     const ac = new AbortController();

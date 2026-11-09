@@ -144,19 +144,19 @@ export function renderPrBody(input: PrBodyInput): string {
   return out.join('\n');
 }
 
-export type PublishErrorCode = 'push_failed' | 'remote_mismatch' | 'head_mismatch';
+export type PublishErrorCode = 'push_failed' | 'remote_mismatch' | 'head_mismatch' | 'interrupted';
 
 export class PublishError extends Error {
   constructor(
     readonly code: PublishErrorCode,
     message: string,
+    /** What had already happened externally when publishing stopped. */
+    readonly done: { pushed: boolean; prNumber?: number } = { pushed: false },
   ) {
     super(message);
     this.name = 'PublishError';
   }
 }
-
-const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export interface PublishOptions {
   git: Pick<Git, 'pushBranch' | 'remoteBranchSha' | 'headSha'>;
@@ -172,6 +172,8 @@ export interface PublishOptions {
   /** How long to wait for GitHub to show the pushed head on the PR. Default 30 s. */
   headTimeoutMs?: number;
   headPollMs?: number;
+  /** Checked before the push, before creating the PR and while polling the head. */
+  signal?: AbortSignal;
 }
 
 export interface PublishResult {
@@ -184,15 +186,24 @@ export interface PublishResult {
 /** Pushes (never forced), confirms the remote head, ensures a draft PR and confirms its head. */
 export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
   const { git, github, repo, worktree, branch } = opts;
-  const sleep = opts.sleep ?? realSleep;
+  const signal = opts.signal;
+  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, signal));
+  const done: { pushed: boolean; prNumber?: number } = { pushed: false };
+  const interrupted = (): PublishError =>
+    new PublishError('interrupted', 'Publishing interrupted', { ...done });
+  const checkAbort = () => {
+    if (signal?.aborted) throw interrupted();
+  };
   const now = opts.now ?? Date.now;
   const local = await git.headSha(worktree);
 
+  checkAbort();
   try {
     await git.pushBranch(worktree, branch);
   } catch (e) {
     throw new PublishError('push_failed', `Pushing ${branch} failed: ${(e as Error).message}`);
   }
+  done.pushed = true;
   const remote = await git.remoteBranchSha(worktree, branch);
   if (remote !== local) {
     throw new PublishError(
@@ -201,8 +212,10 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
     );
   }
 
+  checkAbort();
   let pr = await github.findOpenPrForBranch(repo, branch);
   const created = pr === undefined;
+  checkAbort();
   pr ??= await github.createPr(repo, {
     head: branch,
     base: opts.base,
@@ -211,6 +224,7 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
     draft: true,
   });
 
+  done.prNumber = pr.number;
   const deadline = now() + (opts.headTimeoutMs ?? 30_000);
   for (;;) {
     if (pr.headSha === local) {
@@ -222,7 +236,13 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
         `PR #${pr.number} head is ${pr.headSha}, expected ${local}`,
       );
     }
-    await sleep(opts.headPollMs ?? 1000);
+    try {
+      await sleep(opts.headPollMs ?? 1000);
+    } catch (e) {
+      if (signal?.aborted) throw interrupted();
+      throw e;
+    }
+    checkAbort();
     pr = await github.getPr(repo, pr.number);
   }
 }

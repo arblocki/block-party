@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { scrubbedEnv } from '../process/env.js';
 import { mkdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildAgents, buildSettings, implementerPermissions } from '../agents/claude-config.js';
@@ -321,6 +322,7 @@ async function provision(ctx: Ctx): Promise<void> {
       logPath,
       timeoutMs: input.config.policy.checkTimeoutMs,
       signal: input.signal,
+      env: scrubbedEnv(),
     });
     if (r.code !== 0 || r.timedOut) throw new Halt('failed', `Setup failed (see ${logPath})`);
   }
@@ -645,22 +647,28 @@ async function publish(ctx: Ctx): Promise<void> {
   const github = await deps.github();
   let pr: PublishResult;
   try {
-    pr = await abortable(
-      deps.publishRun({
-        git: deps.git,
-        github,
-        repo,
-        worktree: wt,
-        branch: st.branch,
-        base: st.baseRef,
-        title: st.title,
-        body,
-      }),
-      input.signal,
-    );
+    pr = await deps.publishRun({
+      git: deps.git,
+      github,
+      repo,
+      worktree: wt,
+      branch: st.branch,
+      base: st.baseRef,
+      title: st.title,
+      body,
+      signal: input.signal,
+    });
   } catch (e) {
-    if (e instanceof PublishError)
+    if (e instanceof PublishError) {
+      // Record external effects that already happened (they survive an interrupt).
+      if (e.done.prNumber !== undefined) await patchState(ctx, { prNumber: e.done.prNumber });
+      ctx.log.log('publish.stopped', {
+        code: e.code,
+        pushed: e.done.pushed,
+        prNumber: e.done.prNumber,
+      });
       throw new Halt('blocked', `Publish failed (${e.code}): ${e.message}`);
+    }
     throw e;
   }
   await patchState(ctx, { prNumber: pr.prNumber });

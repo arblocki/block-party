@@ -77,6 +77,30 @@ describe('publishRun', () => {
     return { base, log, clock };
   }
 
+  it('does not push when already aborted', async () => {
+    const { base, log } = setup({});
+    await expect(publishRun({ ...base, signal: AbortSignal.abort() })).rejects.toMatchObject({
+      code: 'interrupted',
+      done: { pushed: false },
+    });
+    expect(log).toEqual([]);
+  });
+
+  it('reports the pushed branch and PR number when aborted during the head poll', async () => {
+    const { base, log } = setup({ prHeads: ['stale', 'stale'] });
+    const ac = new AbortController();
+    await expect(
+      publishRun({
+        ...base,
+        signal: ac.signal,
+        sleep: async () => {
+          ac.abort();
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'interrupted', done: { pushed: true, prNumber: 5 } });
+    expect(log).toEqual(['push', 'find', 'create:true']);
+  });
+
   it('pushes, creates a draft PR and confirms the head', async () => {
     const { base, log } = setup({});
     expect(await publishRun(base)).toEqual({

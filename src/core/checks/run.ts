@@ -5,6 +5,7 @@ import {
   type RunShellOptions,
   type RunShellResult,
 } from '../process/run-shell.js';
+import { scrubbedEnv } from '../process/env.js';
 import type { CheckConfig } from './config.js';
 
 export interface CheckResult {
@@ -32,6 +33,8 @@ export interface RunChecksOptions {
   timeoutMs?: number;
   /** Aborts the running check (process group killed) and skips the rest; `passed` is false. */
   signal?: AbortSignal;
+  /** Defaults to process.env without credentials (GITHUB_TOKEN etc.). */
+  env?: NodeJS.ProcessEnv;
   runShell?: (opts: RunShellOptions) => Promise<RunShellResult>;
 }
 
@@ -73,6 +76,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
         cwd,
         logPath,
         timeoutMs: opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+        env: opts.env ?? scrubbedEnv(),
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
       results.push({

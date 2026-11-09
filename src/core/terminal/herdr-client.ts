@@ -3,6 +3,7 @@
  * request) plus a dedicated connection for `events.subscribe`. Wire format verified in
  * docs/spikes/herdr-claude.md.
  */
+import { SECRET_ENV_VARS } from '../process/env.js';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import os from 'node:os';
@@ -195,7 +196,7 @@ export class HerdrClient implements HerdrCaller {
 }
 
 /** Never inherited by panes (the herdr server's env is what panes start with). */
-const SECRET_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'BLOCK_PARTY_TOKEN'];
+const SECRET_ENV: readonly string[] = SECRET_ENV_VARS;
 
 /** Environment for spawning herdr from inside a herdr pane: HERDR_* makes the CLI refuse ("nested herdr"). */
 export function cleanHerdrEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
