@@ -211,6 +211,8 @@ describe('createPaneClaude', () => {
         '/s.json',
         '--agents',
         '/a.json',
+        '--add-dir',
+        input.runDir,
         '--allowedTools',
         'Read',
         'Edit',
@@ -411,6 +413,8 @@ describe('createPaneClaude', () => {
     expect(outcome.kind).toBe('report');
     expect(host.opens[0]!.label).toBe('bp-r1-impl-r2');
     expect(host.opens[0]!.argv.slice(0, 3)).toEqual(['claude', '--resume', SID]);
+    expect(host.opens[0]!.argv).toContain('--add-dir');
+    expect(host.opens[0]!.argv[host.opens[0]!.argv.indexOf('--add-dir') + 1]).toBe(input.runDir);
     expect(host.opens[0]!.argv.slice(-2)).toEqual(['--', 'next']);
     expect(session.paneLabel).toBe('bp-r1-impl-r2');
     expect(host.texts).toEqual([]);

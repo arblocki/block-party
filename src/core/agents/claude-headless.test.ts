@@ -102,6 +102,8 @@ describe('createHeadlessClaude', () => {
       '/s.json',
       '--agents',
       '/a.json',
+      '--add-dir',
+      dir,
       '--allowedTools',
       'Read',
       'Bash(git status:*)',

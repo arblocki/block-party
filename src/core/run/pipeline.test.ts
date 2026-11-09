@@ -535,5 +535,6 @@ describe('runPipeline', () => {
     expect(brief).toContain('`pnpm test`');
     expect(brief).toContain('`node`');
     expect(brief).toContain('Anything else stops the run until a human approves it.');
+    expect(brief).toContain(`The run directory ${out.runDir} is readable and writable for you.`);
   });
 });

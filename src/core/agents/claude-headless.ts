@@ -69,6 +69,8 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
       input.settingsPath,
       '--agents',
       input.agentsPath,
+      '--add-dir',
+      input.runDir,
       ...(input.allowedTools.length ? ['--allowedTools', ...input.allowedTools] : []),
       ...(input.disallowedTools.length ? ['--disallowedTools', ...input.disallowedTools] : []),
     ];

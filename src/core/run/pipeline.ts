@@ -129,14 +129,15 @@ interface Ctx {
 }
 
 /** Brief line telling the implementer which shell commands need no approval. */
-function toolsLine(allowedTools: string[]): string {
+function toolsLine(allowedTools: string[], runDir: string): string {
   const prefixes = allowedTools
     .filter((t) => t.startsWith('Bash(') && t.endsWith(')'))
     .map((t) => `\`${t.slice(5, -1).replace(/:\*$/, '')}\``);
   return (
     '- Edit files with the Edit/Write tools, not shell scripts (python/sed/heredocs). ' +
     `Shell commands you may run without approval: ${prefixes.join(', ')}. ` +
-    'Anything else stops the run until a human approves it.'
+    'Anything else stops the run until a human approves it. ' +
+    `The run directory ${runDir} is readable and writable for you.`
   );
 }
 
@@ -294,7 +295,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
       runDir,
       planPath,
       planVersion: 1,
-      extraBoundaries: `${toolsLine(perms.allowedTools)}\n- The report schema is at \`${join(runDir, 'report.schema.json')}\`; read it before writing report.json.`,
+      extraBoundaries: `${toolsLine(perms.allowedTools, runDir)}\n- The report schema is at \`${join(runDir, 'report.schema.json')}\`; read it before writing report.json.`,
       subagentList: Object.keys(subagentModels).join(', '),
       checkCommands: checks.required.map((c) => `- \`${c.run}\``).join('\n'),
     },

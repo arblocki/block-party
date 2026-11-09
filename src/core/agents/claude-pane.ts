@@ -129,6 +129,8 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       input.settingsPath,
       '--agents',
       agents,
+      '--add-dir',
+      input.runDir,
       ...(input.allowedTools.length ? ['--allowedTools', ...input.allowedTools] : []),
       ...(input.disallowedTools.length ? ['--disallowedTools', ...input.disallowedTools] : []),
     ];
