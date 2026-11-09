@@ -25,7 +25,7 @@ export interface HeadlessClaudeOptions {
 
 const SCRUBBED_ENV = ['GITHUB_TOKEN', 'GH_TOKEN', 'BLOCK_PARTY_TOKEN'];
 
-function scrubbedEnv(): NodeJS.ProcessEnv {
+export function scrubbedEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
   for (const k of SCRUBBED_ENV) delete env[k];
   return env;
