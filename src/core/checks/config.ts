@@ -60,6 +60,11 @@ function flowScalar(s: string): string {
   return out.replace(/^\{ v: /, '').replace(/ \}$/, '');
 }
 
+/** One YAML comment line per line of `text`, so embedded newlines cannot escape the comment. */
+function comment(indent: string, text: string): string[] {
+  return text.split(/\r?\n/).map((l) => `${indent}# ${l}`.trimEnd());
+}
+
 function renderCheck(c: ProposedCheck): string {
   const parts = [`name: ${flowScalar(c.name)}`, `run: ${flowScalar(c.run)}`];
   if (c.ci) parts.push(`ci: ${flowScalar(c.ci)}`);
@@ -73,18 +78,18 @@ function renderCheck(c: ProposedCheck): string {
  */
 export function renderChecksYaml(p: ChecksProposal): string {
   const lines: string[] = [];
-  for (const w of p.warnings) lines.push(`# ${w}`);
+  for (const w of p.warnings) lines.push(...comment('', w));
   lines.push('checks:');
   if (p.setup) lines.push(`  setup: ${scalar(p.setup)}`);
   else if (p.setupNeedsReview) {
-    lines.push(`  # NEEDS REVIEW: ${p.setupNeedsReview.reason}`);
+    lines.push(...comment('  ', `NEEDS REVIEW: ${p.setupNeedsReview.reason}`));
     lines.push(`  # setup: ${scalar(p.setupNeedsReview.command)}`);
   }
   lines.push(p.checks.some((c) => !c.needsReview) ? '  required:' : '  required: []');
   for (const c of p.checks) {
-    for (const n of c.notes ?? []) lines.push(`    # ${n}`);
+    for (const n of c.notes ?? []) lines.push(...comment('    ', n));
     if (c.needsReview) {
-      lines.push(`    # NEEDS REVIEW: ${c.needsReview}`);
+      lines.push(...comment('    ', `NEEDS REVIEW: ${c.needsReview}`));
       lines.push(`    # - ${renderCheck(c)}`);
     } else {
       lines.push(`    - ${renderCheck(c)}`);

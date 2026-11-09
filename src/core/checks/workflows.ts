@@ -190,12 +190,13 @@ export function kebab(s: string): string {
 }
 
 /**
- * Stable key for a run step inside its job: the kebab-cased step name when it is non-empty and
- * unique among the job's run steps, otherwise the step index.
+ * Stable key for a run step inside its job: the kebab-cased step name when it is non-empty,
+ * non-numeric (so it cannot be mistaken for another step's index) and unique among the job's run
+ * steps, otherwise the step index.
  */
 export function stepKey(job: WorkflowJob, step: RunStep): string {
   const slug = step.name ? kebab(step.name) : '';
-  if (!slug) return String(step.index);
+  if (!slug || /^\d+$/.test(slug)) return String(step.index);
   const clash = job.steps.some(
     (s) => s.kind === 'run' && s !== step && s.name && kebab(s.name) === slug,
   );

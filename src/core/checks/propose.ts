@@ -75,7 +75,14 @@ function uniqueName(base: string, used: Set<string>): string {
   return name;
 }
 
+/** Shells (first word of `shell:`) whose commands run as written in a local POSIX shell. */
+const POSIX_SHELLS = new Set(['bash', 'sh']);
+
 function reviewReason(job: WorkflowJob, step: RunStep): string | undefined {
+  const shell = step.shell?.trim().split(/\s+/)[0];
+  if (shell !== undefined && !POSIX_SHELLS.has(shell)) {
+    return `step runs with shell: ${step.shell}, not a POSIX shell, so the command will not run as written locally`;
+  }
   if (hasExpression(step.command)) {
     return 'command contains a ${{ }} expression that cannot be evaluated locally';
   }

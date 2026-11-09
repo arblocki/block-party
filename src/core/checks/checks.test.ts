@@ -469,3 +469,113 @@ jobs:
     expect(jobGuarded.setup).toBe('yarn install --frozen-lockfile');
   });
 });
+
+describe('fix round 2 regressions', () => {
+  it('renders multi-line if: conditions as valid YAML comments', () => {
+    const p = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request
+jobs:
+  a:
+    if: |
+      github.event_name == 'pull_request' &&
+      !github.event.pull_request.draft
+    steps:
+      - run: npm ci
+      - if: >-
+          always() &&
+          success()
+        run: npm test
+      - run: npm run lint
+`,
+      ),
+    ]);
+    expect(p.setupNeedsReview?.reason).toContain('condition');
+    const yaml = renderChecksYaml(p);
+    const parsed = parseChecksConfig(yaml);
+    expect(parsed?.setup).toBeUndefined();
+    expect(parsed?.required).toEqual([]);
+    for (const line of yaml.split('\n')) {
+      if (line.includes('github.event') || line.includes('success()')) {
+        expect(line.trimStart().startsWith('#')).toBe(true);
+      }
+    }
+  });
+
+  it('keeps comment-rendered warnings and notes on comment lines', () => {
+    const yaml = renderChecksYaml({
+      source: 'workflows',
+      workflows: [],
+      warnings: ['Could not parse x.yml: bad\nchecks: oops'],
+      checks: [{ name: 'a', run: 'x', notes: ['line one\nrequired: []'] }],
+    });
+    expect(parseChecksConfig(yaml)?.required).toEqual([{ name: 'a', run: 'x' }]);
+  });
+
+  it('does not let a numeric step name alias another step index', () => {
+    const results = [
+      wf(
+        'ci.yml',
+        `on: pull_request
+jobs:
+  a:
+    steps:
+      - name: "1"
+        run: echo named-one
+      - run: echo at-index-one
+`,
+      ),
+    ];
+    const p = proposeFromWorkflows(results);
+    const refs = p.checks.map((c) => c.ci);
+    expect(new Set(refs).size).toBe(2);
+    expect(refs).toEqual(['ci.yml#a/0', 'ci.yml#a/1']);
+
+    // Covering only the step named "1" must still report the step at index 1 as missing.
+    const config = parseChecksConfig(`
+checks:
+  required:
+    - { name: one, run: echo named-one, ci: "ci.yml#a/0" }
+`);
+    if (!config) throw new Error('no config');
+    expect(detectDrift(config, results).missing.map((m) => m.command)).toEqual([
+      'echo at-index-one',
+    ]);
+  });
+
+  it('flags steps that run under a non-POSIX shell for review', () => {
+    const p = proposeFromWorkflows([
+      wf(
+        'ci.yml',
+        `on: pull_request
+defaults:
+  run:
+    shell: pwsh
+jobs:
+  a:
+    steps:
+      - run: Write-Host hi
+      - run: print("hi")
+        shell: python
+      - run: echo ok
+        shell: bash
+      - run: echo custom
+        shell: bash --noprofile --norc -eo pipefail {0}
+      - run: echo sh
+        shell: sh
+      - run: dir
+        shell: cmd
+`,
+      ),
+    ]);
+    expect(p.checks.map((c) => c.needsReview)).toEqual([
+      expect.stringContaining('shell: pwsh'),
+      expect.stringContaining('shell: python'),
+      undefined,
+      undefined,
+      undefined,
+      expect.stringContaining('shell: cmd'),
+    ]);
+  });
+});
