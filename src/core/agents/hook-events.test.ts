@@ -73,6 +73,35 @@ describe('waitForTurnEnd', () => {
       ...extra,
     });
 
+  it('onPermission: Notification and final Stop in one batch still resolves report', async () => {
+    const prompts: string[] = [];
+    const p = start({ onPermission: (m) => prompts.push(m) });
+    writeFileSync(reportPath, '{}');
+    add({
+      hook_event_name: 'Notification',
+      session_id: 's1',
+      notification_type: 'permission_prompt',
+      message: 'approve?',
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1', background_tasks: [] });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await p).toEqual({ kind: 'report' });
+    expect(prompts).toEqual(['approve?']);
+  });
+
+  it('onPermission: a blocked episode is reported once and the wait continues', async () => {
+    const prompts: string[] = [];
+    const p = start({
+      onPermission: (m) => prompts.push(m),
+      agentState: () => Promise.resolve('blocked' as const),
+      timeoutMs: 20_000,
+    });
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(prompts).toEqual(['agent is blocked awaiting input']);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
   it('ignores a Stop with background tasks; the second Stop resolves report', async () => {
     const p = start();
     add({ hook_event_name: 'Stop', session_id: 's1', background_tasks: [{ id: 'a' }] });

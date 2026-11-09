@@ -226,41 +226,27 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     return { pane, outcome };
   }
 
-  /**
-   * Waits for the turn to end. A permission prompt is not the end: report it, wait for the
-   * human to resolve it, and keep waiting within the original timeout.
-   */
-  async function awaitTurn(
+  /** Waits for the turn to end; permission prompts are reported but do not end the wait. */
+  function awaitTurn(
     pane: PaneRef,
     sessionId: string,
     input: ImplementerStartInput,
     offset: number,
   ): Promise<TurnOutcome> {
-    const deadline = now() + input.timeoutMs;
-    let from = offset;
-    for (;;) {
-      const outcome = await waitForTurnEnd({
-        watcher: opts.watcherFactory(input.eventsPath, from),
-        sessionId,
-        reportPath: input.reportPath,
-        agentState: () => host.agentState(pane),
-        settleMs: t.settleMs,
-        pollMs: t.pollMs,
-        timeoutMs: Math.max(1, deadline - now()),
-        signal: input.signal,
-      });
-      if (outcome.kind !== 'permission') return outcome;
-      from = fileSize(input.eventsPath);
-      emit('agent.permission_wait', { message: outcome.message });
-      input.onPermission?.(outcome.message);
-      for (;;) {
-        if (input.signal?.aborted) return { kind: 'exited', reason: 'aborted' };
-        if (now() >= deadline) return { kind: 'timeout' };
-        const state = await host.agentState(pane).catch(() => undefined);
-        if (state !== 'blocked') break;
-        await sleep(t.pollMs ?? 250);
-      }
-    }
+    return waitForTurnEnd({
+      watcher: opts.watcherFactory(input.eventsPath, offset),
+      sessionId,
+      reportPath: input.reportPath,
+      agentState: () => host.agentState(pane),
+      settleMs: t.settleMs,
+      pollMs: t.pollMs,
+      timeoutMs: input.timeoutMs,
+      signal: input.signal,
+      onPermission: (message) => {
+        emit('agent.permission_wait', { message });
+        input.onPermission?.(message);
+      },
+    });
   }
 
   async function waitIdle(pane: PaneRef, signal?: AbortSignal): Promise<boolean> {

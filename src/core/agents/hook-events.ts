@@ -131,6 +131,12 @@ export interface WaitForTurnEndOptions {
   signal?: AbortSignal;
   /** Re-check cadence for settle and blocked-state polling. */
   pollMs?: number;
+  /**
+   * When given, a permission prompt (Notification, or blocked > 3 s) calls this and the wait
+   * continues on the same watcher instead of resolving `permission`. The blocked-state signal
+   * fires once per blocked episode.
+   */
+  onPermission?: (message: string) => void;
 }
 
 const BLOCKED_MS = 3000;
@@ -155,6 +161,8 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
     /** Latest completed state from any query; drives the blocked > 3 s check. */
     let lastState: AgentState | undefined;
     let blockedSince: number | undefined;
+    /** A prompt was already reported for the current blocked episode. */
+    let promptReported = false;
     let queryInFlight = false;
     let done = false;
 
@@ -178,7 +186,11 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
         ev.hook_event_name === 'Notification' &&
         ev.notification_type === 'permission_prompt'
       ) {
-        finish({ kind: 'permission', message: ev.message ?? 'permission prompt' });
+        const message = ev.message ?? 'permission prompt';
+        if (opts.onPermission) {
+          promptReported = true;
+          opts.onPermission(message);
+        } else finish({ kind: 'permission', message });
       } else if (isFinalStop(ev)) {
         stop = { at: Date.now() };
       } else if (ev.hook_event_name === 'UserPromptSubmit') {
@@ -195,11 +207,19 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       if (lastState === 'blocked') {
         blockedSince ??= Date.now();
         if (Date.now() - blockedSince > BLOCKED_MS) {
-          finish({ kind: 'permission', message: 'agent is blocked awaiting input' });
-          return;
+          const message = 'agent is blocked awaiting input';
+          if (!opts.onPermission) {
+            finish({ kind: 'permission', message });
+            return;
+          }
+          if (!promptReported) {
+            promptReported = true;
+            opts.onPermission(message);
+          }
         }
       } else {
         blockedSince = undefined;
+        promptReported = false;
       }
       if (stop && Date.now() - stop.at >= settleMs) {
         if (existsSync(reportPath)) finish({ kind: 'report' });
