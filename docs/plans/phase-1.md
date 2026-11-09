@@ -219,7 +219,7 @@ repo root.
   `run`, or `hook`, dispatch to `src/cli/commands/<name>.ts`; otherwise the existing review
   flow (move the current body of `src/cli/index.ts` into `src/cli/commands/review.ts`
   unchanged). `src/cli/index.ts` becomes the shebang entry calling `main`. For `run` and
-  `hook` add stub modules that print "not implemented yet" and exit 2 (Tasks 6 and 10 fill
+  `hook` add stub modules that print "not implemented yet" and exit 2 (Tasks 6 and 11 fill
   them).
 - `block-party checks init [--repo <dir>] [--write]`: prints the rendered proposal
   (`renderChecksYaml`) and the drift report if a config exists; `--write` creates
@@ -296,6 +296,9 @@ Files: `src/core/agents/brief.ts`, `src/core/agents/claude-config.ts`,
 `src/core/agents/hook-events.ts`, `src/core/agents/hook.ts`, `src/cli/commands/hook.ts`,
 tests for each.
 
+This task also creates `src/core/agents/types.ts` containing only the `TurnOutcome` type
+exactly as written in Task 7; `waitForTurnEnd` returns `TurnOutcome`. Task 7 adds the rest.
+
 - `brief.ts`: `TASK_BRIEF_TEMPLATE` (TS constant equal to the fenced block in
   `docs/templates/task-brief.md`; a test extracts the fence from the doc and asserts
   equality) and `renderBrief(vars)`. Vars: `runTitle, worktreePath, branch, baseRef,
@@ -357,7 +360,7 @@ extension to `src/core/llm/spawn-cli.ts` (+ its test).
 - `spawn-cli.ts`: add optional `env?: NodeJS.ProcessEnv` (passed to `spawnFn`) and
   `onStdout?: (chunk: string) => void` / `onStderr?` callbacks invoked for every chunk
   (in addition to the existing buffering). Existing callers unchanged.
-- `types.ts`:
+- `types.ts` (exists from Task 6 with `TurnOutcome`; add the rest):
   ```ts
   export interface ImplementerSession { mode: 'pane' | 'headless'; sessionId: string; cwd: string; paneLabel?: string }
   export interface ImplementerStartInput {
