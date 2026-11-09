@@ -178,31 +178,39 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
     });
 
     let inFlight = false;
+    let lastState: AgentState | undefined;
+    const evaluate = (): void => {
+      if (lastState === 'blocked') {
+        blockedSince ??= Date.now();
+        if (Date.now() - blockedSince > BLOCKED_MS) {
+          finish({ kind: 'permission', message: 'agent is blocked awaiting input' });
+          return;
+        }
+      } else {
+        blockedSince = undefined;
+      }
+      if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
+        if (existsSync(reportPath)) finish({ kind: 'report' });
+        else if (lastState !== 'working') {
+          finish({ kind: 'no_report', detail: 'turn ended without report.json' });
+        }
+      }
+    };
     const tick = setInterval(() => {
-      if (inFlight || done) return;
-      inFlight = true;
-      const getState = opts.agentState
-        ? opts.agentState().catch((): AgentState => 'unknown')
-        : Promise.resolve<AgentState | undefined>(undefined);
-      void getState.then((state) => {
-        inFlight = false;
-        if (done) return;
-        if (state === 'blocked') {
-          blockedSince ??= Date.now();
-          if (Date.now() - blockedSince > BLOCKED_MS) {
-            finish({ kind: 'permission', message: 'agent is blocked awaiting input' });
-            return;
-          }
-        } else {
-          blockedSince = undefined;
-        }
-        if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
-          if (existsSync(reportPath)) finish({ kind: 'report' });
-          else if (state !== 'working') {
-            finish({ kind: 'no_report', detail: 'turn ended without report.json' });
-          }
-        }
-      });
+      if (done) return;
+      // State polling is non-overlapping and never gates the report check below.
+      if (opts.agentState && !inFlight) {
+        inFlight = true;
+        opts
+          .agentState()
+          .catch((): AgentState => 'unknown')
+          .then((state) => {
+            inFlight = false;
+            lastState = state;
+            if (!done) evaluate();
+          });
+      }
+      evaluate();
     }, pollMs);
 
     const timeout = setTimeout(() => finish({ kind: 'timeout' }), opts.timeoutMs);

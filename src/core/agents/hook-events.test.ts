@@ -182,6 +182,26 @@ describe('waitForTurnEnd', () => {
     expect(calls).toBeGreaterThan(0);
   });
 
+  it('resolves report even when agentState never resolves', async () => {
+    writeFileSync(reportPath, '{}');
+    const p = start({ agentState: () => new Promise<never>(() => undefined) });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(await p).toEqual({ kind: 'report' });
+  });
+
+  it('does not emit no_report while the last resolved state is working', async () => {
+    let calls = 0;
+    const p = start({
+      timeoutMs: 10_000,
+      agentState: () =>
+        calls++ === 0 ? Promise.resolve('working' as const) : new Promise<never>(() => undefined),
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
   it('resolves exited on abort', async () => {
     const ac = new AbortController();
     const p = start({ signal: ac.signal });
