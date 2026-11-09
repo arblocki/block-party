@@ -19,6 +19,8 @@ import type {
 
 const PER_PAGE = 100;
 const MAX_FILES = 3000;
+/** Hard cap on pages read per CI list (check runs, statuses). */
+const MAX_CI_PAGES = 10;
 /** Commits listed for an interdiff; more than this is reported as truncated. */
 export const MAX_COMPARE_COMMITS = 1000;
 /** The compare endpoint returns at most this many files and does not paginate them. */
@@ -423,28 +425,69 @@ export function createGitHubClient(deps: { rest: RestLike; gql: GraphqlLike }): 
 
     async getCiStatus(repo, sha) {
       const base = { owner: repo.owner, repo: repo.repo, ref: sha };
-      // Phase 1: only the first 100 check runs are considered; no pagination beyond that.
-      const runs = await rest.request('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', {
-        ...base,
-        per_page: PER_PAGE,
-      });
-      const status = await rest.request('GET /repos/{owner}/{repo}/commits/{ref}/status', base);
       const checks: CiCheck[] = [];
-      for (const r of ((runs.data as Json).check_runs ?? []) as Json[]) {
+      let truncated = false;
+
+      // Pages through a list endpoint (hard cap MAX_CI_PAGES); flags truncation if not exhausted.
+      async function pages(route: string, key: string, onItem: (i: Json) => void): Promise<Json> {
+        let first: Json = {};
+        let seen = 0;
+        for (let page = 1; page <= MAX_CI_PAGES; page++) {
+          const { data } = await rest.request(route, { ...base, per_page: PER_PAGE, page });
+          const d = data as Json;
+          if (page === 1) first = d;
+          const items = (d[key] ?? []) as Json[];
+          items.forEach(onItem);
+          seen += items.length;
+          const total = typeof d.total_count === 'number' ? d.total_count : undefined;
+          if (items.length < PER_PAGE || (total !== undefined && seen >= total)) return first;
+        }
+        truncated = true;
+        return first;
+      }
+
+      await pages('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', 'check_runs', (r) =>
         checks.push({
           name: String(r.name ?? ''),
           status: String(r.status ?? ''),
           conclusion: typeof r.conclusion === 'string' ? r.conclusion : null,
           url: String(r.html_url ?? ''),
-        });
-      }
-      for (const s of ((status.data as Json).statuses ?? []) as Json[]) {
-        const st = String(s.state ?? '');
+        }),
+      );
+      const combined = await pages(
+        'GET /repos/{owner}/{repo}/commits/{ref}/status',
+        'statuses',
+        (s) => {
+          const st = String(s.state ?? '');
+          checks.push({
+            name: String(s.context ?? ''),
+            status: st === 'pending' ? 'in_progress' : 'completed',
+            conclusion: st === 'pending' ? null : st === 'success' ? 'success' : 'failure',
+            url: String(s.target_url ?? ''),
+          });
+        },
+      );
+      // The aggregate is an additional signal in case the status list itself was incomplete.
+      const hasStatuses = (combined.total_count ?? 0) > 0 || (combined.statuses ?? []).length > 0;
+      const soFar = combineCiStatus(checks);
+      if (soFar === 'failure') {
+        /* already failing */
+      } else if (hasStatuses && (combined.state === 'failure' || combined.state === 'error')) {
         checks.push({
-          name: String(s.context ?? ''),
-          status: st === 'pending' ? 'in_progress' : 'completed',
-          conclusion: st === 'pending' ? null : st === 'success' ? 'success' : 'failure',
-          url: String(s.target_url ?? ''),
+          name: 'combined status',
+          status: 'completed',
+          conclusion: 'failure',
+          url: '',
+        });
+      } else if (soFar !== 'pending' && hasStatuses && combined.state === 'pending') {
+        checks.push({ name: 'combined status', status: 'in_progress', conclusion: null, url: '' });
+      }
+      if (truncated) {
+        checks.push({
+          name: 'block-party: results truncated',
+          status: 'in_progress',
+          conclusion: null,
+          url: '',
         });
       }
       return { state: combineCiStatus(checks), checks };

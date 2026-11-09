@@ -501,7 +501,15 @@ describe('github client publish methods', () => {
     const { calls, client } = recorder((route) =>
       route.endsWith('check-runs')
         ? { check_runs: runs.map((r) => ({ ...r, html_url: 'u' })) }
-        : { state: 'pending', statuses },
+        : {
+            state: statuses.some((x) => x.state === 'failure' || x.state === 'error')
+              ? 'failure'
+              : statuses.some((x) => x.state === 'pending')
+                ? 'pending'
+                : 'success',
+            total_count: statuses.length,
+            statuses,
+          },
     );
     return { calls, status: await client.getCiStatus(repo, 'sha1') };
   }
@@ -545,5 +553,69 @@ describe('github client publish methods', () => {
     const { status } = await ci(runs, statuses);
     expect(status.state).toBe(want);
     expect(status.checks).toHaveLength(runs.length + statuses.length);
+  });
+
+  describe('CI pagination', () => {
+    const mkRuns = (n: number, over: Partial<Run> = {}, offset = 0): Run[] =>
+      Array.from({ length: n }, (_, i) => ({
+        name: `c${offset + i}`,
+        status: 'completed',
+        conclusion: 'success',
+        ...over,
+      }));
+    function paged(all: Run[], combined: Record<string, unknown> = {}) {
+      const { calls, client } = (() => {
+        const calls: { route: string; params?: Record<string, unknown> }[] = [];
+        const rest: RestLike = {
+          async request(route, params) {
+            calls.push({ route, params });
+            if (route.endsWith('check-runs')) {
+              const page = params!.page as number;
+              const slice = all.slice((page - 1) * 100, page * 100);
+              return {
+                data: {
+                  total_count: all.length,
+                  check_runs: slice.map((r) => ({ ...r, html_url: 'u' })),
+                },
+              };
+            }
+            return { data: { state: 'success', total_count: 0, statuses: [], ...combined } };
+          },
+        };
+        return { calls, client: createGitHubClient({ rest, gql: noGql }) };
+      })();
+      return { calls, client };
+    }
+
+    it('failure on page 2 -> failure', async () => {
+      const all = [...mkRuns(100), ...mkRuns(1, { conclusion: 'failure' }, 100)];
+      const { client, calls } = paged(all);
+      expect((await client.getCiStatus(repo, 's')).state).toBe('failure');
+      expect(calls.filter((c) => c.route.endsWith('check-runs'))).toHaveLength(2);
+    });
+
+    it('pending on page 2 -> pending', async () => {
+      const all = [...mkRuns(100), ...mkRuns(1, { status: 'queued', conclusion: null }, 100)];
+      const { client } = paged(all);
+      expect((await client.getCiStatus(repo, 's')).state).toBe('pending');
+    });
+
+    it('hitting the page cap never reports success', async () => {
+      const { client, calls } = paged(mkRuns(1500));
+      const status = await client.getCiStatus(repo, 's');
+      expect(status.state).toBe('pending');
+      expect(status.checks.at(-1)?.name).toBe('block-party: results truncated');
+      expect(calls.filter((c) => c.route.endsWith('check-runs'))).toHaveLength(10);
+    });
+
+    it('combined failure with an empty statuses page -> failure', async () => {
+      const { client } = paged(mkRuns(1), { state: 'failure', total_count: 150, statuses: [] });
+      expect((await client.getCiStatus(repo, 's')).state).toBe('failure');
+    });
+
+    it('combined pending with statuses -> pending', async () => {
+      const { client } = paged(mkRuns(1), { state: 'pending', total_count: 3, statuses: [] });
+      expect((await client.getCiStatus(repo, 's')).state).toBe('pending');
+    });
   });
 });
