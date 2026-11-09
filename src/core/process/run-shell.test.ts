@@ -19,6 +19,13 @@ const alive = (pid: number) => {
   }
 };
 
+/** Polls until the pid is gone. kill(pid, 0) succeeds on unreaped zombies, so allow a short wait. */
+const goneWithin = async (pid: number, ms = 2000) => {
+  const deadline = Date.now() + ms;
+  while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  return !alive(pid);
+};
+
 describe('runShell', () => {
   it('captures stdout and stderr in the log and reports the exit code', async () => {
     const logPath = join(dir, 'logs', 'out.log');
@@ -61,7 +68,9 @@ describe('runShell', () => {
     expect(r.timedOut).toBe(true);
     expect(Date.now() - started).toBeLessThan(10_000);
     const pid = Number(readFileSync(pidFile, 'utf8').trim());
-    expect(alive(pid)).toBe(false);
+    expect(pid).toBeGreaterThan(0);
+    // The orphaned sleep may linger as an unreaped zombie until init/launchd reaps it.
+    expect(await goneWithin(pid)).toBe(true);
   });
 
   it('escalates to SIGKILL when SIGTERM is ignored', async () => {
@@ -89,6 +98,6 @@ describe('runShell', () => {
     expect(r).toMatchObject({ code: 1, timedOut: false });
     expect(Date.now() - started).toBeLessThan(5000);
     const pid = Number(readFileSync(logPath, 'utf8').trim());
-    expect(alive(pid)).toBe(false);
+    expect(await goneWithin(pid)).toBe(true);
   });
 });
