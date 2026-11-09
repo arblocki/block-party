@@ -29,7 +29,7 @@ describe('parsePlan', () => {
     expect(r.plan.title).toBe('My change');
     expect(r.plan.acceptanceCriteria).toEqual(['Thing works [browser]', 'Other']);
     expect(r.plan.sections['goal']).toBe('Do it.');
-    expect(r.plan.contentHash).toMatch(/^[0-9a-f]{8}$/);
+    expect(r.plan.contentHash).toMatch(/^[0-9a-f]{64}$/);
     const again = parsePlan(good);
     expect(again.ok && again.plan.contentHash).toBe(r.plan.contentHash);
     const edited = parsePlan(good + '\nmore');
@@ -63,5 +63,22 @@ describe('parsePlan', () => {
     if (r.ok) expect(r.plan.sections['fake']).toBeUndefined();
     const hidden = parsePlan('```\n# T\n## Goal\n```\n');
     expect(hidden.ok).toBe(false);
+  });
+  it('handles nested fences by marker length and char', () => {
+    const nested = good.replace(
+      '1. Step',
+      '````markdown\n## Fake\n```ts\nx\n```\nTODO sample\n````\n1. Step',
+    );
+    const r = parsePlan(nested);
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.plan.sections['fake']).toBeUndefined();
+    // ~~~ does not close a ``` fence; closing line with info text does not close.
+    const tilde = good.replace('1. Step', '```\n~~~\nTODO\n```x\n```\n1. Step');
+    expect(parsePlan(tilde).ok).toBe(true);
+    // document-in-a-fence like docs/templates/plan.md
+    const doc = '```markdown\n# T\n\n## Goal\n\n- [ ] x\n```\n';
+    expect(parsePlan(doc).ok).toBe(false);
+    // after a proper close, TODO is caught again
+    expect(parsePlan(good.replace('1. Step', '```\nx\n```\nTODO')).ok).toBe(false);
   });
 });

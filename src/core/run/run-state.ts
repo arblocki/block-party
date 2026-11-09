@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
@@ -47,7 +48,7 @@ export type RunState = z.infer<typeof RunStateSchema>;
 export async function saveRunState(runDir: string, state: RunState): Promise<void> {
   const valid = RunStateSchema.parse(state);
   await mkdir(runDir, { recursive: true });
-  const tmp = join(runDir, `run.json.${process.pid}.${Date.now()}.tmp`);
+  const tmp = join(runDir, `run.json.${randomUUID()}.tmp`);
   await writeFile(tmp, JSON.stringify(valid, null, 2) + '\n');
   await rename(tmp, join(runDir, 'run.json'));
 }

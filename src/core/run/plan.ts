@@ -1,4 +1,4 @@
-import { fnv1a8 } from '../hash.js';
+import { createHash } from 'node:crypto';
 
 export interface Plan {
   title: string;
@@ -10,7 +10,7 @@ export interface Plan {
 export type ParsePlanResult = { ok: true; plan: Plan } | { ok: false; errors: string[] };
 
 const REQUIRED = ['Goal', 'Approach', 'Acceptance criteria', 'Out of scope'];
-const FENCE = /^\s{0,3}(```+|~~~+)/;
+const FENCE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
 
 export function parsePlan(markdown: string): ParsePlanResult {
   const errors: string[] = [];
@@ -25,9 +25,14 @@ export function parsePlan(markdown: string): ParsePlanResult {
   for (const line of lines) {
     const f = FENCE.exec(line);
     if (f) {
-      const marker = f[1]![0]!;
-      if (fence === null) fence = marker;
-      else if (fence === marker) fence = null;
+      const run = f[1]!;
+      const rest = f[2]!;
+      if (fence === null) {
+        // Backtick fences cannot have backticks in the info string.
+        if (!(run[0] === '`' && rest.includes('`'))) fence = run;
+      } else if (run[0] === fence[0] && run.length >= fence.length && rest.trim() === '') {
+        fence = null;
+      }
       if (current) bodies.get(current)!.push(line);
       continue;
     }
@@ -85,7 +90,7 @@ export function parsePlan(markdown: string): ParsePlanResult {
       title: title!,
       sections,
       acceptanceCriteria,
-      contentHash: fnv1a8(markdown),
+      contentHash: createHash('sha256').update(markdown).digest('hex'),
     },
   };
 }

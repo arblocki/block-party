@@ -39,4 +39,12 @@ describe('run state', () => {
     const dir = await mkdtemp(join(tmpdir(), 'bp-state-'));
     await expect(saveRunState(dir, { ...state, stage: 'nope' as never })).rejects.toThrow();
   });
+  it('survives overlapping saves', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bp-state-'));
+    const stages = ['setup', 'implementing', 'checking', 'reviewing', 'fixing'] as const;
+    await Promise.all(stages.map((stage) => saveRunState(dir, { ...state, stage })));
+    const back = RunStateSchema.parse(JSON.parse(await readFile(join(dir, 'run.json'), 'utf8')));
+    expect(stages).toContain(back.stage);
+    expect(await readdir(dir)).toEqual(['run.json']);
+  });
 });
