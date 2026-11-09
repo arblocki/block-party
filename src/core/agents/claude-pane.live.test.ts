@@ -5,7 +5,7 @@ import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { cleanHerdrEnv } from '../terminal/herdr-client.js';
 import { createHerdrHost } from '../terminal/herdr.js';
-import { buildAgents, buildSettings, hookArgv } from './claude-config.js';
+import { buildAgents, buildSettings } from './claude-config.js';
 import { createPaneClaude } from './claude-pane.js';
 import { HookWatcher } from './hook-events.js';
 
@@ -34,10 +34,20 @@ describe.skipIf(!process.env.BP_LIVE)('pane claude live (session bp-test)', () =
     const eventsPath = path.join(runDir, 'events.jsonl');
     const settingsPath = path.join(runDir, 'settings.json');
     const agentsPath = path.join(runDir, 'agents.json');
+    // Stand-in for `block-party hook` (the built CLI is not available under vitest).
+    const hookJs = path.join(runDir, 'hook.js');
+    fs.writeFileSync(
+      hookJs,
+      "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{try{require('fs').appendFileSync(process.argv[2],JSON.stringify({ts:new Date().toISOString(),payload:JSON.parse(d)})+'\\n')}catch{}process.exit(0)})",
+    );
     fs.writeFileSync(
       settingsPath,
       JSON.stringify(
-        buildSettings({ hookArgv: hookArgv(), eventsPath, permissionMode: 'acceptEdits' }),
+        buildSettings({
+          hookArgv: [process.execPath, hookJs],
+          eventsPath,
+          permissionMode: 'acceptEdits',
+        }),
       ),
     );
     fs.writeFileSync(agentsPath, JSON.stringify(buildAgents([])));
@@ -65,6 +75,10 @@ describe.skipIf(!process.env.BP_LIVE)('pane claude live (session bp-test)', () =
         disallowedTools: [],
         timeoutMs: 120_000,
       });
+      if (outcome.kind !== 'report') {
+        for (const p of await host.list()) console.log(p.label, await host.read(p, 60));
+        console.log(fs.existsSync(eventsPath) ? fs.readFileSync(eventsPath, 'utf8') : 'no events');
+      }
       expect(outcome.kind).toBe('report');
       await adapter.stop(session, { force: true });
     } finally {

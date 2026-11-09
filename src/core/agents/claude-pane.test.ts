@@ -164,6 +164,20 @@ describe('createPaneClaude', () => {
     }
   });
 
+  it('passes agents as inline JSON when the file is readable', async () => {
+    const agents = path.join(dir, 'agents.json');
+    writeFileSync(agents, '{"helper":{}}\n');
+    input.agentsPath = agents;
+    host.onOpen = () => {
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    await adapter().start(input);
+    const argv = host.opens[0]!.argv;
+    expect(argv[argv.indexOf('--agents') + 1]).toBe('{"helper":{}}');
+  });
+
   it('accepts the trust dialog inside the worktrees root', async () => {
     host.paneText = 'Do you trust this folder?\nYes, I trust this folder';
     host.sendKeys = async (_p, keys) => {

@@ -1,6 +1,6 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
-import { mkdir, realpath, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { worktreesRoot } from '../run/paths.js';
 import { HerdrError } from '../terminal/herdr-client.js';
@@ -94,7 +94,14 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
   const emit = (type: string, data: Record<string, unknown>) => opts.onEvent?.({ type, data });
   const sessions = new Map<string, SessionState>();
 
-  function flags(input: ImplementerStartInput): string[] {
+  async function flags(input: ImplementerStartInput): Promise<string[]> {
+    // Interactive claude takes --agents as inline JSON only (a file path works with --print).
+    let agents = input.agentsPath;
+    try {
+      agents = (await readFile(input.agentsPath, 'utf8')).trim() || agents;
+    } catch {
+      // fall back to the path
+    }
     return [
       '--model',
       input.model,
@@ -103,7 +110,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       '--settings',
       input.settingsPath,
       '--agents',
-      input.agentsPath,
+      agents,
       ...(input.allowedTools.length ? ['--allowedTools', ...input.allowedTools] : []),
       ...(input.disallowedTools.length ? ['--disallowedTools', ...input.disallowedTools] : []),
     ];
@@ -157,7 +164,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     const pane = await host.open({
       label,
       cwd: input.cwd,
-      argv: [claudeBin, ...sessionArgs, ...flags(input), '--', prompt],
+      argv: [claudeBin, ...sessionArgs, ...(await flags(input)), '--', prompt],
       env: stringEnv(),
     });
     if (st) st.pane = pane;
