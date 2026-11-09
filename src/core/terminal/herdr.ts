@@ -73,6 +73,11 @@ export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
 
   /** Find a pane by label + realpath(cwd). Returns undefined if absent or server down. */
   async function resolve(pane: PaneRef): Promise<string | undefined> {
+    if (pane.session !== session)
+      throw new HerdrError(
+        'wrong_session',
+        `pane belongs to session ${pane.session}, host is ${session}`,
+      );
     let all: RawPane[];
     try {
       all = await panes();

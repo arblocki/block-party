@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -31,6 +32,14 @@ describe('HerdrClient', () => {
   it('maps a missing socket to server_not_running', async () => {
     const c = new HerdrClient(path.join(os.tmpdir(), 'hd-nonexistent.sock'));
     await expect(c.call('ping')).rejects.toMatchObject({ code: 'server_not_running' });
+  });
+
+  it('maps a non-socket file (ENOTSOCK) to server_not_running', async () => {
+    const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'hd-')), 'x.sock');
+    fs.writeFileSync(f, '');
+    await expect(new HerdrClient(f).call('ping')).rejects.toMatchObject({
+      code: 'server_not_running',
+    });
   });
 
   it('times out', async () => {
@@ -115,6 +124,23 @@ describe('ensureServer', () => {
     expect(calls[0]?.command).toBe('hb');
     expect(calls[0]?.args).toEqual(['--session', 'bp-x', 'server']);
     expect(calls[0]?.env.HERDR_TEST_LEAK).toBeUndefined();
+  });
+
+  it.each([
+    ['ENOENT', 'not_installed'],
+    ['EACCES', 'spawn_failed'],
+  ])('rejects on async spawn error %s as %s', async (errno, code) => {
+    const spawnFn: HerdrSpawnFn = () => {
+      const ee = new EventEmitter();
+      setTimeout(() => ee.emit('error', Object.assign(new Error('boom'), { code: errno })), 10);
+      return Object.assign(ee, { unref() {} });
+    };
+    const err = await ensureServer('bp-x', {
+      socketPath: path.join(os.tmpdir(), 'hd-never2.sock'),
+      spawnFn,
+      timeoutMs: 5_000,
+    }).catch((e: unknown) => e);
+    expect((err as HerdrError).code).toBe(code);
   });
 
   it('gives up with server_not_running', async () => {
@@ -225,6 +251,16 @@ describe('createHerdrHost', () => {
     });
     expect(await down.isAlive(pane)).toBe(false);
     await expect(down.sendKeys(pane, ['Enter'])).rejects.toMatchObject({ code: 'pane_not_found' });
+  });
+
+  it('rejects refs from another session', async () => {
+    fake.on('pane.list', paneList('w1:p1'));
+    const host = createHerdrHost({ session: 'bp-x', client: sock() });
+    const other = { ...pane, session: 'other' };
+    await expect(host.sendText(other, 'x')).rejects.toMatchObject({ code: 'wrong_session' });
+    await expect(host.close(other)).rejects.toMatchObject({ code: 'wrong_session' });
+    await expect(host.isAlive(other)).rejects.toMatchObject({ code: 'wrong_session' });
+    expect(fake.calls).toHaveLength(0);
   });
 
   it('close calls pane.close; server_not_running propagates from open', async () => {

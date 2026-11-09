@@ -57,7 +57,7 @@ function lineReader(sock: net.Socket, onLine: (obj: JsonObject) => void): void {
 }
 
 function connectError(e: NodeJS.ErrnoException, socketPath: string): HerdrError {
-  if (e.code === 'ENOENT' || e.code === 'ECONNREFUSED')
+  if (e.code === 'ENOENT' || e.code === 'ECONNREFUSED' || e.code === 'ENOTSOCK')
     return new HerdrError('server_not_running', `no herdr server at ${socketPath} (${e.code})`);
   return new HerdrError(e.code ?? 'socket_error', e.message);
 }
@@ -208,7 +208,7 @@ export type HerdrSpawnFn = (
   command: string,
   args: string[],
   opts: { detached: true; stdio: 'ignore'; env: NodeJS.ProcessEnv },
-) => { unref(): void };
+) => { unref(): void; on?(event: 'error', cb: (e: NodeJS.ErrnoException) => void): unknown };
 
 export interface EnsureServerOptions {
   herdrBin?: string;
@@ -237,13 +237,27 @@ export async function ensureServer(
   }
   const args = session === 'default' ? ['server'] : ['--session', session, 'server'];
   const doSpawn: HerdrSpawnFn = spawnFn ?? ((c, a, o) => spawn(c, a, o));
-  doSpawn(herdrBin, args, { detached: true, stdio: 'ignore', env: cleanHerdrEnv() }).unref();
+  const child = doSpawn(herdrBin, args, {
+    detached: true,
+    stdio: 'ignore',
+    env: cleanHerdrEnv(),
+  });
+  let spawnError: HerdrError | undefined;
+  child.on?.('error', (e) => {
+    spawnError = new HerdrError(
+      e.code === 'ENOENT' ? 'not_installed' : 'spawn_failed',
+      `could not start ${herdrBin}: ${e.message}`,
+    );
+  });
+  child.unref();
   const start = Date.now();
   for (;;) {
+    if (spawnError) throw spawnError;
     try {
       await ping();
       return true;
     } catch {
+      if (spawnError) throw spawnError;
       if (Date.now() - start > timeoutMs)
         throw new HerdrError(
           'server_not_running',
