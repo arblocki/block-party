@@ -174,7 +174,10 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     label: string,
     sessionArgs: string[],
     prompt: string,
-  ): Promise<{ pane: PaneRef; outcome: TurnOutcome }> {
+  ): Promise<{ pane: PaneRef | undefined; outcome: TurnOutcome }> {
+    if (input.signal?.aborted) {
+      return { pane: undefined, outcome: { kind: 'exited', reason: 'aborted' } };
+    }
     const offset = fileSize(input.eventsPath);
     const pane = await host.open({
       label,
@@ -262,6 +265,8 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         ['--session-id', sessionId],
         input.prompt,
       );
+      if (!pane)
+        return { session: { mode: 'pane', sessionId, cwd: input.cwd, paneLabel: label }, outcome };
       st.pane = pane;
       sessions.set(sessionId, st);
       const session: ImplementerSession = {
@@ -300,7 +305,9 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         st.eventsPath = input.eventsPath;
       }
 
-      if (!st.known || !(await alive(st.pane))) {
+      const dead = !st.known || !(await alive(st.pane));
+      if (input.signal?.aborted) return aborted;
+      if (dead) {
         st.resumes += 1;
         st.known = true;
         const label = `bp-${st.runId}-impl-r${st.resumes}`;

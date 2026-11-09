@@ -62,6 +62,7 @@ class FakeHost implements TerminalHost {
     return this.stateQueue.shift() ?? this.state;
   }
   async isAlive(p: PaneRef) {
+    await this.aliveGate;
     this.check(p);
     return this.aliveLabels.has(p.label);
   }
@@ -73,7 +74,10 @@ class FakeHost implements TerminalHost {
   attachCommand(p: PaneRef) {
     return `herdr attach ${p.label}`;
   }
+  listGate?: Promise<void>;
+  aliveGate?: Promise<void>;
   async list(): Promise<PaneRef[]> {
+    await this.listGate;
     return [...this.aliveLabels].map((label) => ({ session: 's', label, cwd: this.cwd }));
   }
   cwd = '';
@@ -278,6 +282,32 @@ describe('createPaneClaude', () => {
     };
     expect((await b.send(session, input, 'hello')).kind).toBe('report');
     expect(host.texts).toEqual(['hello']);
+    expect(host.opens).toEqual([]);
+  });
+
+  it('abort during list() or isAlive() opens no pane', async () => {
+    const { a, session } = await started();
+    host.aliveLabels.clear();
+    for (const gate of ['listGate', 'aliveGate'] as const) {
+      const ctl = new AbortController();
+      let release!: () => void;
+      host[gate] = new Promise<void>((r) => (release = r));
+      // list() is only used by a fresh adapter; isAlive() by the known one.
+      const ad = gate === 'listGate' ? adapter() : a;
+      const p = ad.send(session, { ...input, signal: ctl.signal }, 'x');
+      ctl.abort();
+      release();
+      expect(await p).toEqual({ kind: 'exited', reason: 'aborted' });
+      host[gate] = undefined;
+    }
+    expect(host.opens).toEqual([]);
+  });
+
+  it('start aborted before open opens no pane', async () => {
+    const ctl = new AbortController();
+    ctl.abort();
+    const { outcome } = await adapter().start({ ...input, signal: ctl.signal });
+    expect(outcome).toEqual({ kind: 'exited', reason: 'aborted' });
     expect(host.opens).toEqual([]);
   });
 
