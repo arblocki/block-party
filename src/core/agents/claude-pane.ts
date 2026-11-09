@@ -178,6 +178,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     label: string,
     sessionArgs: string[],
     prompt: string,
+    onOpened?: (pane: PaneRef) => void,
   ): Promise<{ pane: PaneRef | undefined; outcome: TurnOutcome }> {
     if (input.signal?.aborted) {
       return { pane: undefined, outcome: { kind: 'exited', reason: 'aborted' } };
@@ -194,6 +195,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       env: stringEnv(),
     });
     if (st) st.pane = pane;
+    onOpened?.(pane);
     emit('agent.pane_opened', { label, sessionId });
 
     const deadline = now() + t.trustMaxMs;
@@ -266,6 +268,12 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         resumes: 1,
         known: true,
       };
+      const session: ImplementerSession = {
+        mode: 'pane',
+        sessionId,
+        cwd: input.cwd,
+        paneLabel: label,
+      };
       const { pane, outcome } = await launch(
         st,
         input,
@@ -273,17 +281,17 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         label,
         ['--session-id', sessionId],
         input.prompt,
+        (opened) => {
+          st.pane = opened;
+          sessions.set(sessionId, st);
+          session.paneLabel = opened.label;
+          input.onSession?.({ ...session });
+        },
       );
-      if (!pane)
-        return { session: { mode: 'pane', sessionId, cwd: input.cwd, paneLabel: label }, outcome };
+      if (!pane) return { session, outcome };
       st.pane = pane;
       sessions.set(sessionId, st);
-      const session: ImplementerSession = {
-        mode: 'pane',
-        sessionId,
-        cwd: input.cwd,
-        paneLabel: pane.label,
-      };
+      session.paneLabel = pane.label;
       return { session, outcome };
     },
 

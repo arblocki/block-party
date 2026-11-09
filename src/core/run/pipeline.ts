@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import { mkdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildAgents, buildSettings, implementerPermissions } from '../agents/claude-config.js';
@@ -39,7 +40,7 @@ import {
   type ReviewRoundInput,
   type WaitForCiOptions,
 } from './publish.js';
-import { readReport, type Report } from './report.js';
+import { ReportObjectSchema, readReport, type Report } from './report.js';
 import { saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
 
@@ -122,6 +123,8 @@ interface Ctx {
   lastReport?: Report;
   lastChecks?: ChecksRunResult;
   rulingsWritten: boolean;
+  /** In-flight run.json save started from a synchronous callback. */
+  pending: Promise<void>;
 }
 
 const PROMPT_IMPLEMENT = (p: string) => `Read the task brief at ${p} and follow it.`;
@@ -159,6 +162,7 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
       await publish(ctx);
     }
   } catch (e) {
+    await ctx.pending.catch(() => undefined);
     if (e instanceof Halt) {
       await setStage(ctx, e.stage, e.message);
     } else if (e instanceof InterruptedError || input.signal?.aborted) {
@@ -270,12 +274,13 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
       runDir,
       planPath,
       planVersion: 1,
-      extraBoundaries: '',
+      extraBoundaries: `- The report schema is at \`${join(runDir, 'report.schema.json')}\`; read it before writing report.json.`,
       subagentList: Object.keys(subagentModels).join(', '),
       checkCommands: checks.required.map((c) => `- \`${c.run}\``).join('\n'),
     },
     rounds: [],
     rulingsWritten: false,
+    pending: Promise.resolve(),
   };
 
   for (const e of configErrors) log.log('checks.warning', { warning: e });
@@ -287,6 +292,15 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   }
 
   return ctx;
+}
+
+/** JSON Schema of report.json, generated from the zod schema the pipeline validates with. */
+export function reportJsonSchema(): object {
+  return {
+    ...z.toJSONSchema(ReportObjectSchema),
+    description:
+      'Final report written to report.json. Rule: when status is "blocked", questions must be non-empty; for any other status, questions must be empty.',
+  };
 }
 
 /** Step 2: worktree, setup command, and the agent/settings files. */
@@ -305,9 +319,11 @@ async function provision(ctx: Ctx): Promise<void> {
       cwd: st.worktreePath,
       logPath,
       timeoutMs: input.config.policy.checkTimeoutMs,
+      signal: input.signal,
     });
     if (r.code !== 0 || r.timedOut) throw new Halt('failed', `Setup failed (see ${logPath})`);
   }
+  await writeArtifact(runDir, 'report.schema.json', reportJsonSchema());
   const models = input.config.subagents;
   await writeArtifact(
     runDir,
@@ -341,22 +357,29 @@ async function implement(ctx: Ctx): Promise<void> {
     renderBrief({ ...ctx.briefBase, stage: 'implement' }),
   );
   const prevHead = await deps.git.headSha(st.worktreePath);
+  const onSession = (session: ImplementerSession) => {
+    ctx.session = session;
+    ctx.log.log('implementer.session', {
+      mode: session.mode,
+      attach: deps.adapter.describe(session),
+    });
+    ctx.pending = ctx.pending.then(() =>
+      patchState(ctx, {
+        implementer: {
+          mode: session.mode,
+          sessionId: session.sessionId,
+          paneLabel: session.paneLabel ?? null,
+        },
+      }),
+    );
+  };
   const { session, outcome } = await abortable(
-    deps.adapter.start({ ...ctx.start, prompt: PROMPT_IMPLEMENT(brief.path) }),
+    deps.adapter.start({ ...ctx.start, prompt: PROMPT_IMPLEMENT(brief.path), onSession }),
     input.signal,
   );
+  if (!ctx.session) onSession(session);
   ctx.session = session;
-  await patchState(ctx, {
-    implementer: {
-      mode: session.mode,
-      sessionId: session.sessionId,
-      paneLabel: session.paneLabel ?? null,
-    },
-  });
-  ctx.log.log('implementer.session', {
-    mode: session.mode,
-    attach: deps.adapter.describe(session),
-  });
+  await ctx.pending;
   await judgeTurn(ctx, outcome, 'implement', 1, prevHead);
 }
 
@@ -486,6 +509,7 @@ async function checksGreen(ctx: Ctx): Promise<void> {
         logDir: join(ctx.runDir, 'checks', head.slice(0, 7)),
         headSha: head,
         timeoutMs: policy.checkTimeoutMs,
+        signal: input.signal,
       }),
       input.signal,
     );
@@ -643,7 +667,10 @@ async function publish(ctx: Ctx): Promise<void> {
   if (!input.config.waitForCi) return finish(ctx, `PR #${pr.prNumber} ${pr.url}`);
 
   await setStage(ctx, 'waiting_ci', `PR #${pr.prNumber}`);
-  const ci = await abortable(deps.waitForCi({ github, repo, sha: head }), input.signal);
+  const ci = await abortable(
+    deps.waitForCi({ github, repo, sha: head, signal: input.signal }),
+    input.signal,
+  );
   if (ci.state === 'failure') {
     throw new Halt(
       'blocked',

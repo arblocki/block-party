@@ -65,6 +65,18 @@ const make = (proc: FakeProc | ((n: number) => FakeProc), events?: HeadlessEvent
 };
 
 describe('createHeadlessClaude', () => {
+  it('calls onSession once the process is launched, before the outcome', async () => {
+    const order: string[] = [];
+    const { adapter, calls } = make({ stdout: init + result() });
+    const { outcome } = await adapter.start({
+      ...input,
+      onSession: (s) => order.push(`session:${s.sessionId}:${calls.length}`),
+    });
+    order.push(`outcome:${outcome.kind}`);
+    expect(order[0]).toMatch(/^session:uuid-1:/);
+    expect(order[1]).toMatch(/^outcome:/);
+  });
+
   it('builds argv with prompt after -- and scrubs the env', async () => {
     vi.stubEnv('GITHUB_TOKEN', 'x');
     vi.stubEnv('GH_TOKEN', 'x');

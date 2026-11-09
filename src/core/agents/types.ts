@@ -20,6 +20,8 @@ export interface ImplementerStartInput {
   disallowedTools: string[];
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Called as soon as the session exists (pane opened / process spawned), before the turn ends. */
+  onSession?: (session: ImplementerSession) => void;
 }
 
 export type TurnOutcome =

@@ -16,6 +16,27 @@ function tmp(): string {
 }
 
 describe('runChecks', () => {
+  it('kills a running check promptly when aborted and skips the rest', async () => {
+    const cwd = tmp();
+    const ac = new AbortController();
+    const started = Date.now();
+    const p = runChecks({
+      cwd,
+      logDir: join(tmp(), 'logs'),
+      headSha: 'abc',
+      signal: ac.signal,
+      checks: [
+        { name: 'slow', run: 'sleep 30' },
+        { name: 'never', run: 'echo hi' },
+      ],
+    });
+    setTimeout(() => ac.abort(), 100);
+    const res = await p;
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(res.passed).toBe(false);
+    expect(res.results.map((r) => r.name)).toEqual(['slow']);
+  });
+
   it('runs all checks sequentially, continuing after failures, with logs', async () => {
     const cwd = tmp();
     const logDir = join(tmp(), 'logs');

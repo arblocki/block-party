@@ -11,6 +11,8 @@ export interface RunShellOptions {
   env?: NodeJS.ProcessEnv;
   /** After SIGTERM on timeout, wait this long before SIGKILL (default 2000ms). */
   killGraceMs?: number;
+  /** Aborting kills the process group like a timeout (SIGTERM, then SIGKILL). */
+  signal?: AbortSignal;
 }
 
 export interface RunShellResult {
@@ -87,6 +89,7 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
       }
     };
     process.once('exit', onProcessExit);
+    const onAbort = () => stop();
 
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -96,6 +99,7 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
       clearTimeout(hardTimer);
       clearInterval(poll);
       process.removeListener('exit', onProcessExit);
+      opts.signal?.removeEventListener('abort', onAbort);
       try {
         closeSync(fd);
       } catch {
@@ -139,6 +143,9 @@ export function runShell(opts: RunShellOptions): Promise<RunShellResult> {
         stop(); // leader left background descendants behind
       else done();
     });
+
+    if (opts.signal?.aborted) stop();
+    else opts.signal?.addEventListener('abort', onAbort, { once: true });
 
     if (Number.isFinite(timeoutMs)) {
       timer = setTimeout(() => {

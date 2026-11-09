@@ -137,6 +137,24 @@ afterEach(() => {
 });
 
 describe('createPaneClaude', () => {
+  it('calls onSession right after the pane opens, before the turn ends', async () => {
+    const order: string[] = [];
+    host.onOpen = () => {
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const a = adapter();
+    const { outcome } = await a.start({
+      ...input,
+      onSession: (s) => {
+        order.push(`session:${s.paneLabel}:${a.describe(s) ? 'desc' : ''}`);
+      },
+    });
+    order.push(`outcome:${outcome.kind}`);
+    expect(order).toEqual(['session:bp-r1-impl:desc', 'outcome:report']);
+  });
+
   it('opens a pane with the expected argv and a scrubbed env, returns report', async () => {
     process.env.GITHUB_TOKEN = 'secret';
     host.onOpen = () => {

@@ -227,6 +227,22 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
   }
 }
 
+/** Sleeps `ms`; rejects (and clears its timer) as soon as `signal` aborts. */
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason as Error);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(signal!.reason as Error);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
 export type CiWaitState = 'success' | 'failure' | 'no_ci' | 'timeout';
 
 export interface WaitForCiOptions {
@@ -238,6 +254,8 @@ export interface WaitForCiOptions {
   noCiGraceMs?: number;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Abort stops polling promptly; waitForCi then rejects with an AbortError. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -251,11 +269,13 @@ export async function waitForCi(
   const timeoutMs = opts.timeoutMs ?? 30 * 60_000;
   const intervalMs = opts.intervalMs ?? 20_000;
   const graceMs = opts.noCiGraceMs ?? 60_000;
-  const sleep = opts.sleep ?? realSleep;
+  const signal = opts.signal;
+  const sleep = opts.sleep ?? ((ms: number) => abortableSleep(ms, signal));
   const now = opts.now ?? Date.now;
   const start = now();
   let seenChecks = false;
   for (;;) {
+    signal?.throwIfAborted();
     const status = await opts.github.getCiStatus(opts.repo, opts.sha);
     const { checks } = status;
     if (status.state === 'success' || status.state === 'failure') {
@@ -268,5 +288,6 @@ export async function waitForCi(
     }
     if (elapsed >= timeoutMs) return { state: 'timeout', checks };
     await sleep(intervalMs);
+    signal?.throwIfAborted();
   }
 }

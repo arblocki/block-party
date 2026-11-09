@@ -101,3 +101,37 @@ describe('runShell', () => {
     expect(await goneWithin(pid)).toBe(true);
   });
 });
+
+describe('runShell abort', () => {
+  it('kills the process group when the signal aborts', async () => {
+    const ac = new AbortController();
+    const pidFile = join(dir, 'pid');
+    const p = runShell({
+      command: `sleep 30 & echo $! > ${pidFile}; wait`,
+      cwd: dir,
+      logPath: join(dir, 'log'),
+      timeoutMs: 60_000,
+      killGraceMs: 200,
+      signal: ac.signal,
+    });
+    await new Promise((r) => setTimeout(r, 300));
+    ac.abort();
+    const started = Date.now();
+    const res = await p;
+    expect(Date.now() - started).toBeLessThan(5000);
+    expect(res.timedOut).toBe(false);
+    expect(await goneWithin(Number(readFileSync(pidFile, 'utf8').trim()))).toBe(true);
+  });
+
+  it('does not start when already aborted', async () => {
+    const res = await runShell({
+      command: 'sleep 30',
+      cwd: dir,
+      logPath: join(dir, 'log'),
+      timeoutMs: 60_000,
+      killGraceMs: 100,
+      signal: AbortSignal.abort(),
+    });
+    expect(res.code === 0).toBe(false);
+  });
+});

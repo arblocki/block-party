@@ -30,6 +30,8 @@ export interface RunChecksOptions {
   logDir: string;
   headSha: string;
   timeoutMs?: number;
+  /** Aborts the running check (process group killed) and skips the rest; `passed` is false. */
+  signal?: AbortSignal;
   runShell?: (opts: RunShellOptions) => Promise<RunShellResult>;
 }
 
@@ -59,6 +61,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
   const results: CheckResult[] = [];
   const used = new Set<string>();
   for (const check of opts.checks) {
+    if (opts.signal?.aborted) break;
     let file = logFileName(check.name);
     for (let i = 2; used.has(file); i++) file = logFileName(`${check.name}-${i}`);
     used.add(file);
@@ -70,6 +73,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
         cwd,
         logPath,
         timeoutMs: opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+        ...(opts.signal ? { signal: opts.signal } : {}),
       });
       results.push({
         name: check.name,
@@ -100,7 +104,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
   }
   return {
     headSha: opts.headSha,
-    passed: results.every((r) => r.exitCode === 0 && !r.timedOut),
+    passed: !opts.signal?.aborted && results.every((r) => r.exitCode === 0 && !r.timedOut),
     results,
   };
 }

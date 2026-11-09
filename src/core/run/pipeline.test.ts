@@ -84,6 +84,7 @@ interface Opts {
   flags?: RunFlagOverrides;
   section?: unknown;
   noChecksConfig?: boolean;
+  hangFirstTurn?: boolean;
   onReview?: (git: { head: string }) => void;
 }
 
@@ -116,6 +117,8 @@ function harness(o: Opts) {
   const adapter: ImplementerAdapter = {
     async start(input) {
       calls.starts.push(input.prompt);
+      input.onSession?.(session);
+      if (o.hangFirstTurn) await new Promise(() => undefined);
       return { session, outcome: doTurn(input) };
     },
     async send(_s, input, message) {
@@ -202,13 +205,14 @@ function harness(o: Opts) {
       worktreePath: (ow, re, id) => join(root, 'wt', `${ow}__${re}`, id),
     },
   };
-  const run = (): Promise<RunOutcome> =>
+  const run = (signal?: AbortSignal): Promise<RunOutcome> =>
     runPipeline(
       {
         repo: root,
         planFile,
         baseRef: 'main',
         config: resolveRunConfig(o.section, o.flags),
+        signal,
       },
       deps,
     );
@@ -429,5 +433,38 @@ describe('runPipeline', () => {
     expect(out.stage).toBe('blocked');
     expect(out.note).toContain('not the commit that passed');
     expect(h.calls.published).toHaveLength(0);
+  });
+
+  it('writes report.schema.json and references it from the brief', async () => {
+    const h = harness({ turns: [{}] });
+    const out = await h.run();
+    const schemaPath = join(out.runDir, 'report.schema.json');
+    const schema = JSON.parse(readFileSync(schemaPath, 'utf8')) as {
+      properties: Record<string, unknown>;
+      description: string;
+    };
+    expect(Object.keys(schema.properties)).toContain('findingResolutions');
+    expect(schema.description).toContain('questions');
+    const brief = readFileSync(join(out.runDir, 'briefs', 'implement-1.md'), 'utf8');
+    expect(brief).toContain(schemaPath);
+  });
+
+  it('records the session immediately and blocks on SIGINT during the first turn', async () => {
+    const h = harness({ turns: [], hangFirstTurn: true });
+    const ac = new AbortController();
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    const out = await p;
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toBe('interrupted');
+    const st = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as {
+      implementer: { sessionId: string } | null;
+    };
+    expect(st.implementer?.sessionId).toBe('s1');
+    expect(h.calls.stops).toBe(0);
+    expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain(
+      'implementer.session',
+    );
   });
 });

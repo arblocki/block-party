@@ -84,9 +84,11 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     sessionFlag: string[],
     input: ImplementerStartInput,
     prompt: string,
+    onStarted?: () => void,
   ): Promise<TurnOutcome> {
     const streamFile = await nextStreamFile(input.runDir);
     streamFiles.set(sessionId, streamFile);
+    onStarted?.();
     const ctl = new AbortController();
     live.set(sessionId, ctl);
     const onOuterAbort = () => ctl.abort();
@@ -193,7 +195,13 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     async start(input) {
       const sessionId = uuid();
       const session: ImplementerSession = { mode: 'headless', sessionId, cwd: input.cwd };
-      const outcome = await runTurn(sessionId, ['--session-id', sessionId], input, input.prompt);
+      const outcome = await runTurn(
+        sessionId,
+        ['--session-id', sessionId],
+        input,
+        input.prompt,
+        () => input.onSession?.({ ...session }),
+      );
       return { session, outcome };
     },
     send(session, input, message) {

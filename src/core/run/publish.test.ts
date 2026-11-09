@@ -152,6 +152,19 @@ describe('waitForCi', () => {
   const run = (github: ReturnType<typeof script>, extra: object = {}) =>
     waitForCi({ github, repo, sha: SHA, ...fakeClock(), ...extra });
 
+  it('rejects promptly when aborted while sleeping between polls', async () => {
+    const gh = script(['pending']);
+    const ac = new AbortController();
+    const started = Date.now();
+    const p = waitForCi({ github: gh, repo, sha: SHA, intervalMs: 60_000, signal: ac.signal });
+    setTimeout(() => ac.abort(), 20);
+    await expect(p).rejects.toBeTruthy();
+    expect(Date.now() - started).toBeLessThan(2000);
+    const polls = gh.polls();
+    await new Promise((r) => setTimeout(r, 50));
+    expect(gh.polls()).toBe(polls);
+  });
+
   it('succeeds after pending', async () => {
     const gh = script(['pending', 'pending', 'success']);
     expect((await run(gh)).state).toBe('success');
