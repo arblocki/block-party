@@ -1,4 +1,11 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
@@ -79,6 +86,65 @@ describe('runChecks', () => {
     expect(res.passed).toBe(false);
     expect(res.results[0]?.timedOut).toBe(true);
     expect(runShell).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 10 }));
+  });
+});
+
+describe('runChecks cwd safety and errors', () => {
+  it('rejects a symlinked cwd pointing outside the worktree', async () => {
+    const cwd = tmp();
+    const outside = tmp();
+    symlinkSync(outside, join(cwd, 'external'));
+    const marker = join(outside, 'ran');
+    const res = await runChecks({
+      cwd,
+      logDir: tmp(),
+      headSha: 'x',
+      checks: [{ name: 'link', run: 'touch ran', cwd: 'external' }],
+    });
+    expect(existsSync(marker)).toBe(false);
+    expect(res.results[0]?.exitCode).toBeNull();
+    expect(res.passed).toBe(false);
+  });
+
+  it('records a missing cwd as a failure and keeps going', async () => {
+    const logDir = tmp();
+    const res = await runChecks({
+      cwd: tmp(),
+      logDir,
+      headSha: 'x',
+      checks: [
+        { name: 'missing', run: 'true', cwd: 'nope' },
+        { name: 'fine', run: 'true' },
+      ],
+    });
+    expect(res.results).toHaveLength(2);
+    expect(res.results[0]?.exitCode).toBeNull();
+    expect(res.results[1]?.exitCode).toBe(0);
+    expect(res.passed).toBe(false);
+    expect(readFileSync(join(logDir, 'missing.log'), 'utf8').length).toBeGreaterThan(0);
+  });
+
+  it('records a rejecting runShell as a failure and keeps going', async () => {
+    const logDir = tmp();
+    let n = 0;
+    const runShell = vi.fn(() =>
+      ++n === 1
+        ? Promise.reject(new Error('spawn boom'))
+        : Promise.resolve({ code: 0, signal: null, durationMs: 1, timedOut: false }),
+    );
+    const res = await runChecks({
+      cwd: tmp(),
+      logDir,
+      headSha: 'x',
+      runShell,
+      checks: [
+        { name: 'a', run: 'x' },
+        { name: 'b', run: 'y' },
+      ],
+    });
+    expect(res.results.map((r) => r.exitCode)).toEqual([null, 0]);
+    expect(readFileSync(join(logDir, 'a.log'), 'utf8')).toContain('spawn boom');
+    expect(res.passed).toBe(false);
   });
 });
 

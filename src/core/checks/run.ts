@@ -1,4 +1,4 @@
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, realpathSync } from 'node:fs';
 import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import {
   runShell as realRunShell,
@@ -35,12 +35,18 @@ export interface RunChecksOptions {
 
 export const DEFAULT_CHECK_TIMEOUT_MS = 15 * 60 * 1000;
 
-/** Resolves a check's cwd inside the worktree; undefined when it escapes. */
-function resolveCwd(root: string, cwd: string | undefined): string | undefined {
-  const abs = resolve(root, cwd ?? '.');
-  const rel = relative(resolve(root), abs);
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined;
-  return abs;
+/**
+ * Resolves a check's cwd inside the worktree, following symlinks. Throws when it escapes or
+ * cannot be resolved (e.g. missing directory).
+ */
+function resolveCwd(root: string, cwd: string | undefined): string {
+  const realRoot = realpathSync(root);
+  const real = realpathSync(resolve(realRoot, cwd ?? '.'));
+  const rel = relative(realRoot, real);
+  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error(`cwd escapes the worktree: ${cwd}`);
+  }
+  return real;
 }
 
 function logFileName(name: string): string {
@@ -57,8 +63,30 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
     for (let i = 2; used.has(file); i++) file = logFileName(`${check.name}-${i}`);
     used.add(file);
     const logPath = join(opts.logDir, file);
-    const cwd = resolveCwd(opts.cwd, check.cwd);
-    if (cwd === undefined) {
+    try {
+      const cwd = resolveCwd(opts.cwd, check.cwd);
+      const r = await run({
+        command: check.run,
+        cwd,
+        logPath,
+        timeoutMs: opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
+      });
+      results.push({
+        name: check.name,
+        command: check.run,
+        cwd,
+        exitCode: r.code,
+        durationMs: r.durationMs,
+        timedOut: r.timedOut,
+        logPath,
+      });
+    } catch (err) {
+      try {
+        mkdirSync(opts.logDir, { recursive: true });
+        appendFileSync(logPath, `${(err as Error).message}\n`);
+      } catch {
+        // The failed result below still records the check as failed.
+      }
       results.push({
         name: check.name,
         command: check.run,
@@ -68,25 +96,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
         timedOut: false,
         logPath,
       });
-      mkdirSync(opts.logDir, { recursive: true });
-      appendFileSync(logPath, `cwd escapes the worktree: ${check.cwd}\n`);
-      continue;
     }
-    const r = await run({
-      command: check.run,
-      cwd,
-      logPath,
-      timeoutMs: opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
-    });
-    results.push({
-      name: check.name,
-      command: check.run,
-      cwd,
-      exitCode: r.code,
-      durationMs: r.durationMs,
-      timedOut: r.timedOut,
-      logPath,
-    });
   }
   return {
     headSha: opts.headSha,

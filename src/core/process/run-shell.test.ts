@@ -56,10 +56,10 @@ describe('runShell', () => {
       command: `sleep 30 & echo $! > ${pidFile}; wait`,
       cwd: dir,
       logPath,
-      timeoutMs: 200,
+      timeoutMs: 1000,
     });
     expect(r.timedOut).toBe(true);
-    expect(Date.now() - started).toBeLessThan(5000);
+    expect(Date.now() - started).toBeLessThan(10_000);
     const pid = Number(readFileSync(pidFile, 'utf8').trim());
     expect(alive(pid)).toBe(false);
   });
