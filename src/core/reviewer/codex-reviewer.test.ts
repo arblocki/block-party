@@ -1,3 +1,4 @@
+import type { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -179,5 +180,25 @@ describe('reviewWithCodex', () => {
       delete process.env.GITHUB_TOKEN;
       delete process.env.GH_TOKEN;
     }
+  });
+
+  it('keeps events and stderr when the run times out', async () => {
+    const o = await setup();
+    const fs = fakeSpawn(() => ({ hang: true }));
+    const spawnFn: typeof fs.spawnFn = (cmd, args, opts) => {
+      const child = fs.spawnFn(cmd, args, opts);
+      setTimeout(() => {
+        (child.stdout as unknown as EventEmitter).emit(
+          'data',
+          Buffer.from('{"type":"thread.started"}\n'),
+        );
+        (child.stderr as unknown as EventEmitter).emit('data', Buffer.from('warn\n'));
+      }, 20);
+      return child;
+    };
+    const r = await reviewWithCodex({ ...o, spawnFn, timeoutMs: 100 });
+    expect(r.ok).toBe(false);
+    expect(await readFile(join(o.outDir, 'events.jsonl'), 'utf8')).toContain('thread.started');
+    expect(await readFile(join(o.outDir, 'stderr.txt'), 'utf8')).toContain('warn');
   });
 });

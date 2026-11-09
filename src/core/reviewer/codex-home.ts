@@ -1,4 +1,4 @@
-import { lstat, mkdir, readlink, symlink, unlink, stat } from 'node:fs/promises';
+import { chmod, lstat, mkdir, readlink, realpath, symlink, unlink } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { dataDir } from '../paths.js';
@@ -15,19 +15,33 @@ export interface EnsureCodexHomeOptions {
 export async function ensureReviewerCodexHome(opts: EnsureCodexHomeOptions = {}): Promise<string> {
   const dir = opts.dir ?? join(dataDir(), 'codex-home');
   const userHome = opts.userCodexHome ?? (process.env.CODEX_HOME || join(homedir(), '.codex'));
-  const userAuth = join(userHome, 'auth.json');
-  const exists = await stat(userAuth).then(
-    () => true,
-    () => false,
-  );
-  if (!exists) {
-    throw new Error(`Codex auth not found at ${userAuth}. Run \`codex login\` first.`);
+  const requested = join(userHome, 'auth.json');
+  const userAuth = await realpath(requested).catch(() => undefined);
+  if (!userAuth) {
+    throw new Error(`Codex auth not found at ${requested}. Run \`codex login\` first.`);
   }
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await chmod(dir, 0o700);
+  for (const name of ['config.toml', 'AGENTS.md', 'skills', 'prompts', 'rules']) {
+    if (
+      await lstat(join(dir, name)).then(
+        () => true,
+        () => false,
+      )
+    ) {
+      throw new Error(
+        `Reviewer CODEX_HOME ${dir} contains ${name}; remove it so the reviewer runs without user customization.`,
+      );
+    }
+  }
   const link = join(dir, 'auth.json');
   const info = await lstat(link).catch(() => undefined);
   if (info) {
-    if (!info.isSymbolicLink()) return dir; // a real file: leave it alone
+    if (!info.isSymbolicLink()) {
+      throw new Error(
+        `${link} is a regular file, not a symlink to the user's auth.json; remove it and retry.`,
+      );
+    }
     if ((await readlink(link)) === userAuth) return dir;
     await unlink(link);
   }

@@ -137,6 +137,12 @@ async function runAttempt(
   ];
   const env = { ...scrubbedEnv(), CODEX_HOME: opts.codexHome };
   let result;
+  let out = '';
+  let err = '';
+  const persist = async () => {
+    await writeFile(f.eventsFile, out);
+    await writeFile(f.stderrFile, stripMcpNoise(err));
+  };
   try {
     result = await spawnCli({
       command: 'codex',
@@ -147,13 +153,15 @@ async function runAttempt(
       timeoutMs: opts.timeoutMs ?? DEFAULT_REVIEW_TIMEOUT_MS,
       signal: opts.signal,
       spawnFn: opts.spawnFn,
+      onStdout: (c) => void (out += c),
+      onStderr: (c) => void (err += c),
     });
   } catch (e) {
+    await persist().catch(() => undefined);
     return { ok: false, error: `codex failed: ${(e as Error).message}` };
   }
-  await writeFile(f.eventsFile, result.stdout);
+  await persist();
   const stderr = stripMcpNoise(result.stderr);
-  await writeFile(f.stderrFile, stderr);
 
   const events = parseEvents(result.stdout);
   const failed = events.find((e) => e.type === 'turn.failed' || e.type === 'error');
