@@ -151,3 +151,6 @@ vite.config.ts.timestamp-*
 # block-party
 *.db
 *.db-*
+
+# agent scratch
+.superpowers/
