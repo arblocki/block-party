@@ -12,7 +12,7 @@ export const defaultHandlers: Handlers = {
   review: async (argv) => (await import('./commands/review.js')).reviewMain(argv),
   checks: async (argv) => (await import('./commands/checks.js')).checksMain(argv),
   run: async () => (await import('./commands/run.js')).runMain(),
-  hook: async () => (await import('./commands/hook.js')).hookMain(),
+  hook: async (argv) => (await import('./commands/hook.js')).hookMain(argv),
 };
 
 /** Dispatches `checks`, `run` and `hook` subcommands; anything else is the review flow. */
