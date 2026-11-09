@@ -233,6 +233,64 @@ describe('waitForTurnEnd', () => {
     expect((await p).kind).toBe('no_report');
   });
 
+  it('treats a post-Stop query resolving undefined as unknown and emits no_report', async () => {
+    const p = start({ timeoutMs: 20_000, agentState: () => Promise.resolve(undefined) });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    expect((await p).kind).toBe('no_report');
+  });
+
+  it('ignores a query issued before the Stop even if it resolves idle after settle', async () => {
+    let resolveFirst: (s: 'idle') => void = () => undefined;
+    let calls = 0;
+    const p = start({
+      timeoutMs: 10_000,
+      agentState: () =>
+        calls++ === 0
+          ? new Promise<'idle'>((r) => (resolveFirst = r))
+          : new Promise<never>(() => undefined),
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(3000);
+    resolveFirst('idle');
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
+  it('ignores a query issued before a UserPromptSubmit reset', async () => {
+    let resolveSecond: (s: 'idle') => void = () => undefined;
+    let calls = 0;
+    const p = start({
+      timeoutMs: 10_000,
+      agentState: () => {
+        calls++;
+        if (calls === 1) return Promise.resolve('working' as const);
+        if (calls === 2) return new Promise<'idle'>((r) => (resolveSecond = r));
+        return new Promise<never>(() => undefined);
+      },
+    });
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(300); // call 1 (pre-Stop) at 250; Stop seen at 250
+    await vi.advanceTimersByTimeAsync(250); // call 2 issued after the Stop
+    expect(calls).toBe(2);
+    add({ hook_event_name: 'UserPromptSubmit', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(300);
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    await vi.advanceTimersByTimeAsync(300);
+    resolveSecond('idle');
+    await vi.advanceTimersByTimeAsync(11_000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
+  it('does not emit permission when blocked clears within 3 seconds', async () => {
+    let state: 'blocked' | 'idle' = 'blocked';
+    const p = start({ timeoutMs: 8000, agentState: () => Promise.resolve(state) });
+    await vi.advanceTimersByTimeAsync(2500);
+    state = 'idle';
+    await vi.advanceTimersByTimeAsync(6000);
+    expect(await p).toEqual({ kind: 'timeout' });
+  });
+
   it('resolves exited on abort', async () => {
     const ac = new AbortController();
     const p = start({ signal: ac.signal });

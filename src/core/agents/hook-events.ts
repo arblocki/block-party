@@ -145,13 +145,18 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
   const settleMs = opts.settleMs ?? 1500;
   const pollMs = opts.pollMs ?? 250;
   return new Promise<TurnOutcome>((resolve) => {
-    let finalStopAt: number | undefined;
+    /**
+     * The latest final Stop not yet cancelled by a UserPromptSubmit. A new Stop or a reset
+     * replaces the object, so a state query is tied to the stop it was issued under by
+     * identity. `postStopState` is the result of the latest state query issued under this
+     * stop that has completed (rejected or `undefined` results normalized to 'unknown').
+     */
+    let stop: { at: number; postStopState?: AgentState } | undefined;
+    /** Latest completed state from any query; drives the blocked > 3 s check. */
+    let lastState: AgentState | undefined;
     let blockedSince: number | undefined;
+    let queryInFlight = false;
     let done = false;
-    // Bumped whenever the final-Stop status changes; state results are only trusted for
-    // no_report if their query was started after the current final Stop was observed.
-    let stopGen = 0;
-    let stateAfterStop: AgentState | undefined;
 
     const finish = (outcome: TurnOutcome): void => {
       if (done) return;
@@ -175,19 +180,18 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       ) {
         finish({ kind: 'permission', message: ev.message ?? 'permission prompt' });
       } else if (isFinalStop(ev)) {
-        finalStopAt = Date.now();
-        stopGen++;
-        stateAfterStop = undefined;
+        stop = { at: Date.now() };
       } else if (ev.hook_event_name === 'UserPromptSubmit') {
-        finalStopAt = undefined;
-        stopGen++;
-        stateAfterStop = undefined;
+        stop = undefined;
       }
     });
 
-    let inFlight = false;
-    let lastState: AgentState | undefined;
+    /** Without agentState, no_report needs no confirmation. */
+    const stateAllowsNoReport = (s: NonNullable<typeof stop>): boolean =>
+      !opts.agentState || (s.postStopState !== undefined && s.postStopState !== 'working');
+
     const evaluate = (): void => {
+      if (done) return;
       if (lastState === 'blocked') {
         blockedSince ??= Date.now();
         if (Date.now() - blockedSince > BLOCKED_MS) {
@@ -197,32 +201,39 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
       } else {
         blockedSince = undefined;
       }
-      if (finalStopAt !== undefined && Date.now() - finalStopAt >= settleMs) {
+      if (stop && Date.now() - stop.at >= settleMs) {
         if (existsSync(reportPath)) finish({ kind: 'report' });
-        else if (
-          opts.agentState ? stateAfterStop !== undefined && stateAfterStop !== 'working' : true
-        ) {
+        else if (stateAllowsNoReport(stop)) {
           finish({ kind: 'no_report', detail: 'turn ended without report.json' });
         }
       }
     };
-    const tick = setInterval(() => {
-      if (done) return;
-      // State polling is non-overlapping and never gates the report check below.
-      if (opts.agentState && !inFlight) {
-        inFlight = true;
-        const startedGen = stopGen;
-        const startedAfterStop = finalStopAt !== undefined;
-        opts
-          .agentState()
-          .catch((): AgentState => 'unknown')
-          .then((state) => {
-            inFlight = false;
-            lastState = state;
-            if (startedAfterStop && startedGen === stopGen) stateAfterStop = state;
-            if (!done) evaluate();
-          });
+
+    const queryState = (agentState: () => Promise<AgentState | undefined>): void => {
+      queryInFlight = true;
+      const issuedUnder = stop;
+      let pending: Promise<AgentState | undefined>;
+      try {
+        pending = agentState();
+      } catch {
+        pending = Promise.resolve('unknown');
       }
+      void pending
+        .then(
+          (s): AgentState => s ?? 'unknown',
+          (): AgentState => 'unknown',
+        )
+        .then((state) => {
+          queryInFlight = false;
+          lastState = state;
+          if (issuedUnder && issuedUnder === stop) issuedUnder.postStopState = state;
+          evaluate();
+        });
+    };
+
+    const tick = setInterval(() => {
+      // State queries never overlap and never gate the report check in evaluate().
+      if (opts.agentState && !queryInFlight && !done) queryState(opts.agentState);
       evaluate();
     }, pollMs);
 
