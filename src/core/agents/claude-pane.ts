@@ -36,6 +36,8 @@ export interface PaneClaudeOptions {
   now?: () => number;
   onEvent?: (event: { type: string; data: Record<string, unknown> }) => void;
   timing?: PaneClaudeTiming;
+  /** Reads the agents file (injectable for tests). */
+  readTextFile?: (path: string) => Promise<string>;
 }
 
 const MAX_MESSAGE_CHARS = 2000;
@@ -112,7 +114,9 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     // Interactive claude takes --agents as inline JSON only (a file path works with --print).
     let agents = input.agentsPath;
     try {
-      agents = (await readFile(input.agentsPath, 'utf8')).trim() || agents;
+      agents =
+        (await (opts.readTextFile ?? ((f) => readFile(f, 'utf8')))(input.agentsPath)).trim() ||
+        agents;
     } catch {
       // fall back to the path
     }
@@ -179,10 +183,14 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       return { pane: undefined, outcome: { kind: 'exited', reason: 'aborted' } };
     }
     const offset = fileSize(input.eventsPath);
+    const flagArgs = await flags(input);
+    if (input.signal?.aborted) {
+      return { pane: undefined, outcome: { kind: 'exited', reason: 'aborted' } };
+    }
     const pane = await host.open({
       label,
       cwd: input.cwd,
-      argv: [claudeBin, ...sessionArgs, ...(await flags(input)), '--', prompt],
+      argv: [claudeBin, ...sessionArgs, ...flagArgs, '--', prompt],
       env: stringEnv(),
     });
     if (st) st.pane = pane;
@@ -203,6 +211,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           if (!(await isInside(input.cwd, worktreesRoot()))) {
             return { pane, outcome: { kind: 'permission', message: 'folder trust dialog' } };
           }
+          if (input.signal?.aborted) break;
           await host.sendKeys(pane, ['Down', 'Enter']);
           answered = true;
           emit('agent.trust_dialog_accepted', { cwd: input.cwd, sessionId });
@@ -343,6 +352,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       if (got === 'timeout') {
         emit('agent.send_unconfirmed', { attempt: 1 });
         // The text may be typed but not submitted; press Enter rather than retyping it.
+        if (input.signal?.aborted) return aborted;
         await host.sendKeys(pane, ['Enter']);
         got = await confirm();
         if (got === 'timeout') emit('agent.send_unconfirmed', { attempt: 2 });

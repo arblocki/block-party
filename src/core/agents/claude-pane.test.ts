@@ -303,6 +303,28 @@ describe('createPaneClaude', () => {
     expect(host.opens).toEqual([]);
   });
 
+  it('abort while the agents file is being read opens no pane', async () => {
+    const ctl = new AbortController();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const ad = createPaneClaude({
+      host,
+      claudeBin: 'claude',
+      randomUUID: () => SID,
+      timing,
+      readTextFile: async () => {
+        await gate;
+        return '{}';
+      },
+      watcherFactory: (p, off) => new HookWatcher(p, { startOffset: off, intervalMs: 10 }),
+    });
+    const p = ad.start({ ...input, signal: ctl.signal });
+    ctl.abort();
+    release();
+    expect((await p).outcome).toEqual({ kind: 'exited', reason: 'aborted' });
+    expect(host.opens).toEqual([]);
+  });
+
   it('start aborted before open opens no pane', async () => {
     const ctl = new AbortController();
     ctl.abort();
