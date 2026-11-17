@@ -226,11 +226,15 @@ export function openStore(file: string): Store {
     'SELECT group_key, item_index, checked FROM verify_checks WHERE repo = ? AND pr = ? ORDER BY group_key, item_index',
   );
   const baseline = db.prepare<[string, number, string, number], { head_sha: string }>(
+    // Timestamps are millisecond ISO strings, so two writes can tie; rowid breaks the tie
+    // in insertion order (the later write wins).
     `SELECT head_sha FROM (
-       SELECT head_sha, created_at AS at FROM review_checkpoints WHERE repo = ? AND pr = ?
+       SELECT head_sha, created_at AS at, rowid AS seq FROM review_checkpoints
+         WHERE repo = ? AND pr = ?
        UNION ALL
-       SELECT head_sha, submitted_at AS at FROM reviews_submitted WHERE repo = ? AND pr = ?
-     ) ORDER BY at DESC LIMIT 1`,
+       SELECT head_sha, submitted_at AS at, rowid AS seq FROM reviews_submitted
+         WHERE repo = ? AND pr = ?
+     ) ORDER BY at DESC, seq DESC LIMIT 1`,
   );
   const firstMark = db.prepare<[string, number], { head_sha: string }>(
     `SELECT head_sha FROM reviewed_hunks WHERE repo = ? AND pr = ?
