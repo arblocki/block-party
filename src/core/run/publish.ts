@@ -218,6 +218,7 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
       throw new PublishError(
         'remote_mismatch',
         `Remote ${branch} is at ${remote ?? 'nothing'}, expected ${local}`,
+        { ...done },
       );
     }
 
@@ -243,6 +244,7 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
         throw new PublishError(
           'head_mismatch',
           `PR #${pr.number} head is ${pr.headSha}, expected ${local}`,
+          { ...done },
         );
       }
       await sleep(opts.headPollMs ?? 1000);

@@ -135,13 +135,19 @@ describe('publishRun', () => {
       existing: { number: 5, headSha: 'old', url: 'https://pr/5', draft: true },
       prHeads: ['old'],
     });
-    await expect(publishRun(base)).rejects.toMatchObject({ code: 'head_mismatch' });
+    await expect(publishRun(base)).rejects.toMatchObject({
+      code: 'head_mismatch',
+      done: { pushed: true, prNumber: 5 },
+    });
     expect(clock.now()).toBeGreaterThanOrEqual(30_000);
   });
 
   it('fails with remote_mismatch before touching GitHub', async () => {
     const { base, log } = setup({ remote: 'b'.repeat(40) });
-    await expect(publishRun(base)).rejects.toMatchObject({ code: 'remote_mismatch' });
+    await expect(publishRun(base)).rejects.toMatchObject({
+      code: 'remote_mismatch',
+      done: { pushed: true },
+    });
     expect(log).toEqual(['push']);
     const none = setup({ remote: undefined });
     await expect(publishRun(none.base)).rejects.toBeInstanceOf(PublishError);

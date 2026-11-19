@@ -549,6 +549,42 @@ describe('runPipeline', () => {
     expect(events).toContain('unexpected');
   });
 
+  it('records the PR number when the PR head never matches the pushed SHA', async () => {
+    let t = 0;
+    const h = harness({
+      turns: [{}],
+      publishWith: (p) =>
+        publishRun({
+          ...p,
+          now: () => t,
+          sleep: async (ms) => {
+            t += ms;
+          },
+          github: {
+            findOpenPrForBranch: async () => undefined,
+            createPr: async () => ({
+              number: 12,
+              headSha: 'stale',
+              url: 'https://x/pr/12',
+              draft: true,
+            }),
+            getPr: async () => ({
+              number: 12,
+              headSha: 'stale',
+              url: 'https://x/pr/12',
+              draft: true,
+            }),
+          },
+        }),
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(state(out)).toMatchObject({ stage: 'blocked', prNumber: 12 });
+    expect(state(out).stageNote).toContain('head_mismatch');
+    const events = readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8');
+    expect(events).toMatch(/publish\.stopped.*"pushed":true/);
+  });
+
   it('logs each permission wait prominently and continues once the turn ends', async () => {
     const h = harness({ turns: [{}], permissionPrompts: 2 });
     const out = await h.run();
