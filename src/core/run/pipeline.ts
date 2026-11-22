@@ -262,7 +262,10 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   };
   await saveRunState(runDir, st);
 
-  const perms = implementerPermissions(checks.required.map((c) => c.run));
+  const perms = implementerPermissions(
+    checks.required.map((c) => c.run),
+    checks.fix ?? [],
+  );
   const eventsPath = join(runDir, 'events.jsonl');
   const subagentModels = config.subagents;
   const ctx: Ctx = {

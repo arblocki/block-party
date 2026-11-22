@@ -81,6 +81,14 @@ describe('implementerPermissions', () => {
   });
 });
 
+describe('implementerPermissions fix commands', () => {
+  it('allows the checks.fix commands too', () => {
+    const p = implementerPermissions(['pnpm test'], ['pnpm format', ' ']);
+    expect(p.allowedTools).toContain('Bash(pnpm format:*)');
+    expect(p.allowedTools).not.toContain('Bash(:*)');
+  });
+});
+
 describe('hookArgv', () => {
   it('runs the hook subcommand and appends the event line', () => {
     const home = realpathSync(mkdtempSync(join(tmpdir(), 'bp-hookargv-')));

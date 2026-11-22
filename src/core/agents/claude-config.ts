@@ -86,11 +86,20 @@ export function buildSettings(opts: {
  * Permission profile for the implementer (docs/spikes/claude-headless.md), with the specific
  * check commands allowed instead of `Bash(pnpm:*)` (which would allow `pnpm dlx`/`pnpm exec`).
  */
-export function implementerPermissions(checkCommands: string[]): {
+/**
+ * `checkCommands` are the project's required checks; `fixCommands` its `checks.fix` commands
+ * (formatters and the like). Both may be run without approval.
+ */
+export function implementerPermissions(
+  checkCommands: string[],
+  fixCommands: string[] = [],
+): {
   allowedTools: string[];
   disallowedTools: string[];
 } {
-  const checks = checkCommands.map((c) => c.trim()).filter((c) => c.length > 0);
+  const checks = [...checkCommands, ...fixCommands]
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0);
   // This allowlist is not a sandbox: check commands (and `node`) already run arbitrary repo
   // code. Its job is to keep the agent off the network, away from publishing, and from
   // changing dependencies, and to avoid approval prompts for routine read-only commands.

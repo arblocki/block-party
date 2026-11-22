@@ -579,3 +579,11 @@ jobs:
     ]);
   });
 });
+
+describe('checks.fix', () => {
+  it('parses fix commands and rejects empty ones', () => {
+    const cfg = parseChecksConfig('checks:\n  required: []\n  fix:\n    - pnpm format\n');
+    expect(cfg?.fix).toEqual(['pnpm format']);
+    expect(() => parseChecksConfig('checks:\n  fix:\n    - "  "\n')).toThrow(/checks\.fix/);
+  });
+});
