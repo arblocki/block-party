@@ -39,6 +39,7 @@ import {
   type PublishResult,
   type ResolutionKind,
   type ReviewRoundInput,
+  type TurnReport,
   type WaitForCiOptions,
 } from './publish.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
@@ -122,6 +123,8 @@ interface Ctx {
   session?: ImplementerSession;
   rounds: ReviewRoundInput[];
   lastReport?: Report;
+  /** Every accepted implementer report, in turn order. */
+  reports: TurnReport[];
   lastChecks?: ChecksRunResult;
   rulingsWritten: boolean;
   /** In-flight run.json save started from a synchronous callback. */
@@ -300,6 +303,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
       checkCommands: checks.required.map((c) => `- \`${c.run}\``).join('\n'),
     },
     rounds: [],
+    reports: [],
     rulingsWritten: false,
     pending: Promise.resolve(),
   };
@@ -479,6 +483,7 @@ async function judgeTurn(
   }
   await patchState(ctx, { headSha: head });
   ctx.lastReport = report;
+  ctx.reports.push({ kind, round: n, report });
   return report;
 }
 
@@ -658,6 +663,7 @@ async function publish(ctx: Ctx): Promise<void> {
   const body = renderPrBody({
     plan: ctx.plan,
     report: ctx.lastReport!,
+    reports: ctx.reports,
     checks: ctx.lastChecks,
     reviewRounds: ctx.rounds,
     runId: st.id,

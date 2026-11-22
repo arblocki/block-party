@@ -264,6 +264,7 @@ describe('runPipeline', () => {
         {},
         {
           report: report({
+            summary: 'Guarded the widget',
             findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'guarded' }],
           }),
         },
@@ -283,6 +284,8 @@ describe('runPipeline', () => {
     expect(pub.body).toContain('Null deref in widget');
     expect(pub.body).toContain('| fixed |');
     expect(pub.body).not.toContain('Unresolved blocking');
+    expect(pub.body).toContain('## Summary\n\nAll done\n');
+    expect(pub.body).toContain('## Fix rounds\n\n- review-fix 1: Guarded the widget\n');
     expect(pub.base).toBe('main');
     expect(pub.title).toBe('Add widgets');
     expect(h.calls.stops).toBe(1);

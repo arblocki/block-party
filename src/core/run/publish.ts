@@ -16,9 +16,19 @@ export interface ReviewRoundInput {
   resolutions: Record<string, { resolution: ResolutionKind; note?: string }>;
 }
 
+/** One accepted implementer turn: `implement`, `check-fix` or `review-fix`, and its round. */
+export interface TurnReport {
+  kind: string;
+  round: number;
+  report: Report;
+}
+
 export interface PrBodyInput {
   plan: Plan;
+  /** The last report: its acceptance list has the latest status. */
   report: Report;
+  /** Every implementer report in turn order; the first `implement` one gives the Summary. */
+  reports: TurnReport[];
   checks: ChecksRunResult;
   reviewRounds: ReviewRoundInput[];
   runId: string;
@@ -42,6 +52,11 @@ function inline(text: string): string {
   return neutraliseMentions(text)
     .replace(/\s*[\r\n]+\s*/g, ' ')
     .trim();
+}
+
+/** Collapses whitespace runs so wrapped and single-line criteria compare equal. */
+function normaliseCriterion(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 function isBlocking(f: Finding): boolean {
@@ -79,19 +94,30 @@ function location(f: Finding): string {
 }
 
 export function renderPrBody(input: PrBodyInput): string {
-  const { plan, report, checks, reviewRounds, runId } = input;
+  const { plan, report, reports, checks, reviewRounds, runId } = input;
   const out: string[] = [];
 
-  out.push('## Summary', '', inline(report.summary), '');
+  const firstIdx = reports.findIndex((r) => r.kind === 'implement');
+  const summary = firstIdx >= 0 ? reports[firstIdx]!.report.summary : report.summary;
+  out.push('## Summary', '', inline(summary), '');
+
+  const later = firstIdx >= 0 ? reports.slice(firstIdx + 1) : [];
+  if (later.length > 0) {
+    out.push('## Fix rounds', '');
+    for (const t of later) {
+      out.push(`- ${inline(t.kind)} ${t.round}: ${inline(t.report.summary)}`);
+    }
+    out.push('');
+  }
 
   out.push('## Acceptance criteria', '');
-  const reported = new Set(report.acceptance.map((a) => a.criterion.trim()));
+  const reported = new Set(report.acceptance.map((a) => normaliseCriterion(a.criterion)));
   for (const a of report.acceptance) {
     const ev = a.evidence.trim() ? ` - ${inline(a.evidence)}` : '';
     out.push(`- ${STATUS_LABEL[a.status]}: ${inline(a.criterion)}${ev}`);
   }
   for (const c of plan.acceptanceCriteria) {
-    if (!reported.has(c.trim())) out.push(`- not reported: ${inline(c)}`);
+    if (!reported.has(normaliseCriterion(c))) out.push(`- not reported: ${inline(c)}`);
   }
   out.push('');
 
