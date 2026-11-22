@@ -4,7 +4,7 @@ import { dataDir } from '../core/paths.js';
 import { loadRunConfig, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
 import { runPipeline, type RunInput, type RunOutcome } from '../core/run/pipeline.js';
-import { ShutdownError } from '../core/run/pipeline-helpers.js';
+import { ShutdownError, throwIfAborted } from '../core/run/pipeline-helpers.js';
 import { parsePlan } from '../core/run/plan.js';
 import type { RunStore } from '../core/store/runs.js';
 
@@ -64,11 +64,11 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   const { runs } = opts;
   const startPipeline =
     opts.startPipeline ??
-    (async (input: RunInput) =>
-      runPipeline(
-        input,
-        await createRunDeps({ store: runs, mode: input.config.implementer.mode }),
-      ));
+    (async (input: RunInput) => {
+      const deps = await createRunDeps({ store: runs, mode: input.config.implementer.mode });
+      throwIfAborted(input.signal);
+      return runPipeline(input, deps);
+    });
   const plansDir = opts.plansDir ?? join(dataDir(), 'plans');
   const startTimeoutMs = opts.startTimeoutMs ?? 30_000;
   const onError =
@@ -81,6 +81,14 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   const byId = new Map<string, Entry>();
   let stopping = false;
 
+  const rowExists = (id: string): boolean => {
+    try {
+      return runs.getRun(id) !== undefined;
+    } catch {
+      return false;
+    }
+  };
+
   return {
     async start(req) {
       if (stopping) throw new Error('The server is shutting down');
@@ -89,56 +97,69 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       const project = runs.getProject(req.projectId);
       if (!project) throw new UnknownProjectError(req.projectId);
       const config = loadRunConfig(project.localPath, req.flags);
-
-      await mkdir(plansDir, { recursive: true });
       const planFile = join(plansDir, `${parsed.plan.contentHash}.md`);
-      await writeFile(planFile, req.planText);
 
       const ac = new AbortController();
       let runId: string | undefined;
       return new Promise<string>((resolve, reject) => {
         let settled = false;
-        const timer = setTimeout(() => {
-          if (settled) return;
-          settled = true;
-          ac.abort();
-          reject(new Error(`The run did not start within ${startTimeoutMs} ms`));
-        }, startTimeoutMs);
         const settle = (fn: () => void) => {
           clearTimeout(timer);
           if (settled) return;
           settled = true;
           fn();
         };
+        const timer = setTimeout(() => {
+          // Aborting also stops a preflight that has not created the run yet.
+          ac.abort();
+          settle(() => reject(new Error(`The run did not start within ${startTimeoutMs} ms`)));
+        }, startTimeoutMs);
 
+        // Tracked before the first await, so a shutdown that starts meanwhile aborts and
+        // waits for this start too.
         const entry: Entry = { ac, done: Promise.resolve() };
         live.add(entry);
-        // Async wrapper: a synchronous throw becomes a rejection handled below.
-        const pipeline = (async () =>
-          startPipeline({
-            repo: project.localPath,
-            planFile,
-            baseRef: req.baseRef,
-            ...(req.title ? { title: req.title } : {}),
-            config,
-            signal: ac.signal,
-            onStarted: (id) => {
-              runId = id;
-              byId.set(id, entry);
-              settle(() => resolve(id));
-            },
-          }))();
-        entry.done = pipeline.then(
-          (outcome) => settle(() => resolve(outcome.runId)),
-          (err: unknown) => {
+        const stoppedError = () =>
+          ac.signal.reason instanceof ShutdownError
+            ? new Error('The server is shutting down')
+            : new Error('The run was cancelled before it started');
+
+        entry.done = (async () => {
+          try {
+            await mkdir(plansDir, { recursive: true });
+            await writeFile(planFile, req.planText);
+            if (ac.signal.aborted) throw stoppedError();
+            const outcome = await startPipeline({
+              repo: project.localPath,
+              planFile,
+              baseRef: req.baseRef,
+              ...(req.title ? { title: req.title } : {}),
+              config,
+              signal: ac.signal,
+              onStarted: (id) => {
+                runId = id;
+                byId.set(id, entry);
+                if (!rowExists(id)) {
+                  // The pipeline keeps its files but the server could not show the run:
+                  // stop it before it does any work, and report the failure.
+                  ac.abort();
+                  settle(() =>
+                    reject(new Error(`Run ${id} could not be recorded in the database`)),
+                  );
+                  return;
+                }
+                settle(() => resolve(id));
+              },
+            });
+            settle(() => resolve(outcome.runId));
+          } catch (err) {
             if (runId === undefined) settle(() => reject(err as Error));
             else onError(runId, err);
-          },
-        );
-        void entry.done.finally(() => {
-          live.delete(entry);
-          if (runId !== undefined && byId.get(runId) === entry) byId.delete(runId);
-        });
+          } finally {
+            live.delete(entry);
+            if (runId !== undefined && byId.get(runId) === entry) byId.delete(runId);
+          }
+        })();
       });
     },
 

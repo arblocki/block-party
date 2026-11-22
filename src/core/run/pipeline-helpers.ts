@@ -27,6 +27,12 @@ export function isShutdown(signal?: AbortSignal): boolean {
   return signal?.aborted === true && signal.reason instanceof ShutdownError;
 }
 
+/** Throws when `signal` is aborted: its ShutdownError reason, else an InterruptedError. */
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof ShutdownError ? signal.reason : new InterruptedError();
+}
+
 /** Body of the `interrupted` inbox item: where the run was and why it stopped. */
 export function interruptedBody(stage: string, stageNote: string | null, why: string): string {
   return `The run stopped while ${stage}${stageNote ? ` (${stageNote})` : ''}: ${why}.`;

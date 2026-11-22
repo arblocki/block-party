@@ -39,6 +39,7 @@ import {
   priorFindings,
   renderCheckFailures,
   type ShutdownError,
+  throwIfAborted,
 } from './pipeline-helpers.js';
 import {
   PublishError,
@@ -336,6 +337,8 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   }
   const checks = loaded.config;
   const base = await git.fetchBase(repoPath, input.baseRef);
+  // Stopped while preparing: no run is created (the error goes to the caller).
+  throwIfAborted(input.signal);
 
   const runId = newRunId(now());
   const paths = deps.paths ?? {
@@ -458,6 +461,8 @@ export function reportJsonSchema(): object {
 /** Step 2: worktree, setup command, and the agent/settings files. */
 async function provision(ctx: Ctx): Promise<void> {
   const { deps, st, runDir, checks, input } = ctx;
+  // Aborted as the run was created: end it before any side effect (no worktree).
+  throwIfAborted(input.signal);
   await deps.git.createWorktree({
     repo: st.repoPath,
     path: st.worktreePath,

@@ -47,16 +47,43 @@ beforeEach(() => {
 
 afterEach(() => store.close());
 
+/** Records the run row for `RUN_ID`, as the real pipeline does before `onStarted`. */
+function createRow() {
+  store.runs.createRun({
+    id: RUN_ID,
+    projectId,
+    title: 'T',
+    stage: 'setup',
+    stageNote: null,
+    branch: 'bp/t',
+    worktreePath: '/wt',
+    runDir: '/runs/a',
+    baseRef: 'main',
+    baseSha: 'base',
+    headSha: null,
+    prNumber: null,
+    planPath: '/p',
+    planHash: 'h',
+    implementer: null,
+    rounds: { checkFix: 0, reviewFix: 0 },
+    ownerPid: process.pid,
+    ownerHost: 'h',
+  });
+}
+
 /**
- * A pipeline that announces `RUN_ID`, then runs until its signal aborts, ending cancelled or
- * (for a ShutdownError) interrupted.
+ * A pipeline that announces `RUN_ID` (recording its row unless `recordRow` is false), then
+ * runs until its signal aborts, ending cancelled or (for a ShutdownError) interrupted.
  */
-function fakePipeline() {
+function fakePipeline(opts: { recordRow?: boolean } = {}) {
   const inputs: RunInput[] = [];
   const startPipeline = (input: RunInput): Promise<RunOutcome> => {
     inputs.push(input);
     return new Promise((resolve) => {
-      setTimeout(() => input.onStarted?.(RUN_ID), 5);
+      setTimeout(() => {
+        if (opts.recordRow !== false) createRow();
+        input.onStarted?.(RUN_ID);
+      }, 5);
       input.signal!.addEventListener('abort', () =>
         resolve({
           runId: RUN_ID,
@@ -133,6 +160,38 @@ describe('RunManager.start', () => {
     expect(m.cancel(RUN_ID)).toBe(false);
   });
 
+  it('rejects, and stops the run, when its row was not recorded', async () => {
+    const fake = fakePipeline({ recordRow: false });
+    const m = manager({ startPipeline: fake.startPipeline });
+    await expect(m.start({ projectId, baseRef: 'main', planText: PLAN })).rejects.toThrow(
+      /could not be recorded/,
+    );
+    const signal = fake.inputs[0]!.signal!;
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).not.toBeInstanceOf(ShutdownError);
+  });
+
+  it('starts nothing when shutdown begins while the plan file is written', async () => {
+    const fake = fakePipeline();
+    const m = manager({ startPipeline: fake.startPipeline });
+    const starting = m.start({ projectId, baseRef: 'main', planText: PLAN });
+    const stopped = m.shutdown();
+    await expect(starting).rejects.toThrow(/shutting down/);
+    await stopped;
+    expect(fake.inputs).toHaveLength(0);
+  });
+
+  it('waits in shutdown for a start that is still writing its plan file', async () => {
+    let finished = false;
+    const m = manager({ startPipeline: fakePipeline().startPipeline });
+    const starting = m.start({ projectId, baseRef: 'main', planText: PLAN }).catch(() => {
+      finished = true;
+    });
+    await m.shutdown();
+    expect(finished).toBe(true);
+    await starting;
+  });
+
   it('gives up, cancelling the pipeline, when the run does not start in time', async () => {
     let signal: AbortSignal | undefined;
     const m = manager({
@@ -200,7 +259,10 @@ describe('RunManager.shutdown', () => {
     const m = manager({
       startPipeline: (input) =>
         new Promise(() => {
-          setTimeout(() => input.onStarted?.(RUN_ID), 1);
+          setTimeout(() => {
+            createRow();
+            input.onStarted?.(RUN_ID);
+          }, 1);
         }),
     });
     await m.start({ projectId, baseRef: 'main', planText: PLAN });

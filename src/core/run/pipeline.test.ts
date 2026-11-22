@@ -119,7 +119,7 @@ interface Opts {
   /** Replaces the fake publishRun (e.g. to run the real one against fakes). */
   publishWith?: PipelineDeps['publishRun'];
   /** Abort the signal (and fail the call) when this step runs. */
-  abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
+  abortAt?: { step: 'fetch' | 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
   store?: RunStore;
 }
@@ -138,6 +138,7 @@ function harness(o: Opts) {
     published: [] as PublishOptions[],
     checks: 0,
     setup: 0,
+    worktrees: 0,
   };
   let turnIdx = 0;
   const doTurn = (input: ImplementerStartInput): TurnOutcome => {
@@ -174,8 +175,13 @@ function harness(o: Opts) {
     git: {
       repoRoot: async () => root,
       originRepo: async () => ({ owner: 'o', repo: 'r' }),
-      fetchBase: async () => ({ sha: git.head, source: 'origin' as const }),
-      createWorktree: async () => undefined,
+      fetchBase: async () => {
+        if (o.abortAt?.step === 'fetch') o.abortAt.ac.abort();
+        return { sha: git.head, source: 'origin' as const };
+      },
+      createWorktree: async () => {
+        calls.worktrees++;
+      },
       headSha: async () => git.head,
       isClean: async () => !git.dirty,
       commitsBetween: async (_c, base, head) =>
@@ -922,6 +928,36 @@ describe('runPipeline with a store', () => {
     ]);
     expect(stagesOf(store, out)).toEqual([['implement', 1, 'cancelled']]);
     expect(store.listEvents(out.runId).map((e) => e.type)).toContain('run.interrupted');
+  });
+
+  it('creates no run when aborted while preparing (during the base fetch)', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}], abortAt: { step: 'fetch', ac } });
+    const started: string[] = [];
+    await expect(h.run(ac.signal, (id) => started.push(id))).rejects.toThrow('interrupted');
+    expect(started).toEqual([]);
+    expect(store.listRuns()).toEqual([]);
+    expect(existsSync(join(h.root, 'runs'))).toBe(false);
+    expect(h.calls.worktrees).toBe(0);
+  });
+
+  it('rethrows a ShutdownError when shut down while preparing', async () => {
+    const ac = new AbortController();
+    const h = harness({ turns: [{}] });
+    ac.abort(new ShutdownError());
+    await expect(h.run(ac.signal)).rejects.toBeInstanceOf(ShutdownError);
+  });
+
+  it('ends cancelled before creating the worktree when aborted as the run starts', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run(ac.signal, () => ac.abort());
+    expect(out.stage).toBe('cancelled');
+    expect(h.calls.worktrees).toBe(0);
+    expect(h.calls.starts).toHaveLength(0);
+    expect(store.getRun(out.runId)?.stage).toBe('cancelled');
   });
 
   it('still ends cancelled, with no decision, on a plain abort', async () => {
