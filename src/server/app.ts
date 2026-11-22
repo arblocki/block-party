@@ -12,6 +12,7 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { registerApi, upstreamError } from './api.js';
+import { registerRunsApi } from './runs-api.js';
 import { hostGuard, tokenGuard } from './security.js';
 
 export interface AppOptions {
@@ -29,6 +30,8 @@ export interface AppOptions {
   maxCachedPrs?: number;
   /** Directory containing the built UI. Omit to skip static serving. */
   webDir?: string;
+  /** Live-stream timing overrides, for tests. */
+  streamTiming?: { pollMs?: number; heartbeatMs?: number };
 }
 
 export function createApp(opts: AppOptions): Hono {
@@ -50,6 +53,7 @@ export function createApp(opts: AppOptions): Hono {
     });
   });
   app.get('/api/repos', async (c) => c.json({ repos: await opts.github.listRepos() }));
+  registerRunsApi(app, { runs: opts.store.runs, ...opts.streamTiming });
 
   // Repository routes; `:owner/:repo` must be a valid GitHub name pair.
   const repoOf = (c: { req: { param(name: string): string } }): RepoRef | null =>

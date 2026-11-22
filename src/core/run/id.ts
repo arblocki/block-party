@@ -13,6 +13,13 @@ export function newRunId(
   return `r${date}-${rand(3).toString('hex')}`;
 }
 
+const RUN_ID = /^r\d{8}-[0-9a-f]{6}$/;
+
+/** Whether `value` has the shape `newRunId` produces. */
+export function isRunId(value: string): boolean {
+  return RUN_ID.test(value);
+}
+
 export function slugify(title: string): string {
   const slug = title
     .normalize('NFKD')
