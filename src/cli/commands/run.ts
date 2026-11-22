@@ -18,6 +18,8 @@ import { loadRunConfig, type RunFlagOverrides } from '../../core/run/config.js';
 import { RunLog } from '../../core/run/events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from '../../core/run/pipeline.js';
 import { publishRun, waitForCi } from '../../core/run/publish.js';
+import { dbPath } from '../../core/paths.js';
+import { openStore, type Store } from '../../core/store/index.js';
 import { createHerdrHost } from '../../core/terminal/index.js';
 
 export const RUN_USAGE = `Usage: block-party run --plan <file> [--repo <path>] [--base <ref>]
@@ -153,6 +155,17 @@ export async function runMain(argv: string[] = []): Promise<void> {
     };
     process.on('SIGINT', onSigint);
 
+    // The run tables let the server show this run; without them the run files still work.
+    let store: Store | undefined;
+    try {
+      store = openStore(dbPath());
+    } catch (err) {
+      console.error(
+        `Warning: could not open the database (${err instanceof Error ? err.message : String(err)}); ` +
+          'this run is recorded in its run directory only.',
+      );
+    }
+
     const deps: PipelineDeps = {
       git: createGit(),
       runShell,
@@ -165,6 +178,7 @@ export async function runMain(argv: string[] = []): Promise<void> {
       github: async () => createGitHubClient(createOctokitClients(await resolveToken())),
       createLog: (dir) => new RunLog(dir, { echo }),
       hookArgv: hookArgv(),
+      ...(store ? { store: store.runs } : {}),
     };
     try {
       const outcome = await runPipeline(
@@ -185,6 +199,11 @@ export async function runMain(argv: string[] = []): Promise<void> {
       process.exitCode = exitCodeFor(outcome.stage);
     } finally {
       process.removeListener('SIGINT', onSigint);
+      try {
+        store?.close();
+      } catch {
+        // Nothing left to record; closing is best effort.
+      }
     }
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));
