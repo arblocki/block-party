@@ -36,13 +36,36 @@ const ROLES: Record<SubagentName, { description: string; prompt: string }> = {
 
 const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'];
 
-/** The object serialized to `agents.json` for `claude --agents`. */
-export function buildAgents(subagents: SubagentSpec[]): Record<string, AgentDef> {
+/**
+ * How to run shell commands without stopping the run: which command prefixes are approved
+ * (from an implementer allowlist) and that each Bash call must be a single command, since a
+ * chain or pipe needs every part approved. Given to the implementer and its subagents.
+ */
+export function shellRules(allowedTools: string[]): string {
+  const prefixes = allowedTools
+    .filter((t) => t.startsWith('Bash(') && t.endsWith(')'))
+    .map((t) => `\`${t.slice(5, -1).replace(/:\*$/, '')}\``);
+  return (
+    'Edit files with the Edit/Write tools, not shell scripts (python/sed/heredocs). ' +
+    `Shell commands you may run without approval: ${prefixes.join(', ')}. ` +
+    'A chain or pipe (`;`, `&&`, `|`) runs without approval only if every command in it is ' +
+    'on that list, so prefer one command per Bash call. Anything else stops the run until a ' +
+    'human approves it.'
+  );
+}
+
+/**
+ * The object serialized to `agents.json` for `claude --agents`. `rules` (see shellRules) is
+ * appended to the prompt of every subagent that can run commands.
+ */
+export function buildAgents(subagents: SubagentSpec[], rules?: string): Record<string, AgentDef> {
   const out: Record<string, AgentDef> = {};
   for (const s of subagents) {
     const role = ROLES[s.name];
-    const def: AgentDef = { description: role.description, prompt: role.prompt, model: s.model };
-    if (s.name === 'explorer' || s.readOnly) def.tools = [...READ_ONLY_TOOLS];
+    const readOnly = s.name === 'explorer' || s.readOnly;
+    const prompt = rules && !readOnly ? `${role.prompt} ${rules}` : role.prompt;
+    const def: AgentDef = { description: role.description, prompt, model: s.model };
+    if (readOnly) def.tools = [...READ_ONLY_TOOLS];
     out[s.name] = def;
   }
   return out;
@@ -122,6 +145,9 @@ export function implementerPermissions(
     'Bash(cat:*)',
     'Bash(grep:*)',
     'Bash(find:*)',
+    'Bash(head:*)',
+    'Bash(tail:*)',
+    'Bash(wc:*)',
     ...checks.map((c) => `Bash(${c}:*)`),
   ];
   const disallowedTools = [

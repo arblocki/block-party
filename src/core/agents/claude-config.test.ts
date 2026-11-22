@@ -10,6 +10,7 @@ import {
   hookArgv,
   implementerPermissions,
   shellQuote,
+  shellRules,
 } from './claude-config.js';
 
 describe('buildAgents', () => {
@@ -27,6 +28,19 @@ describe('buildAgents', () => {
       expect(a.description).not.toBe('');
       expect(a.prompt).toMatch(/never touch anything else/);
     }
+  });
+
+  it('gives subagents that can run commands the shell rules', () => {
+    const rules = shellRules(['Read', 'Bash(pnpm test:*)', 'Bash(pnpm format:*)']);
+    const agents = buildAgents(
+      [
+        { name: 'implementer', model: 'sonnet' },
+        { name: 'explorer', model: 'haiku' },
+      ],
+      rules,
+    );
+    expect(agents.implementer?.prompt).toContain(rules);
+    expect(agents.explorer?.prompt).not.toContain(rules);
   });
 
   it('honors readOnly', () => {
@@ -72,7 +86,18 @@ describe('implementerPermissions', () => {
     expect(p.allowedTools).toContain('Bash(pnpm lint:*)');
     expect(p.allowedTools).toContain('Bash(pnpm install --frozen-lockfile)');
     expect(p.allowedTools).not.toContain('Bash(pnpm:*)');
-    for (const c of ['node', 'git show', 'git rev-parse', 'ls', 'cat', 'grep', 'find']) {
+    for (const c of [
+      'node',
+      'git show',
+      'git rev-parse',
+      'ls',
+      'cat',
+      'grep',
+      'find',
+      'head',
+      'tail',
+      'wc',
+    ]) {
       expect(p.allowedTools).toContain(`Bash(${c}:*)`);
     }
     for (const d of ['git push', 'curl', 'wget', 'rm -rf', 'pnpm add', 'npm install', 'gh']) {
@@ -112,5 +137,14 @@ describe('hookArgv', () => {
     expect(JSON.parse(lines[0] as string)).toMatchObject({
       payload: { hook_event_name: 'Stop', session_id: 's1' },
     });
+  });
+});
+
+describe('shellRules', () => {
+  it('lists the approved command prefixes and forbids chaining', () => {
+    const r = shellRules(['Read', 'Bash(pnpm test:*)', 'Bash(pnpm install --frozen-lockfile)']);
+    expect(r).toContain('`pnpm test`, `pnpm install --frozen-lockfile`');
+    expect(r).toMatch(/only if every command in it is on that list/);
+    expect(r).not.toContain('Read');
   });
 });

@@ -2,7 +2,12 @@ import { z } from 'zod';
 import { scrubbedEnv } from '../process/env.js';
 import { mkdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildAgents, buildSettings, implementerPermissions } from '../agents/claude-config.js';
+import {
+  buildAgents,
+  buildSettings,
+  implementerPermissions,
+  shellRules,
+} from '../agents/claude-config.js';
 import { renderBrief } from '../agents/brief.js';
 import type {
   ImplementerAdapter,
@@ -144,14 +149,10 @@ interface Ctx {
 
 /** Brief line telling the implementer which shell commands need no approval. */
 function toolsLine(allowedTools: string[], runDir: string): string {
-  const prefixes = allowedTools
-    .filter((t) => t.startsWith('Bash(') && t.endsWith(')'))
-    .map((t) => `\`${t.slice(5, -1).replace(/:\*$/, '')}\``);
   return (
-    '- Edit files with the Edit/Write tools, not shell scripts (python/sed/heredocs). ' +
-    `Shell commands you may run without approval: ${prefixes.join(', ')}. ` +
-    'Anything else stops the run until a human approves it. ' +
-    `The run directory ${runDir} is readable and writable for you.`
+    `- ${shellRules(allowedTools)} ` +
+    `The run directory ${runDir} is readable and writable for you. ` +
+    'Subagents you start get the same rules.'
   );
 }
 
@@ -466,6 +467,7 @@ async function provision(ctx: Ctx): Promise<void> {
         model: models[name],
         ...(name === 'explorer' ? { readOnly: true } : {}),
       })),
+      shellRules(ctx.start.allowedTools),
     ),
   );
   await writeArtifact(
