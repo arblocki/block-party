@@ -16,7 +16,7 @@ export class RunLog {
   private readonly echo?: (line: string) => void;
 
   constructor(
-    private readonly runDir: string,
+    readonly runDir: string,
     opts: RunLogOptions = {},
   ) {
     this.path = join(runDir, 'run-events.jsonl');
@@ -24,14 +24,17 @@ export class RunLog {
     this.echo = opts.echo;
   }
 
-  log(type: string, data?: Record<string, unknown>): void {
+  /** Appends one event; returns its `ts`. */
+  log(type: string, data?: Record<string, unknown>): string {
     const at = this.now();
+    const ts = at.toISOString();
     mkdirSync(this.runDir, { recursive: true });
-    appendFileSync(this.path, JSON.stringify({ ts: at.toISOString(), type, data }) + '\n');
+    appendFileSync(this.path, JSON.stringify({ ts, type, data }) + '\n');
     if (this.echo) {
       const time = `${pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())}`;
       this.echo(`[${time}] ${type}${summarize(data)}`);
     }
+    return ts;
   }
 }
 

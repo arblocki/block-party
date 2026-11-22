@@ -41,11 +41,14 @@ import {
   type ResolutionKind,
   type ReviewRoundInput,
   type TurnReport,
+  unresolvedBlocking,
   type WaitForCiOptions,
 } from './publish.js';
+import { RunRecorder } from './recorder.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
 import { saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
+import type { RunStore, StageKind, StageState } from '../store/runs.js';
 
 export interface RunInput {
   repo: string;
@@ -88,6 +91,8 @@ export interface PipelineDeps {
   createLog: (runDir: string) => RunLog;
   /** argv that runs `block-party hook` (see claude-config#hookArgv). */
   hookArgv: string[];
+  /** Run tables to mirror the run into; without one only the run directory files are written. */
+  store?: RunStore;
   now?: () => Date;
   paths?: {
     runDir: (runId: string) => string;
@@ -100,6 +105,8 @@ class Halt extends Error {
   constructor(
     readonly stage: 'blocked' | 'failed',
     note: string,
+    /** The halt is because a fix-round cap was reached. */
+    readonly capReached = false,
   ) {
     super(note);
     this.name = 'Halt';
@@ -109,7 +116,8 @@ class Halt extends Error {
 interface Ctx {
   input: RunInput;
   deps: PipelineDeps;
-  log: RunLog;
+  /** Every event and state change goes through here (files, plus the store when given). */
+  rec: RunRecorder;
   st: RunState;
   runDir: string;
   plan: Plan;
@@ -127,6 +135,8 @@ interface Ctx {
   /** Every accepted implementer report, in turn order. */
   reports: TurnReport[];
   lastChecks?: ChecksRunResult;
+  /** Local CI runs so far (the `checks` stage round). */
+  checkRuns: number;
   rulingsWritten: boolean;
   /** In-flight run.json save started from a synchronous callback. */
   pending: Promise<void>;
@@ -161,16 +171,94 @@ async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null 
   // previous (active) stage, so the failure handler can still move it to `failed`.
   await saveRunState(ctx.runDir, next);
   ctx.st = next;
-  ctx.log.log('stage', { stage, note: note ?? undefined });
+  ctx.rec.state(next);
+  ctx.rec.event('stage', { stage, note: note ?? undefined });
 }
 
 async function patchState(ctx: Ctx, patch: Partial<RunState>) {
   ctx.st = { ...ctx.st, ...patch };
   await saveRunState(ctx.runDir, ctx.st);
+  ctx.rec.state(ctx.st);
 }
 
 function describeSession(ctx: Ctx): string {
   return ctx.session ? ` Attach: ${ctx.deps.adapter.describe(ctx.session)}` : '';
+}
+
+function attachCommand(ctx: Ctx): string | null {
+  return ctx.session ? ctx.deps.adapter.describe(ctx.session) : null;
+}
+
+/** How a stage execution ends when `e` interrupts it. */
+function interruptedState(ctx: Ctx, e: unknown): Exclude<StageState, 'running' | 'succeeded'> {
+  if (ctx.input.signal?.aborted || e instanceof InterruptedError) return 'cancelled';
+  if (e instanceof Halt) return e.stage;
+  return 'failed';
+}
+
+/**
+ * Runs `fn` as one recorded stage execution. `result` maps its value to the end state
+ * (default succeeded) and output; a throw ends it blocked, failed or cancelled.
+ */
+async function inStage<T>(
+  ctx: Ctx,
+  kind: StageKind,
+  round: number,
+  input: unknown,
+  fn: () => Promise<T>,
+  result: (value: T) => { state?: Exclude<StageState, 'running'>; output?: unknown },
+): Promise<T> {
+  ctx.rec.startStage(kind, round, input);
+  let value: T;
+  try {
+    value = await fn();
+  } catch (e) {
+    ctx.rec.endStage(interruptedState(ctx, e), { error: (e as Error).message });
+    throw e;
+  }
+  const r = result(value);
+  ctx.rec.endStage(r.state ?? 'succeeded', r.output);
+  return value;
+}
+
+/** Awaits an implementer turn; its permission decisions are resolved once it ends. */
+async function turnEnded<T>(ctx: Ctx, turn: Promise<T>): Promise<T> {
+  try {
+    return await turn;
+  } finally {
+    ctx.rec.resolvePermissions();
+  }
+}
+
+/** Inbox item for a run that ended blocked or failed. */
+function openEndDecision(ctx: Ctx, e: unknown): void {
+  const note = (e as Error).message;
+  if (e instanceof Halt && e.stage === 'blocked') {
+    if (e.capReached) {
+      ctx.rec.openDecision('cap_reached', 'Fix-round cap reached', note, attachCommand(ctx));
+    } else {
+      ctx.rec.openDecision('blocked', 'Run blocked', note, attachCommand(ctx));
+    }
+  } else {
+    ctx.rec.openDecision('failed', 'Run failed', note, null);
+  }
+}
+
+/**
+ * The review-fix cap publishes rather than blocks (Phase 1 rule), so blocking findings it
+ * left unresolved would otherwise live only in the PR body: put them in the inbox too.
+ */
+function openUnresolvedDecision(ctx: Ctx): void {
+  const unresolved = unresolvedBlocking(ctx.rounds);
+  if (unresolved.length === 0) return;
+  const where = ctx.st.prNumber !== null ? `PR #${ctx.st.prNumber}` : 'The run';
+  const list = unresolved.map((f) => `- ${f.severity} ${f.title}`).join('\n');
+  ctx.rec.openDecision(
+    'cap_reached',
+    'Unresolved blocking findings',
+    `${where} still has blocking findings after the review-fix cap:\n${list}`,
+    null,
+  );
 }
 
 export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<RunOutcome> {
@@ -184,6 +272,7 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     } else {
       await publish(ctx);
     }
+    openUnresolvedDecision(ctx);
   } catch (e) {
     await ctx.pending.catch(() => undefined);
     if (input.signal?.aborted || e instanceof InterruptedError) {
@@ -191,9 +280,11 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
       await setStage(ctx, 'cancelled', 'cancelled');
     } else if (e instanceof Halt) {
       await setStage(ctx, e.stage, e.message);
+      openEndDecision(ctx, e);
     } else {
       // Includes IllegalTransitionError: failed is reachable from every active stage.
       await setStage(ctx, 'failed', (e as Error).message);
+      openEndDecision(ctx, e);
     }
   }
   return {
@@ -261,6 +352,8 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     updatedAt: ts,
   };
   await saveRunState(runDir, st);
+  const rec = new RunRecorder(log, deps.store);
+  rec.state(st);
 
   const perms = implementerPermissions(
     checks.required.map((c) => c.run),
@@ -271,7 +364,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const ctx: Ctx = {
     input,
     deps,
-    log,
+    rec,
     st,
     runDir,
     plan,
@@ -293,10 +386,12 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
       timeoutMs: config.policy.stageTimeoutMs,
       signal: input.signal,
       onPermission: (message) => {
-        ctx.log.log('implementer.waiting_for_human', {
-          notice: `⏸ Implementer needs your approval — attach: ${ctx.session ? deps.adapter.describe(ctx.session) : '(session starting)'}`,
+        const attach = attachCommand(ctx);
+        ctx.rec.event('implementer.waiting_for_human', {
+          notice: `⏸ Implementer needs your approval — attach: ${attach ?? '(session starting)'}`,
           message,
         });
+        ctx.rec.permissionWait(message, attach);
       },
     },
     briefBase: {
@@ -314,16 +409,17 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     },
     rounds: [],
     reports: [],
+    checkRuns: 0,
     rulingsWritten: false,
     pending: Promise.resolve(),
   };
 
-  for (const e of configErrors) log.log('checks.warning', { warning: e });
-  log.log('run.started', { runId, runDir, worktree: wt, branch });
-  for (const w of [...(loaded.drift?.warnings ?? [])]) log.log('drift.warning', { warning: w });
+  for (const e of configErrors) rec.event('checks.warning', { warning: e });
+  rec.event('run.started', { runId, runDir, worktree: wt, branch });
+  for (const w of [...(loaded.drift?.warnings ?? [])]) rec.event('drift.warning', { warning: w });
   if (loaded.drift) {
-    for (const m of loaded.drift.missing) log.log('drift.missing', { ref: m.ref });
-    for (const s of loaded.drift.stale) log.log('drift.stale', { check: s.check, ref: s.ref });
+    for (const m of loaded.drift.missing) rec.event('drift.missing', { ref: m.ref });
+    for (const s of loaded.drift.stale) rec.event('drift.stale', { check: s.check, ref: s.ref });
   }
 
   return ctx;
@@ -395,7 +491,7 @@ async function implement(ctx: Ctx): Promise<void> {
   const prevHead = await deps.git.headSha(st.worktreePath);
   const onSession = (session: ImplementerSession) => {
     ctx.session = session;
-    ctx.log.log('implementer.session', {
+    ctx.rec.event('implementer.session', {
       mode: session.mode,
       attach: deps.adapter.describe(session),
     });
@@ -409,14 +505,34 @@ async function implement(ctx: Ctx): Promise<void> {
       }),
     );
   };
-  const { session, outcome } = await abortable(
-    deps.adapter.start({ ...ctx.start, prompt: PROMPT_IMPLEMENT(brief.path), onSession }),
-    input.signal,
+  await inStage(
+    ctx,
+    'implement',
+    1,
+    turnInput(ctx, brief.path),
+    async () => {
+      const { session, outcome } = await turnEnded(
+        ctx,
+        abortable(
+          deps.adapter.start({ ...ctx.start, prompt: PROMPT_IMPLEMENT(brief.path), onSession }),
+          input.signal,
+        ),
+      );
+      if (!ctx.session) onSession(session);
+      ctx.session = session;
+      await ctx.pending;
+      return judgeTurn(ctx, outcome, 'implement', 1, prevHead);
+    },
+    () => turnOutput(ctx, 'implement', 1),
   );
-  if (!ctx.session) onSession(session);
-  ctx.session = session;
-  await ctx.pending;
-  await judgeTurn(ctx, outcome, 'implement', 1, prevHead);
+}
+
+function turnInput(ctx: Ctx, briefPath: string) {
+  return { brief: briefPath, model: ctx.start.model };
+}
+
+function turnOutput(ctx: Ctx, kind: string, n: number) {
+  return { output: { report: join(ctx.runDir, 'reports', `${kind}-${n}.json`) } };
 }
 
 interface TurnChecks {
@@ -467,7 +583,7 @@ async function judgeTurn(
   }
   const report = read.report;
   if (report.status === 'blocked') {
-    for (const q of report.questions) ctx.log.log('question', { question: q });
+    for (const q of report.questions) ctx.rec.event('question', { question: q });
     throw new Halt(
       'blocked',
       `Implementer is blocked and has questions: ${report.questions.join(' | ')}.${attach}`,
@@ -521,15 +637,27 @@ async function fixTurn(
   );
   await setStage(ctx, 'fixing', `${kind} ${n}`);
   const prevHead = await deps.git.headSha(st.worktreePath);
-  const outcome = await abortable(
-    deps.adapter.send(
-      ctx.session!,
-      { ...ctx.start, prompt: PROMPT_FIX(brief.path) },
-      PROMPT_FIX(brief.path),
-    ),
-    input.signal,
+  return inStage(
+    ctx,
+    kind,
+    n,
+    turnInput(ctx, brief.path),
+    async () => {
+      const outcome = await turnEnded(
+        ctx,
+        abortable(
+          deps.adapter.send(
+            ctx.session!,
+            { ...ctx.start, prompt: PROMPT_FIX(brief.path) },
+            PROMPT_FIX(brief.path),
+          ),
+          input.signal,
+        ),
+      );
+      return judgeTurn(ctx, outcome, kind, n, prevHead, extra);
+    },
+    () => turnOutput(ctx, kind, n),
   );
-  return judgeTurn(ctx, outcome, kind, n, prevHead, extra);
 }
 
 /** Step 5: local CI on HEAD; failing checks go back to the implementer up to the cap. */
@@ -539,19 +667,42 @@ async function checksGreen(ctx: Ctx): Promise<void> {
   for (;;) {
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'checking', head.slice(0, 7));
-    const res = await abortable(
-      deps.runChecks({
-        cwd: ctx.st.worktreePath,
-        checks: ctx.checks.required,
-        logDir: join(ctx.runDir, 'checks', head.slice(0, 7)),
-        headSha: head,
-        timeoutMs: policy.checkTimeoutMs,
-        signal: input.signal,
-      }),
-      input.signal,
+    const res = await inStage(
+      ctx,
+      'checks',
+      ++ctx.checkRuns,
+      { headSha: head },
+      async () => {
+        const r = await abortable(
+          deps.runChecks({
+            cwd: ctx.st.worktreePath,
+            checks: ctx.checks.required,
+            logDir: join(ctx.runDir, 'checks', head.slice(0, 7)),
+            headSha: head,
+            timeoutMs: policy.checkTimeoutMs,
+            signal: input.signal,
+          }),
+          input.signal,
+        );
+        ctx.lastChecks = r;
+        ctx.rec.event('checks.result', { head: head.slice(0, 7), passed: r.passed });
+        return r;
+      },
+      (r) => {
+        const failed = new Set(failedChecks(r.results));
+        return {
+          state: r.passed ? 'succeeded' : 'failed',
+          output: {
+            passed: r.passed,
+            checks: r.results.map((c) => ({
+              name: c.name,
+              passed: !failed.has(c),
+              logPath: c.logPath,
+            })),
+          },
+        };
+      },
     );
-    ctx.lastChecks = res;
-    ctx.log.log('checks.result', { head: head.slice(0, 7), passed: res.passed });
     if (res.passed) return;
     const names = failedChecks(res.results)
       .map((r) => r.name)
@@ -560,6 +711,7 @@ async function checksGreen(ctx: Ctx): Promise<void> {
       throw new Halt(
         'blocked',
         `Local CI still failing (${names}) after ${ctx.st.rounds.checkFix} fix round(s).${describeSession(ctx)}`,
+        true,
       );
     }
     const n = ctx.st.rounds.checkFix + 1;
@@ -582,35 +734,56 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
-    const rr = await abortable(
-      deps.reviewWithCodex({
-        worktree: ctx.st.worktreePath,
-        baseSha: ctx.st.baseSha,
-        headSha: head,
-        planPath: ctx.planPath,
-        priorFindings: priorFindings(ctx.rounds),
-        outDir,
-        round,
-        ...(input.config.reviewer.model ? { model: input.config.reviewer.model } : {}),
-        signal: input.signal,
-      }),
-      input.signal,
+    const { rec, blocking } = await inStage(
+      ctx,
+      'review',
+      round,
+      { reviewedSha: head },
+      async () => {
+        const rr = await abortable(
+          deps.reviewWithCodex({
+            worktree: ctx.st.worktreePath,
+            baseSha: ctx.st.baseSha,
+            headSha: head,
+            planPath: ctx.planPath,
+            priorFindings: priorFindings(ctx.rounds),
+            outDir,
+            round,
+            ...(input.config.reviewer.model ? { model: input.config.reviewer.model } : {}),
+            signal: input.signal,
+          }),
+          input.signal,
+        );
+        if (!rr.ok) throw new Halt('blocked', `Codex review failed: ${rr.error}`);
+        const rec: ReviewRoundInput = {
+          round,
+          reviewedSha: head,
+          summary: rr.output.summary,
+          findings: rr.output.findings,
+          resolutions: {},
+        };
+        ctx.rounds.push(rec);
+        const blocking = rec.findings.filter((f) => policy.autoFix.includes(f.severity));
+        ctx.rec.event('review.result', {
+          round,
+          findings: rec.findings.length,
+          blocking: blocking.length,
+        });
+        return { rec, blocking };
+      },
+      (r) => {
+        const bySeverity: Record<string, number> = {};
+        for (const f of r.rec.findings) bySeverity[f.severity] = (bySeverity[f.severity] ?? 0) + 1;
+        return {
+          output: {
+            findings: r.rec.findings.length,
+            blocking: r.blocking.length,
+            bySeverity,
+            findingsPath: join(outDir, 'findings.json'),
+          },
+        };
+      },
     );
-    if (!rr.ok) throw new Halt('blocked', `Codex review failed: ${rr.error}`);
-    const rec: ReviewRoundInput = {
-      round,
-      reviewedSha: head,
-      summary: rr.output.summary,
-      findings: rr.output.findings,
-      resolutions: {},
-    };
-    ctx.rounds.push(rec);
-    const blocking = rec.findings.filter((f) => policy.autoFix.includes(f.severity));
-    ctx.log.log('review.result', {
-      round,
-      findings: rec.findings.length,
-      blocking: blocking.length,
-    });
     if (blocking.length === 0 || ctx.st.rounds.reviewFix >= policy.maxReviewFixRounds) return;
     await reviewFix(ctx, rec, blocking);
   }
@@ -648,7 +821,7 @@ async function finish(ctx: Ctx, note: string | null): Promise<void> {
     try {
       await ctx.deps.adapter.stop(ctx.session);
     } catch (e) {
-      ctx.log.log('implementer.stop_failed', { error: (e as Error).message });
+      ctx.rec.event('implementer.stop_failed', { error: (e as Error).message });
     }
   }
 }
@@ -680,40 +853,58 @@ async function publish(ctx: Ctx): Promise<void> {
   });
   const repo = { owner: st.owner, repo: st.repo };
   const github = await deps.github();
-  let pr: PublishResult;
-  try {
-    pr = await deps.publishRun({
-      git: deps.git,
-      github,
-      repo,
-      worktree: wt,
-      branch: st.branch,
-      base: st.baseRef,
-      title: st.title,
-      body,
-      signal: input.signal,
-    });
-  } catch (e) {
-    if (e instanceof PublishError) {
-      // Record external effects that already happened (they survive an interrupt).
-      if (e.done.prNumber !== undefined) await patchState(ctx, { prNumber: e.done.prNumber });
-      ctx.log.log('publish.stopped', {
-        code: e.code,
-        pushed: e.done.pushed,
-        prNumber: e.done.prNumber,
-      });
-      throw new Halt('blocked', `Publish failed (${e.code}): ${e.message}`);
-    }
-    throw e;
-  }
-  await patchState(ctx, { prNumber: pr.prNumber });
-  ctx.log.log('pr', { number: pr.prNumber, url: pr.url });
+  const pr = await inStage(
+    ctx,
+    'publish',
+    1,
+    { headSha: head },
+    async (): Promise<PublishResult> => {
+      let pr: PublishResult;
+      try {
+        pr = await deps.publishRun({
+          git: deps.git,
+          github,
+          repo,
+          worktree: wt,
+          branch: st.branch,
+          base: st.baseRef,
+          title: st.title,
+          body,
+          signal: input.signal,
+        });
+      } catch (e) {
+        if (e instanceof PublishError) {
+          // Record external effects that already happened (they survive an interrupt).
+          if (e.done.prNumber !== undefined) await patchState(ctx, { prNumber: e.done.prNumber });
+          ctx.rec.event('publish.stopped', {
+            code: e.code,
+            pushed: e.done.pushed,
+            prNumber: e.done.prNumber,
+          });
+          throw new Halt('blocked', `Publish failed (${e.code}): ${e.message}`);
+        }
+        throw e;
+      }
+      await patchState(ctx, { prNumber: pr.prNumber });
+      ctx.rec.event('pr', { number: pr.prNumber, url: pr.url });
+      return pr;
+    },
+    (p) => ({ output: { prNumber: p.prNumber, url: p.url } }),
+  );
   if (!input.config.waitForCi) return finish(ctx, `PR #${pr.prNumber} ${pr.url}`);
 
   await setStage(ctx, 'waiting_ci', `PR #${pr.prNumber}`);
-  const ci = await abortable(
-    deps.waitForCi({ github, repo, sha: head, signal: input.signal }),
-    input.signal,
+  const ci = await inStage(
+    ctx,
+    'wait-ci',
+    1,
+    { prNumber: pr.prNumber, headSha: head },
+    () =>
+      abortable(deps.waitForCi({ github, repo, sha: head, signal: input.signal }), input.signal),
+    (r) => ({
+      state: r.state === 'failure' ? 'failed' : r.state === 'timeout' ? 'blocked' : 'succeeded',
+      output: { state: r.state },
+    }),
   );
   if (ci.state === 'failure') {
     throw new Halt(
