@@ -62,7 +62,9 @@ describe('run stage machine', () => {
     for (const from of ACTIVE_STAGES) {
       for (const to of RUN_STAGES) {
         const expected =
-          from === to || allowed.has(`${from}>${to}`) || (ESCAPES as readonly string[]).includes(to);
+          from === to ||
+          allowed.has(`${from}>${to}`) ||
+          (ESCAPES as readonly string[]).includes(to);
         expect(canTransition(from, to), `${from} -> ${to}`).toBe(expected);
       }
     }

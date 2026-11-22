@@ -17,6 +17,7 @@
     "demo": "tsx scripts/demo.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "typecheck": "tsc -p tsconfig.test.json && tsc -p tsconfig.node.json --noEmit && tsc -p tsconfig.web.json --noEmit",
     "test": "vitest run",
     "llm:ping": "tsx scripts/llm-ping.ts",

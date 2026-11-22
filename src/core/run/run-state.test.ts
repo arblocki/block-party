@@ -37,7 +37,8 @@ describe('run state', () => {
     expect(back.stage).toBe('implementing');
   });
   it('accepts every stage in RUN_STAGES, including cancelled and interrupted', () => {
-    for (const stage of RUN_STAGES) expect(RunStateSchema.parse({ ...state, stage }).stage).toBe(stage);
+    for (const stage of RUN_STAGES)
+      expect(RunStateSchema.parse({ ...state, stage }).stage).toBe(stage);
     expect(RunStateSchema.shape.stage.options).toEqual([...RUN_STAGES]);
   });
   it('rejects invalid stage', async () => {

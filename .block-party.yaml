@@ -3,5 +3,6 @@ checks:
   required:
     - { name: typecheck, run: pnpm typecheck }
     - { name: lint, run: pnpm lint }
+    - { name: format, run: pnpm format:check }
     - { name: test, run: pnpm test }
     - { name: build, run: pnpm build }
