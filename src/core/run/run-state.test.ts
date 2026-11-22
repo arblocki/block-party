@@ -2,6 +2,7 @@ import { mkdtemp, readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { RUN_STAGES } from './machine.js';
 import { RunStateSchema, saveRunState, type RunState } from './run-state.js';
 
 const state: RunState = {
@@ -34,6 +35,10 @@ describe('run state', () => {
     expect(await readdir(dir)).toEqual(['run.json']);
     const back = RunStateSchema.parse(JSON.parse(await readFile(join(dir, 'run.json'), 'utf8')));
     expect(back.stage).toBe('implementing');
+  });
+  it('accepts every stage in RUN_STAGES, including cancelled and interrupted', () => {
+    for (const stage of RUN_STAGES) expect(RunStateSchema.parse({ ...state, stage }).stage).toBe(stage);
+    expect(RunStateSchema.shape.stage.options).toEqual([...RUN_STAGES]);
   });
   it('rejects invalid stage', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'bp-state-'));

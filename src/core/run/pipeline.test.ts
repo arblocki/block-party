@@ -1,7 +1,14 @@
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type {
   ImplementerAdapter,
   ImplementerSession,
@@ -17,6 +24,25 @@ import { RunLog } from './events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
+import type { RunStage } from './machine.js';
+
+/** Lets a test declare one otherwise-legal move illegal, to force setStage to reject it. */
+const forced = vi.hoisted(() => ({ illegal: null as null | [string, string] }));
+vi.mock('./machine.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('./machine.js')>();
+  return {
+    ...real,
+    assertTransition: (from: RunStage, to: RunStage) => {
+      if (forced.illegal?.[0] === from && forced.illegal[1] === to) {
+        throw new real.IllegalTransitionError(from, to);
+      }
+      real.assertTransition(from, to);
+    },
+  };
+});
+afterEach(() => {
+  forced.illegal = null;
+});
 
 const PLAN = `# Add widgets
 
@@ -480,15 +506,16 @@ describe('runPipeline', () => {
     expect(brief).toContain(schemaPath);
   });
 
-  it('records the session immediately and blocks on SIGINT during the first turn', async () => {
+  it('records the session immediately and cancels on SIGINT during the first turn', async () => {
     const h = harness({ turns: [], hangFirstTurn: true });
     const ac = new AbortController();
     const p = h.run(ac.signal);
     await new Promise((r) => setTimeout(r, 50));
     ac.abort();
     const out = await p;
-    expect(out.stage).toBe('blocked');
-    expect(out.note).toBe('interrupted');
+    expect(out.stage).toBe('cancelled');
+    expect(out.note).toBe('cancelled');
+    expect(state(out).stage).toBe('cancelled');
     const st = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as {
       implementer: { sessionId: string } | null;
     };
@@ -500,23 +527,52 @@ describe('runPipeline', () => {
   });
 
   it.each(['setup', 'checks', 'review'] as const)(
-    'records blocked/interrupted when aborted during %s',
+    'records cancelled when aborted during %s',
     async (step) => {
       const ac = new AbortController();
       const h = harness({ turns: [{}, {}, {}], abortAt: { step, ac } });
       const out = await h.run(ac.signal);
-      expect(out.stage).toBe('blocked');
-      expect(out.note).toBe('interrupted');
+      expect(out.stage).toBe('cancelled');
+      expect(out.note).toBe('cancelled');
       expect(h.calls.published).toHaveLength(0);
     },
   );
 
-  it('records the PR number when interrupted during publishing', async () => {
+  it('ends the run as failed, naming both stages, when setStage rejects a move', async () => {
+    forced.illegal = ['reviewing', 'publishing'];
+    const h = harness({ turns: [{}] });
+    const out = await h.run();
+    expect(out.stage).toBe('failed');
+    expect(out.note).toContain('reviewing');
+    expect(out.note).toContain('publishing');
+    expect(state(out)).toMatchObject({ stage: 'failed', stageNote: out.note });
+    expect(h.calls.published).toHaveLength(0);
+  });
+
+  it('reports the real error, not an illegal move, when saving the final stage fails', async () => {
+    // A read-only run directory makes every run.json save fail from the review on.
+    let runDir = '';
+    const h = harness({
+      turns: [{}],
+      flags: { publish: false },
+      onReview: () => {
+        runDir = join(h.root, 'runs', readdirSync(join(h.root, 'runs'))[0]!);
+        chmodSync(runDir, 0o500);
+      },
+    });
+    try {
+      await expect(h.run()).rejects.toThrow(/EACCES|permission denied/i);
+    } finally {
+      if (runDir) chmodSync(runDir, 0o700);
+    }
+  });
+
+  it('records the PR number when cancelled during publishing', async () => {
     const ac = new AbortController();
     const h = harness({ turns: [{}], abortInPublish: ac });
     const out = await h.run(ac.signal);
-    expect(out.stage).toBe('blocked');
-    expect(out.note).toBe('interrupted');
+    expect(out.stage).toBe('cancelled');
+    expect(out.note).toBe('cancelled');
     expect(state(out).prNumber).toBe(9);
     expect(h.calls.published[0]!.signal).toBe(ac.signal);
     expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain('publish.stopped');

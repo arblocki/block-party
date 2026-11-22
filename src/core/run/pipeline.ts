@@ -23,6 +23,7 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
+import { assertTransition } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
@@ -58,7 +59,7 @@ export interface RunInput {
 export interface RunOutcome {
   runId: string;
   runDir: string;
-  stage: 'complete' | 'blocked' | 'failed';
+  stage: 'complete' | 'blocked' | 'failed' | 'cancelled';
   note: string | null;
   prNumber: number | null;
 }
@@ -147,14 +148,19 @@ function toolsLine(allowedTools: string[], runDir: string): string {
 const PROMPT_IMPLEMENT = (p: string) => `Read the task brief at ${p} and follow it.`;
 const PROMPT_FIX = (p: string) => `Read the fix brief at ${p} and follow it.`;
 
+/** Moves the run to `stage`; throws IllegalTransitionError (before writing) for an illegal move. */
 async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null = null) {
-  ctx.st = {
+  assertTransition(ctx.st.stage, stage);
+  const next: RunState = {
     ...ctx.st,
     stage,
     stageNote: note,
     updatedAt: (ctx.deps.now ?? (() => new Date()))().toISOString(),
   };
-  await saveRunState(ctx.runDir, ctx.st);
+  // Adopt the new stage only once it is saved: if the save fails, the run is still in its
+  // previous (active) stage, so the failure handler can still move it to `failed`.
+  await saveRunState(ctx.runDir, next);
+  ctx.st = next;
   ctx.log.log('stage', { stage, note: note ?? undefined });
 }
 
@@ -182,10 +188,11 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     await ctx.pending.catch(() => undefined);
     if (input.signal?.aborted || e instanceof InterruptedError) {
       // Cancellation wins over whatever failure the killed work produced.
-      await setStage(ctx, 'blocked', 'interrupted');
+      await setStage(ctx, 'cancelled', 'cancelled');
     } else if (e instanceof Halt) {
       await setStage(ctx, e.stage, e.message);
     } else {
+      // Includes IllegalTransitionError: failed is reachable from every active stage.
       await setStage(ctx, 'failed', (e as Error).message);
     }
   }
