@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,6 +120,19 @@ describe('run store', () => {
       expect(updated).toMatchObject({ ...patch, id: 'r1', projectId, createdAt: input.createdAt });
       expect((updated?.updatedAt ?? '') > (input.updatedAt ?? '')).toBe(true);
       expect(runs.getRun('r1')).toEqual(updated);
+    });
+
+    it('advances updatedAt on every update, even within one millisecond', () => {
+      vi.useFakeTimers({ now: new Date('2026-05-01T00:00:00.000Z'), toFake: ['Date'] });
+      try {
+        runs.createRun(runInput(projectId, { updatedAt: '2026-05-01T00:00:00.000Z' }));
+        const a = runs.updateRun('r1', { stage: 'implementing' })!.updatedAt;
+        const b = runs.updateRun('r1', { stage: 'checking' })!.updatedAt;
+        expect(a > '2026-05-01T00:00:00.000Z').toBe(true);
+        expect(b > a).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('updates only the given columns and bumps updatedAt', () => {

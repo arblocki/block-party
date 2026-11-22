@@ -328,6 +328,15 @@ function toDecision(r: DecisionDb): Decision {
 const now = (): string => new Date().toISOString();
 
 /**
+ * `at`, or 1 ms after `previous` when the clock hasn't moved past it: `updatedAt` must
+ * strictly increase, because readers detect run changes by comparing it.
+ */
+function later(at: string, previous: string): string {
+  const prev = Date.parse(previous);
+  return Number.isNaN(prev) || Date.parse(at) > prev ? at : new Date(prev + 1).toISOString();
+}
+
+/**
  * Typed access to the run tables. Every write is a single statement (or one short
  * transaction), since the CLI and the server share the database file.
  */
@@ -404,8 +413,12 @@ export function createRunStore(db: Database.Database): RunStore {
 
   return {
     upsertProject(input) {
-      upsertProjectStmt.run({ id: randomUUID(), ...input, at: now() });
-      return toProject(projectByPath.get(input.localPath) as ProjectDb);
+      return db
+        .transaction((): Project => {
+          upsertProjectStmt.run({ id: randomUUID(), ...input, at: now() });
+          return toProject(projectByPath.get(input.localPath) as ProjectDb);
+        })
+        .immediate();
     },
     listProjects() {
       return allProjects.all().map(toProject);
@@ -424,8 +437,12 @@ export function createRunStore(db: Database.Database): RunStore {
       };
       const params: Record<string, unknown> = { id: full.id };
       for (const f of runFields) params[f] = columnValue(f, full[f]);
-      insertRun.run(params);
-      return getRun(full.id) as RunRow;
+      return db
+        .transaction((): RunRow => {
+          insertRun.run(params);
+          return getRun(full.id) as RunRow;
+        })
+        .immediate();
     },
     updateRun(id, patch) {
       // Keys are checked at runtime too: a caller may pass a wider object than RunPatch.
@@ -436,14 +453,24 @@ export function createRunStore(db: Database.Database): RunStore {
           f !== 'updatedAt' &&
           patch[f as keyof RunPatch] !== undefined,
       );
-      const params: Record<string, unknown> = { id, updatedAt: now() };
       const sets = ['updated_at = @updatedAt'];
+      const params: Record<string, unknown> = { id };
       for (const f of fields) {
         sets.push(`${RUN_COLUMNS[f]} = @${f}`);
         params[f] = columnValue(f, patch[f]);
       }
-      const info = db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = @id`).run(params);
-      return info.changes > 0 ? getRun(id) : undefined;
+      const stmt = db.prepare(`UPDATE runs SET ${sets.join(', ')} WHERE id = @id`);
+      // One transaction, so the returned row is the one this call wrote even when another
+      // handle (the CLI or the server) writes the same run concurrently.
+      return db
+        .transaction((): RunRow | undefined => {
+          const current = runById.get(id);
+          if (!current) return undefined;
+          params.updatedAt = later(now(), current.updated_at);
+          stmt.run(params);
+          return getRun(id);
+        })
+        .immediate();
     },
     getRun,
     listRuns(opts = {}) {
