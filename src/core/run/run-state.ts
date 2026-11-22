@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
+import { RUN_STAGES } from './machine.js';
 
 export const RunStateSchema = z.strictObject({
   id: z.string(),
@@ -16,18 +17,7 @@ export const RunStateSchema = z.strictObject({
   headSha: z.string().nullable(),
   planPath: z.string(),
   planHash: z.string(),
-  stage: z.enum([
-    'setup',
-    'implementing',
-    'checking',
-    'reviewing',
-    'fixing',
-    'publishing',
-    'waiting_ci',
-    'complete',
-    'blocked',
-    'failed',
-  ]),
+  stage: z.enum(RUN_STAGES),
   stageNote: z.string().nullable(),
   implementer: z
     .strictObject({
