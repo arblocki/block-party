@@ -10,7 +10,7 @@ checkboxes, and every non-obvious choice goes in the [decision log](#12-decision
 the code and this doc disagree, fix whichever one is wrong in the same PR.
 
 - **Status:** Phase 1 implemented (`block-party run`, plan in [`docs/plans/phase-1.md`](plans/phase-1.md));
-  its exit-check run on a real plan is pending. Phase 0 spike write-ups are in [`docs/spikes/`](spikes/).
+  its exit check passed with [#15](https://github.com/arblocki/block-party/pull/15). Phase 0 spike write-ups are in [`docs/spikes/`](spikes/).
   Review UI (M0–M3 of `PLAN.md`) is shipped.
 - **Owner:** Drew Blocki
 - **Last updated:** 2026-11-09
@@ -889,8 +889,10 @@ with no UI beyond the terminal, logs, and artifacts.
 - [x] One automatic fix round for P0/P1 findings, then local CI and re-review.
 - [x] Push + draft PR at the end + head SHA confirmation + wait for GitHub CI.
 - [x] All artifacts saved under `~/.block-party/runs/<runId>/`.
-- [ ] **Exit check:** I run it on a real plan for this repo and get a draft PR with Codex
-  findings and their resolutions, without copying text between tools.
+- [x] **Exit check:** I run it on a real plan for this repo and get a draft PR with Codex
+  findings and their resolutions, without copying text between tools. Passed 2026-11-19 with
+  [#15](https://github.com/arblocki/block-party/pull/15): Opus implementer, one P1 from Codex,
+  one fix round, a clean second review, draft PR with a matching head.
 
 ### Phase 2: Persistent runs and the app shell (1–2 weeks)
 
