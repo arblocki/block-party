@@ -1,4 +1,5 @@
-import { mkdir, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataDir } from '../core/paths.js';
 import { loadRunConfig, type RunFlagOverrides } from '../core/run/config.js';
@@ -127,7 +128,11 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         entry.done = (async () => {
           try {
             await mkdir(plansDir, { recursive: true });
-            await writeFile(planFile, req.planText);
+            // Same text means same path: write a temp file and rename it into place, so a
+            // concurrent start reading this plan never sees it truncated or half-written.
+            const tmp = `${planFile}.${randomUUID()}.tmp`;
+            await writeFile(tmp, req.planText);
+            await rename(tmp, planFile);
             if (ac.signal.aborted) throw stoppedError();
             const outcome = await startPipeline({
               repo: project.localPath,

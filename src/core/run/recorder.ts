@@ -55,12 +55,15 @@ export class RunRecorder {
       return;
     }
     this.db('createRun', (s) => {
-      const project = s.upsertProject({
-        owner: st.owner,
-        repo: st.repo,
-        localPath: st.repoPath,
-        defaultBase: st.baseRef,
-      });
+      // A registered project keeps its default base: this run's base may be any branch.
+      const project =
+        s.listProjects().find((p) => p.localPath === st.repoPath) ??
+        s.upsertProject({
+          owner: st.owner,
+          repo: st.repo,
+          localPath: st.repoPath,
+          defaultBase: st.baseRef,
+        });
       s.createRun({
         id: st.id,
         projectId: project.id,

@@ -126,6 +126,24 @@ describe('RunRecorder', () => {
     expect(rows.map((e) => e.stageId)).toEqual([null, stage!.id, null]);
   });
 
+  it("registers a new project with the run's base but keeps a registered project's default", () => {
+    const store = openStore(':memory:').runs;
+    const st = runState();
+    store.upsertProject({
+      owner: st.owner,
+      repo: st.repo,
+      localPath: st.repoPath,
+      defaultBase: 'main',
+    });
+    const { rec } = setup(store);
+    rec.state({ ...st, baseRef: 'release/2' });
+    expect(store.listProjects()).toEqual([expect.objectContaining({ defaultBase: 'main' })]);
+
+    const fresh = openStore(':memory:').runs;
+    setup(fresh).rec.state({ ...st, baseRef: 'release/2' });
+    expect(fresh.listProjects()).toEqual([expect.objectContaining({ defaultBase: 'release/2' })]);
+  });
+
   it('skips writes that need the run row until it exists', () => {
     const store = openStore(':memory:').runs;
     const { rec, fileEvents } = setup(store);
