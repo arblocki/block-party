@@ -174,7 +174,9 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       const current = runs.getRun(run.id);
       if (current && current.updatedAt !== updatedAt) {
         updatedAt = current.updatedAt;
-        send({ event: 'run', data: runSummary(current) });
+        // Carries the cursor as its id, so a client that drops before any run event still
+        // resumes from here instead of from a new "latest" (which would skip events).
+        send({ event: 'run', id: String(lastId), data: runSummary(current) });
       }
     });
   });

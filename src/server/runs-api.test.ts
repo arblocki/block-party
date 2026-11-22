@@ -393,6 +393,38 @@ describe('GET /api/runs/:id/stream', () => {
     }
   });
 
+  it('gives a client that drops before any run event a cursor to resume from', async () => {
+    runs.createRun(runInput(projectId));
+    const before = runs.appendEvent({ runId: RUN_A, ts: 't0', type: 'x' });
+    const first = new AbortController();
+    const reader1 = new FrameReader(
+      await req(`/api/runs/${RUN_A}/stream`, { signal: first.signal }),
+    );
+    const [initial] = await reader1.until((f) => f.some((x) => x.event === 'run'));
+    expect(initial).toMatchObject({ event: 'run', id: String(before) });
+    first.abort();
+    await reader1.cancel();
+
+    // Appended while disconnected: the reconnect must still deliver it.
+    const missed = runs.appendEvent({ runId: RUN_A, ts: 't1', type: 'x' });
+    const second = new AbortController();
+    const reader2 = new FrameReader(
+      await req(`/api/runs/${RUN_A}/stream`, {
+        signal: second.signal,
+        headers: { 'last-event-id': initial!.id! },
+      }),
+    );
+    try {
+      const frames = await reader2.until((f) => f.some((x) => x.event === 'run-event'));
+      expect(frames.filter((x) => x.event === 'run-event').map((x) => x.id)).toEqual([
+        String(missed),
+      ]);
+    } finally {
+      second.abort();
+      await reader2.cancel();
+    }
+  });
+
   it('rejects a malformed Last-Event-ID', async () => {
     runs.createRun(runInput(projectId));
     const res = await req(`/api/runs/${RUN_A}/stream`, { headers: { 'last-event-id': 'x' } });
