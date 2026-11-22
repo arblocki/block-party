@@ -151,13 +151,16 @@ const PROMPT_FIX = (p: string) => `Read the fix brief at ${p} and follow it.`;
 /** Moves the run to `stage`; throws IllegalTransitionError (before writing) for an illegal move. */
 async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null = null) {
   assertTransition(ctx.st.stage, stage);
-  ctx.st = {
+  const next: RunState = {
     ...ctx.st,
     stage,
     stageNote: note,
     updatedAt: (ctx.deps.now ?? (() => new Date()))().toISOString(),
   };
-  await saveRunState(ctx.runDir, ctx.st);
+  // Adopt the new stage only once it is saved: if the save fails, the run is still in its
+  // previous (active) stage, so the failure handler can still move it to `failed`.
+  await saveRunState(ctx.runDir, next);
+  ctx.st = next;
   ctx.log.log('stage', { stage, note: note ?? undefined });
 }
 

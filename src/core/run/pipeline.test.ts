@@ -1,4 +1,11 @@
-import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -540,6 +547,24 @@ describe('runPipeline', () => {
     expect(out.note).toContain('publishing');
     expect(state(out)).toMatchObject({ stage: 'failed', stageNote: out.note });
     expect(h.calls.published).toHaveLength(0);
+  });
+
+  it('reports the real error, not an illegal move, when saving the final stage fails', async () => {
+    // A read-only run directory makes every run.json save fail from the review on.
+    let runDir = '';
+    const h = harness({
+      turns: [{}],
+      flags: { publish: false },
+      onReview: () => {
+        runDir = join(h.root, 'runs', readdirSync(join(h.root, 'runs'))[0]!);
+        chmodSync(runDir, 0o500);
+      },
+    });
+    try {
+      await expect(h.run()).rejects.toThrow(/EACCES|permission denied/i);
+    } finally {
+      if (runDir) chmodSync(runDir, 0o700);
+    }
   });
 
   it('records the PR number when cancelled during publishing', async () => {
