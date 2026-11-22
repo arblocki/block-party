@@ -16,7 +16,7 @@ import { reviewWithCodex } from '../../core/reviewer/codex-reviewer.js';
 import { ensureReviewerCodexHome } from '../../core/reviewer/codex-home.js';
 import { loadRunConfig, type RunFlagOverrides } from '../../core/run/config.js';
 import { RunLog } from '../../core/run/events.js';
-import { runPipeline, type PipelineDeps } from '../../core/run/pipeline.js';
+import { runPipeline, type PipelineDeps, type RunOutcome } from '../../core/run/pipeline.js';
 import { publishRun, waitForCi } from '../../core/run/publish.js';
 import { createHerdrHost } from '../../core/terminal/index.js';
 
@@ -25,7 +25,7 @@ export const RUN_USAGE = `Usage: block-party run --plan <file> [--repo <path>] [
                        [--no-publish] [--no-wait-ci] [--title <t>]
 
 Runs the plan in a fresh worktree: implement, local CI, Codex review, draft PR, GitHub CI.
-Exit codes: 0 complete, 3 blocked, 1 failed, 2 usage error.`;
+Exit codes: 0 complete, 3 blocked, 1 failed, 2 usage error, 130 cancelled.`;
 
 export interface RunArgs {
   repo: string;
@@ -106,8 +106,18 @@ function defaultBranch(repo: string): Promise<string> {
   });
 }
 
-function exitCodeFor(stage: 'complete' | 'blocked' | 'failed'): number {
-  return stage === 'complete' ? 0 : stage === 'blocked' ? 3 : 1;
+/** Process exit code for a finished run. 130 matches the shell convention for SIGINT. */
+export function exitCodeFor(stage: RunOutcome['stage']): number {
+  switch (stage) {
+    case 'complete':
+      return 0;
+    case 'blocked':
+      return 3;
+    case 'cancelled':
+      return 130;
+    case 'failed':
+      return 1;
+  }
 }
 
 export async function runMain(argv: string[] = []): Promise<void> {
@@ -138,7 +148,7 @@ export async function runMain(argv: string[] = []): Promise<void> {
     const ac = new AbortController();
     const onSigint = () => {
       if (ac.signal.aborted) process.exit(130);
-      console.error('\nInterrupted: marking the run blocked (agent session is left running).');
+      console.error('\nInterrupted: marking the run cancelled (agent session is left running).');
       ac.abort();
     };
     process.on('SIGINT', onSigint);

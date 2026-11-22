@@ -1,6 +1,15 @@
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { parseRunArgs } from './run.js';
+import { exitCodeFor, parseRunArgs } from './run.js';
+
+describe('exitCodeFor', () => {
+  it('maps each run outcome to its exit code', () => {
+    expect(exitCodeFor('complete')).toBe(0);
+    expect(exitCodeFor('failed')).toBe(1);
+    expect(exitCodeFor('blocked')).toBe(3);
+    expect(exitCodeFor('cancelled')).toBe(130);
+  });
+});
 
 function ok(argv: string[]) {
   const r = parseRunArgs(argv);
