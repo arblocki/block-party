@@ -1,3 +1,5 @@
+import { createSseState, parseSse, type SseMessage } from './lib/sse';
+
 const TOKEN_HEADER = 'x-block-party-token';
 
 const STORAGE_KEY = 'block-party-token';
@@ -85,6 +87,72 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiError(res.status, message, body);
   }
   return (await res.json()) as T;
+}
+
+const BACKOFF_START_MS = 1000;
+const BACKOFF_MAX_MS = 10_000;
+
+/** Resolves after `ms`, or immediately when `signal` aborts (timer is cleared). */
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done);
+  });
+}
+
+export interface OpenStreamDeps {
+  fetch?: typeof fetch;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+/**
+ * Follows a `text/event-stream` endpoint until `signal` aborts, reconnecting with
+ * `Last-Event-ID` and 1s..10s exponential backoff when the connection drops or fails.
+ */
+export async function openStream(
+  path: string,
+  onMessage: (msg: SseMessage) => void,
+  signal: AbortSignal,
+  deps: OpenStreamDeps = {},
+): Promise<void> {
+  const doFetch = deps.fetch ?? fetch;
+  const sleep = deps.sleep ?? abortableSleep;
+  let lastId: string | undefined;
+  let delay = BACKOFF_START_MS;
+  while (!signal.aborted) {
+    try {
+      const headers = new Headers({ [TOKEN_HEADER]: token, accept: 'text/event-stream' });
+      if (lastId !== undefined) headers.set('Last-Event-ID', lastId);
+      const res = await doFetch(path, { headers, signal });
+      if (res.ok && res.body) {
+        delay = BACKOFF_START_MS;
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        const state = createSseState(lastId);
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          for (const msg of parseSse(decoder.decode(value, { stream: true }), state)) {
+            if (msg.id !== undefined) lastId = msg.id;
+            onMessage(msg);
+          }
+        }
+      } else {
+        await res.body?.cancel().catch(() => {});
+      }
+    } catch {
+      // network error, dropped connection, or abort: handled below
+    }
+    if (signal.aborted) return;
+    await sleep(delay, signal);
+    delay = Math.min(delay * 2, BACKOFF_MAX_MS);
+  }
 }
 
 export function jsonBody(value: unknown): RequestInit {
