@@ -22,6 +22,7 @@ import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
 import { RunLog } from './events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
+import { ShutdownError } from './pipeline-helpers.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 import type { RunStage } from './machine.js';
@@ -118,7 +119,7 @@ interface Opts {
   /** Replaces the fake publishRun (e.g. to run the real one against fakes). */
   publishWith?: PipelineDeps['publishRun'];
   /** Abort the signal (and fail the call) when this step runs. */
-  abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
+  abortAt?: { step: 'fetch' | 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
   store?: RunStore;
 }
@@ -137,6 +138,7 @@ function harness(o: Opts) {
     published: [] as PublishOptions[],
     checks: 0,
     setup: 0,
+    worktrees: 0,
   };
   let turnIdx = 0;
   const doTurn = (input: ImplementerStartInput): TurnOutcome => {
@@ -173,8 +175,13 @@ function harness(o: Opts) {
     git: {
       repoRoot: async () => root,
       originRepo: async () => ({ owner: 'o', repo: 'r' }),
-      fetchBase: async () => ({ sha: git.head, source: 'origin' as const }),
-      createWorktree: async () => undefined,
+      fetchBase: async () => {
+        if (o.abortAt?.step === 'fetch') o.abortAt.ac.abort();
+        return { sha: git.head, source: 'origin' as const };
+      },
+      createWorktree: async () => {
+        calls.worktrees++;
+      },
       headSha: async () => git.head,
       isClean: async () => !git.dirty,
       commitsBetween: async (_c, base, head) =>
@@ -263,7 +270,7 @@ function harness(o: Opts) {
       worktreePath: (ow, re, id) => join(root, 'wt', `${ow}__${re}`, id),
     },
   };
-  const run = (signal?: AbortSignal): Promise<RunOutcome> =>
+  const run = (signal?: AbortSignal, onStarted?: (id: string) => void): Promise<RunOutcome> =>
     runPipeline(
       {
         repo: root,
@@ -271,6 +278,7 @@ function harness(o: Opts) {
         baseRef: 'main',
         config: resolveRunConfig(o.section, o.flags),
         signal,
+        ...(onStarted ? { onStarted } : {}),
       },
       deps,
     );
@@ -893,6 +901,75 @@ describe('runPipeline with a store', () => {
       ['checks', 1, 'cancelled'],
     ]);
     expect(store.getRun(out.runId)?.stage).toBe('cancelled');
+  });
+
+  it('ends interrupted with an interrupted decision when aborted with a ShutdownError', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [], hangFirstTurn: true });
+    const started: string[] = [];
+    const p = h.run(ac.signal, (id) => started.push(id));
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    expect(started).toEqual([out.runId]);
+    expect(out.stage).toBe('interrupted');
+    expect(out.note).toBe('server stopped');
+    expect(state(out)).toMatchObject({ stage: 'interrupted', stageNote: 'server stopped' });
+    expect(store.getRun(out.runId)?.stage).toBe('interrupted');
+    expect(store.listDecisions({ runId: out.runId })).toEqual([
+      expect.objectContaining({
+        kind: 'interrupted',
+        status: 'open',
+        title: 'Run interrupted',
+        body: 'The run stopped while implementing: server stopped.',
+        attach: 'attach-cmd',
+      }),
+    ]);
+    expect(stagesOf(store, out)).toEqual([['implement', 1, 'cancelled']]);
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('run.interrupted');
+  });
+
+  it('creates no run when aborted while preparing (during the base fetch)', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}], abortAt: { step: 'fetch', ac } });
+    const started: string[] = [];
+    await expect(h.run(ac.signal, (id) => started.push(id))).rejects.toThrow('interrupted');
+    expect(started).toEqual([]);
+    expect(store.listRuns()).toEqual([]);
+    expect(existsSync(join(h.root, 'runs'))).toBe(false);
+    expect(h.calls.worktrees).toBe(0);
+  });
+
+  it('rethrows a ShutdownError when shut down while preparing', async () => {
+    const ac = new AbortController();
+    const h = harness({ turns: [{}] });
+    ac.abort(new ShutdownError());
+    await expect(h.run(ac.signal)).rejects.toBeInstanceOf(ShutdownError);
+  });
+
+  it('ends cancelled before creating the worktree when aborted as the run starts', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run(ac.signal, () => ac.abort());
+    expect(out.stage).toBe('cancelled');
+    expect(h.calls.worktrees).toBe(0);
+    expect(h.calls.starts).toHaveLength(0);
+    expect(store.getRun(out.runId)?.stage).toBe('cancelled');
+  });
+
+  it('still ends cancelled, with no decision, on a plain abort', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [], hangFirstTurn: true });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    const out = await p;
+    expect(out.stage).toBe('cancelled');
+    expect(store.listDecisions({ runId: out.runId })).toHaveLength(0);
   });
 
   it('ends wait-ci failed and blocks when GitHub CI fails', async () => {

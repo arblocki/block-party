@@ -33,9 +33,13 @@ import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
   failedChecks,
+  interruptedBody,
   InterruptedError,
+  isShutdown,
   priorFindings,
   renderCheckFailures,
+  type ShutdownError,
+  throwIfAborted,
 } from './pipeline-helpers.js';
 import {
   PublishError,
@@ -61,13 +65,16 @@ export interface RunInput {
   baseRef: string;
   title?: string;
   config: RunConfig;
+  /** Aborting cancels the run; aborting with a ShutdownError reason interrupts it. */
   signal?: AbortSignal;
+  /** Called once the run exists (its run.json is saved and its row recorded). */
+  onStarted?: (runId: string) => void;
 }
 
 export interface RunOutcome {
   runId: string;
   runDir: string;
-  stage: 'complete' | 'blocked' | 'failed' | 'cancelled';
+  stage: 'complete' | 'blocked' | 'failed' | 'cancelled' | 'interrupted';
   note: string | null;
   prNumber: number | null;
 }
@@ -276,7 +283,20 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     openUnresolvedDecision(ctx);
   } catch (e) {
     await ctx.pending.catch(() => undefined);
-    if (input.signal?.aborted || e instanceof InterruptedError) {
+    if (isShutdown(input.signal)) {
+      // The process driving the run is stopping: the run did not choose to end here.
+      const reason = (input.signal!.reason as ShutdownError).message;
+      const last = ctx.st.stage;
+      const lastNote = ctx.st.stageNote;
+      await setStage(ctx, 'interrupted', reason);
+      ctx.rec.event('run.interrupted', { stage: last, note: reason });
+      ctx.rec.openDecision(
+        'interrupted',
+        'Run interrupted',
+        interruptedBody(last, lastNote, reason),
+        attachCommand(ctx),
+      );
+    } else if (input.signal?.aborted || e instanceof InterruptedError) {
       // Cancellation wins over whatever failure the killed work produced.
       await setStage(ctx, 'cancelled', 'cancelled');
     } else if (e instanceof Halt) {
@@ -317,6 +337,8 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   }
   const checks = loaded.config;
   const base = await git.fetchBase(repoPath, input.baseRef);
+  // Stopped while preparing: no run is created (the error goes to the caller).
+  throwIfAborted(input.signal);
 
   const runId = newRunId(now());
   const paths = deps.paths ?? {
@@ -423,6 +445,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     for (const s of loaded.drift.stale) rec.event('drift.stale', { check: s.check, ref: s.ref });
   }
 
+  input.onStarted?.(runId);
   return ctx;
 }
 
@@ -438,6 +461,8 @@ export function reportJsonSchema(): object {
 /** Step 2: worktree, setup command, and the agent/settings files. */
 async function provision(ctx: Ctx): Promise<void> {
   const { deps, st, runDir, checks, input } = ctx;
+  // Aborted as the run was created: end it before any side effect (no worktree).
+  throwIfAborted(input.signal);
   await deps.git.createWorktree({
     repo: st.repoPath,
     path: st.worktreePath,

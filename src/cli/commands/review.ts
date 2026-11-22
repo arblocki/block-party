@@ -8,6 +8,7 @@ import { openStore } from '../../core/store/index.js';
 import { formatPrRef, formatRepoRef } from '../../core/pr-ref.js';
 import type { AnalysisDeps } from '../../server/analysis.js';
 import { startServer } from '../../server/index.js';
+import { createRunManager } from '../../server/run-manager.js';
 import { parseCli, UsageError, USAGE } from '../args.js';
 
 export async function reviewMain(argv: string[]): Promise<void> {
@@ -35,6 +36,7 @@ export async function reviewMain(argv: string[]): Promise<void> {
     createProvider: (sel) => createProvider(config, sel),
     trustPrConfig: opts.trustPrConfig,
   };
+  const runManager = createRunManager({ runs: store.runs });
   const server = await startServer({
     repo: opts.repo,
     initialPr: opts.pr,
@@ -42,6 +44,7 @@ export async function reviewMain(argv: string[]): Promise<void> {
     github,
     store,
     analysis,
+    runManager,
   });
   const url = `http://127.0.0.1:${server.port}/#token=${server.token}`;
   console.log(
@@ -59,11 +62,19 @@ export async function reviewMain(argv: string[]): Promise<void> {
     console.log('Note: this URL contains a session token; do not share or log it.');
   }
 
-  const shutdown = () =>
-    void server.close().then(() => {
-      store.close();
-      process.exit(0);
-    });
+  let stopping = false;
+  const shutdown = () => {
+    if (stopping) return;
+    stopping = true;
+    // Runs this server drives are marked interrupted before the database closes.
+    void runManager
+      .shutdown()
+      .then(() => server.close())
+      .then(() => {
+        store.close();
+        process.exit(0);
+      });
+  };
   process.on('SIGINT', shutdown);
   process.on('SIGTERM', shutdown);
 }
