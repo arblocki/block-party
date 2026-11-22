@@ -94,4 +94,79 @@ export const MIGRATIONS: readonly string[] = [
   UPDATE OR IGNORE analyses SET repo = lower(repo);
   DELETE FROM analyses WHERE repo <> lower(repo);
   `,
+  // Phase 2: runs live in the database (shared by the CLI and the server). Nothing writes
+  // here yet; see src/core/store/runs.ts.
+  `
+  CREATE TABLE projects (
+    id           TEXT PRIMARY KEY,
+    owner        TEXT NOT NULL,
+    repo         TEXT NOT NULL,
+    local_path   TEXT NOT NULL UNIQUE,
+    default_base TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+  );
+
+  CREATE TABLE runs (
+    id               TEXT PRIMARY KEY,
+    project_id       TEXT NOT NULL REFERENCES projects (id),
+    title            TEXT NOT NULL,
+    stage            TEXT NOT NULL,
+    stage_note       TEXT,
+    branch           TEXT NOT NULL,
+    worktree_path    TEXT NOT NULL,
+    run_dir          TEXT NOT NULL,
+    base_ref         TEXT NOT NULL,
+    base_sha         TEXT NOT NULL,
+    head_sha         TEXT,
+    pr_number        INTEGER,
+    plan_path        TEXT NOT NULL,
+    plan_hash        TEXT NOT NULL,
+    implementer_json TEXT,
+    rounds_json      TEXT NOT NULL,
+    owner_pid        INTEGER,
+    owner_host       TEXT,
+    created_at       TEXT NOT NULL,
+    updated_at       TEXT NOT NULL
+  );
+  CREATE INDEX runs_by_stage ON runs (stage);
+  CREATE INDEX runs_by_updated ON runs (updated_at);
+
+  CREATE TABLE stages (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL REFERENCES runs (id),
+    kind        TEXT NOT NULL,
+    round       INTEGER NOT NULL,
+    state       TEXT NOT NULL
+                CHECK (state IN ('running', 'succeeded', 'failed', 'blocked', 'cancelled')),
+    input_json  TEXT,
+    output_json TEXT,
+    started_at  TEXT NOT NULL,
+    ended_at    TEXT
+  );
+  CREATE INDEX stages_by_run ON stages (run_id);
+
+  CREATE TABLE run_events (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT NOT NULL REFERENCES runs (id),
+    stage_id     INTEGER REFERENCES stages (id),
+    ts           TEXT NOT NULL,
+    type         TEXT NOT NULL,
+    payload_json TEXT
+  );
+  CREATE INDEX run_events_by_run ON run_events (run_id, id);
+
+  CREATE TABLE decisions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id      TEXT NOT NULL REFERENCES runs (id),
+    kind        TEXT NOT NULL,
+    status      TEXT NOT NULL CHECK (status IN ('open', 'resolved', 'dismissed')),
+    title       TEXT NOT NULL,
+    body        TEXT NOT NULL,
+    attach      TEXT,
+    created_at  TEXT NOT NULL,
+    resolved_at TEXT
+  );
+  CREATE INDEX decisions_by_status ON decisions (status, created_at);
+  `,
 ];

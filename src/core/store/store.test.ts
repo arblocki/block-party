@@ -171,10 +171,11 @@ describe('repository casing', () => {
     const dir = mkdtempSync(join(tmpdir(), 'rd-store-'));
     const file = join(dir, 'db.sqlite');
     try {
-      // A database at the schema version before the casing migration, written by hand.
+      // A database at the schema version before the casing migration (MIGRATIONS[4]), written by hand.
+      const casing = 4;
       const old = new Database(file);
-      for (const m of MIGRATIONS.slice(0, MIGRATIONS.length - 1)) old.exec(m);
-      old.pragma(`user_version = ${MIGRATIONS.length - 1}`);
+      for (const m of MIGRATIONS.slice(0, casing)) old.exec(m);
+      old.pragma(`user_version = ${casing}`);
       const now = '2026-01-01T00:00:00Z';
       old
         .prepare(

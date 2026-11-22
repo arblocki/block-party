@@ -6,6 +6,7 @@ import type { Side } from '../diff/types.js';
 import type { Analysis } from '../group/types.js';
 import type { ReviewEvent } from '../github/types.js';
 import { formatPrRef, type PrRef } from '../pr-ref.js';
+import { createRunStore, type RunStore } from './runs.js';
 import { MIGRATIONS } from './schema.js';
 
 /**
@@ -114,6 +115,8 @@ export interface Store {
   /** Records that the reviewer is caught up to `headSha` ("Done reviewing these changes"). */
   setReviewCheckpoint(ref: PrRef, headSha: string): void;
   recordSubmittedReview(ref: PrRef, rec: SubmittedReviewRecord): void;
+  /** Projects, runs, stage executions, run events and inbox decisions. */
+  runs: RunStore;
   close(): void;
 }
 
@@ -402,6 +405,7 @@ export function openStore(file: string): Store {
         new Date().toISOString(),
       );
     },
+    runs: createRunStore(db),
     close() {
       db.close();
     },
