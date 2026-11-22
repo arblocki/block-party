@@ -258,10 +258,11 @@ describe('createPaneClaude', () => {
   it('accepts the add-directory dialog for the run directory', async () => {
     // Claude Code ≥ 2.1.328 asks about each --add-dir; long paths wrap in the pane.
     const wrapped = input.runDir.replace(/\/([^/]*)$/, '/\n $1');
+    // Layout as captured from a real pane: blank lines around the path.
     host.paneText =
-      `Adding a new directory:\n ${wrapped}\n` +
-      " This session hasn't worked here before. Is this a directory you created or one you trust?\n" +
-      ' ❯ No, exit\n   Yes, add it';
+      ` Adding a new directory:\n\n ${wrapped}\n\n` +
+      " This session hasn't worked here before. Is this a directory you created or one you trust?\n\n" +
+      ' Security guide\n\n ❯ No, exit\n   Yes, add it\n\n Enter to confirm · Esc to cancel';
     host.sendKeys = async (_p, keys) => {
       host.keys.push(keys);
       host.paneText = '';
@@ -292,6 +293,23 @@ describe('createPaneClaude', () => {
       ['Down', 'Enter'],
       ['Down', 'Enter'],
     ]);
+    expect(outcome.kind).toBe('report');
+  });
+
+  it('waits for the add-directory dialog to finish rendering before deciding', async () => {
+    const full = `Adding a new directory:\n ${input.runDir}\n ❯ No, exit\n   Yes, add it`;
+    const frames = ['Adding a new directory:\n', `Adding a new directory:\n ${input.runDir}\n`];
+    host.read = async () => frames.shift() ?? full;
+    host.sendKeys = async (_p, keys) => {
+      host.keys.push(keys);
+      frames.length = 0;
+      host.read = async () => '';
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const { outcome } = await adapter().start(input);
+    expect(host.keys).toEqual([['Down', 'Enter']]);
     expect(outcome.kind).toBe('report');
   });
 

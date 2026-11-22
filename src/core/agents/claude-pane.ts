@@ -92,6 +92,7 @@ function namesDir(text: string, dirs: string[]): boolean {
   let shown = lines[start]!.split('Adding a new directory')[1]!.replace(/^:/, '').trim();
   for (const line of lines.slice(start + 1)) {
     const s = line.trim();
+    if (!s && !shown) continue; // blank lines between the heading and the path
     if (!s || /This session|Is this a directory|❯|Yes, add it|No, exit/.test(s)) break;
     shown += s;
   }
@@ -246,7 +247,12 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           await host.sendKeys(pane, ['Down', 'Enter']);
           trustAnswered = true;
           emit('agent.trust_dialog_accepted', { cwd: input.cwd, sessionId });
-        } else if (!addDirAnswered && text.includes('Adding a new directory')) {
+        } else if (
+          !addDirAnswered &&
+          text.includes('Adding a new directory') &&
+          // Decide only once the dialog is fully drawn; a read mid-render has no path yet.
+          text.includes('Yes, add it')
+        ) {
           if (!namesDir(text, runDirs)) {
             return { pane, outcome: { kind: 'permission', message: 'add-directory dialog' } };
           }
