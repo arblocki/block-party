@@ -340,7 +340,14 @@ describe('renderPrBody', () => {
     ...extra,
   });
   const body = (reviewRounds: ReviewRoundInput[]) =>
-    renderPrBody({ plan, report, checks, reviewRounds, runId: 'run-1' });
+    renderPrBody({
+      plan,
+      report,
+      reports: [{ kind: 'implement', round: 1, report }],
+      checks,
+      reviewRounds,
+      runId: 'run-1',
+    });
 
   it('renders summary, criteria, CI and neutralises mentions', () => {
     const md = body([]);
@@ -424,5 +431,51 @@ describe('renderPrBody', () => {
       { round: 2, reviewedSha: SHA, summary: '', findings: [], resolutions: {} },
     ]);
     expect(md).not.toContain('Unresolved');
+  });
+
+  it('counts a criterion reported with different whitespace as reported', () => {
+    const wrapped: Plan = {
+      ...plan,
+      acceptanceCriteria: ['A long criterion\n      that wraps', 'Docs  updated'],
+    };
+    const r: Report = {
+      ...report,
+      acceptance: [
+        { criterion: 'A long criterion that wraps', status: 'met', evidence: '' },
+        { criterion: ' Docs updated ', status: 'met', evidence: '' },
+      ],
+    };
+    const md = renderPrBody({
+      plan: wrapped,
+      report: r,
+      reports: [{ kind: 'implement', round: 1, report: r }],
+      checks,
+      reviewRounds: [],
+      runId: 'run-1',
+    });
+    expect(md).not.toContain('not reported');
+    expect(md).toContain('- met: A long criterion that wraps');
+  });
+
+  it('uses the implement summary and lists later turns under Fix rounds', () => {
+    const fix: Report = { ...report, summary: 'Fix round 1. Fixed\nf1 for @erin' };
+    const md = renderPrBody({
+      plan,
+      report: fix,
+      reports: [
+        { kind: 'implement', round: 1, report },
+        { kind: 'review-fix', round: 1, report: fix },
+      ],
+      checks,
+      reviewRounds: [],
+      runId: 'run-1',
+    });
+    expect(md).toContain('## Summary\n\nDid the thing, thanks @​alice\n\n## Fix rounds');
+    expect(md).toContain('## Fix rounds\n\n- review-fix 1: Fix round 1. Fixed f1 for @​erin\n');
+    expect(md.indexOf('## Fix rounds')).toBeLessThan(md.indexOf('## Acceptance criteria'));
+  });
+
+  it('has no Fix rounds section with only an implement report', () => {
+    expect(body([])).not.toContain('## Fix rounds');
   });
 });
