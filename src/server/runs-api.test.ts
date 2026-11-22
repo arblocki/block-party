@@ -1,8 +1,13 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fakeGitHub } from '../core/testing/fakes.testutil.js';
 import { openStore, type Store } from '../core/store/index.js';
 import type { RunInput, RunStore } from '../core/store/runs.js';
 import { createApp } from './app.js';
+import { PlanValidationError, type RunManager, type StartRunRequest } from './run-manager.js';
 import { TOKEN_HEADER } from './security.js';
 
 const TOKEN = 'test-token';
@@ -42,15 +47,62 @@ let runs: RunStore;
 let projectId: string;
 let app: ReturnType<typeof createApp>;
 
-function makeApp(runStore: RunStore = runs) {
+function makeApp(runStore: RunStore = runs, runManager?: RunManager) {
   return createApp({
     token: TOKEN,
     port: () => PORT,
     github: fakeGitHub(),
     store: { ...store, runs: runStore },
     streamTiming: { pollMs: 5, heartbeatMs: 1000 },
+    ...(runManager ? { runManager } : {}),
   });
 }
+
+/** A manager that records calls; `start` resolves with RUN_A unless `fail` is set. */
+function fakeManager(opts: { fail?: Error } = {}) {
+  const starts: StartRunRequest[] = [];
+  const cancels: string[] = [];
+  const manager: RunManager = {
+    async start(req) {
+      starts.push(req);
+      if (opts.fail) throw opts.fail;
+      return RUN_A;
+    },
+    cancel(id) {
+      cancels.push(id);
+      return id === RUN_A;
+    },
+    async shutdown() {},
+  };
+  return { manager, starts, cancels };
+}
+
+const PLAN = `# Add widgets
+
+## Goal
+Widgets.
+
+## Approach
+Build them.
+
+## Acceptance criteria
+- [ ] Widgets exist
+- [ ] Widgets are blue
+
+## Out of scope
+Gadgets.
+`;
+
+const post = (path: string, body: unknown, a = app) =>
+  req(
+    path,
+    {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    },
+    a,
+  );
 
 beforeEach(() => {
   store = openStore(':memory:');
@@ -150,6 +202,10 @@ const ENDPOINTS: [string, string][] = [
   ['GET', '/api/inbox'],
   ['POST', '/api/inbox/1/dismiss'],
   ['GET', '/api/projects'],
+  ['POST', '/api/projects'],
+  ['POST', '/api/plans/validate'],
+  ['POST', '/api/runs'],
+  ['POST', `/api/runs/${RUN_A}/cancel`],
 ];
 
 describe('security', () => {
@@ -309,6 +365,174 @@ describe('JSON endpoints', () => {
     expect(await json('/api/projects')).toEqual({
       projects: [expect.objectContaining({ id: projectId, owner: 'octocat', repo: 'hello-world' })],
     });
+  });
+});
+
+describe('POST /api/projects', () => {
+  const git = (cwd: string, ...args: string[]) =>
+    execFileSync('git', args, { cwd, stdio: 'ignore' });
+
+  it('registers a git repo with a GitHub origin, from any directory inside it', async () => {
+    const dir = realpathSync(mkdtempSync(join(tmpdir(), 'bp-project-')));
+    git(dir, 'init', '-q');
+    git(dir, 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+    mkdirSync(join(dir, 'sub'));
+
+    const res = await post('/api/projects', { path: join(dir, 'sub') });
+    expect(res.status).toBe(200);
+    const { project } = (await res.json()) as { project: Record<string, unknown> };
+    expect(project).toMatchObject({
+      owner: 'acme',
+      repo: 'widgets',
+      localPath: dir,
+      defaultBase: 'main',
+    });
+    expect(runs.listProjects().map((p) => p.localPath)).toContain(dir);
+
+    // Registering again updates the same project.
+    const again = (await (await post('/api/projects', { path: dir })).json()) as {
+      project: { id: string };
+    };
+    expect(again.project.id).toBe(project.id);
+  });
+
+  it('rejects a directory that is not a git repository', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bp-not-git-'));
+    const res = await post('/api/projects', { path: dir });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { error: string }).error).toMatch(/not a git repository/);
+    expect(runs.listProjects()).toHaveLength(1);
+  });
+
+  it('rejects a repository without a GitHub origin', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bp-no-origin-'));
+    git(dir, 'init', '-q');
+    expect((await post('/api/projects', { path: dir })).status).toBe(400);
+  });
+
+  it('rejects malformed bodies and unknown fields', async () => {
+    expect((await post('/api/projects', '{nope')).status).toBe(400);
+    expect((await post('/api/projects', {})).status).toBe(400);
+    expect((await post('/api/projects', { path: '/x', extra: 1 })).status).toBe(400);
+  });
+});
+
+describe('POST /api/plans/validate', () => {
+  it('returns the title and criteria of a valid plan', async () => {
+    const res = await post('/api/plans/validate', { text: PLAN });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      ok: true,
+      title: 'Add widgets',
+      acceptanceCriteria: ['Widgets exist', 'Widgets are blue'],
+    });
+  });
+
+  it('returns the errors of an invalid plan', async () => {
+    const res = await post('/api/plans/validate', { text: '# Title only\n' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; errors: string[] };
+    expect(body.ok).toBe(false);
+    expect(body.errors).toContain('Missing section: Goal');
+  });
+
+  it('rejects unknown fields', async () => {
+    expect((await post('/api/plans/validate', { text: PLAN, x: 1 })).status).toBe(400);
+  });
+});
+
+describe('POST /api/runs', () => {
+  it('starts a run for a registered project and returns 201 with its id', async () => {
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const res = await post(
+      '/api/runs',
+      { projectId, baseRef: 'main', planText: PLAN, title: 'T', mode: 'headless', publish: false },
+      a,
+    );
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ runId: RUN_A });
+    expect(fake.starts).toEqual([
+      {
+        projectId,
+        baseRef: 'main',
+        planText: PLAN,
+        title: 'T',
+        flags: { mode: 'headless', publish: false },
+      },
+    ]);
+  });
+
+  it('returns 400 with the plan errors for an invalid plan, starting nothing', async () => {
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const res = await post('/api/runs', { projectId, baseRef: 'main', planText: '# T\n' }, a);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; errors: string[] };
+    expect(body.error).toBe('invalid plan');
+    expect(body.errors).toContain('Missing section: Approach');
+    expect(fake.starts).toHaveLength(0);
+  });
+
+  it('passes on plan errors the manager reports', async () => {
+    const fake = fakeManager({ fail: new PlanValidationError(['bad']) });
+    const res = await post(
+      '/api/runs',
+      { projectId, baseRef: 'main', planText: PLAN },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid plan', errors: ['bad'] });
+  });
+
+  it('returns 404 for an unknown project', async () => {
+    const fake = fakeManager();
+    const res = await post(
+      '/api/runs',
+      { projectId: 'nope', baseRef: 'main', planText: PLAN },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(404);
+    expect(fake.starts).toHaveLength(0);
+  });
+
+  it('returns 500 with the reason when the run cannot start', async () => {
+    const fake = fakeManager({ fail: new Error('fetch failed') });
+    const res = await post(
+      '/api/runs',
+      { projectId, baseRef: 'main', planText: PLAN },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(500);
+    expect(((await res.json()) as { error: string }).error).toContain('fetch failed');
+  });
+
+  it('rejects unknown fields and missing ones', async () => {
+    const a = makeApp(runs, fakeManager().manager);
+    const base = { projectId, baseRef: 'main', planText: PLAN };
+    expect((await post('/api/runs', { ...base, extra: true }, a)).status).toBe(400);
+    expect((await post('/api/runs', { projectId, planText: PLAN }, a)).status).toBe(400);
+    expect((await post('/api/runs', { ...base, mode: 'tmux' }, a)).status).toBe(400);
+  });
+
+  it('answers 503 when the server has no run manager', async () => {
+    const res = await post('/api/runs', { projectId, baseRef: 'main', planText: PLAN });
+    expect(res.status).toBe(503);
+  });
+});
+
+describe('POST /api/runs/:id/cancel', () => {
+  it('cancels runs the manager owns', async () => {
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    expect(await (await post(`/api/runs/${RUN_A}/cancel`, {}, a)).json()).toEqual({
+      cancelled: true,
+    });
+    expect(await (await post(`/api/runs/${RUN_B}/cancel`, {}, a)).json()).toEqual({
+      cancelled: false,
+    });
+    expect(fake.cancels).toEqual([RUN_A, RUN_B]);
+    expect((await post('/api/runs/nope/cancel', {}, a)).status).toBe(400);
   });
 });
 

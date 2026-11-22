@@ -1,9 +1,20 @@
+import { resolve } from 'node:path';
 import type { Context, Hono } from 'hono';
+import { z } from 'zod';
+import { createGit, type Git } from '../core/git/index.js';
+import type { RunFlagOverrides } from '../core/run/config.js';
 import { isRunId } from '../core/run/id.js';
+import { parsePlan } from '../core/run/plan.js';
 import type { Decision, Project, RunRow, RunStore } from '../core/store/runs.js';
+import { PlanValidationError, UnknownProjectError, type RunManager } from './run-manager.js';
+import { parseBody } from './state.js';
 
 export interface RunsApiDeps {
   runs: RunStore;
+  /** Starts and cancels runs; without one, `POST /api/runs` answers 503. */
+  manager?: RunManager;
+  /** Resolves a project's repository (default: the real git service). */
+  git?: Pick<Git, 'repoRoot' | 'originRepo' | 'defaultBranch'>;
   /** How often streams re-read the database (default 500 ms). */
   pollMs?: number;
   /** How often streams send a `: hb` comment (default 15 s). */
@@ -47,6 +58,22 @@ function intParam(raw: string | undefined): number | undefined | null {
 }
 
 const badRequest = (c: Context, error: string) => c.json({ error }, 400);
+
+const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+const projectSchema = z.strictObject({ path: z.string().trim().min(1) });
+
+const validatePlanSchema = z.strictObject({ text: z.string() });
+
+const startRunSchema = z.strictObject({
+  projectId: z.string().min(1),
+  baseRef: z.string().trim().min(1),
+  planText: z.string(),
+  title: z.string().trim().min(1).optional(),
+  mode: z.enum(['pane', 'headless']).optional(),
+  model: z.string().trim().min(1).optional(),
+  publish: z.boolean().optional(),
+});
 
 export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   const { runs } = deps;
@@ -216,6 +243,76 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   });
 
   app.get('/api/projects', (c) => c.json({ projects: runs.listProjects() }));
+
+  const git = deps.git ?? createGit();
+  app.post('/api/projects', async (c) => {
+    const body = await parseBody(c, projectSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    let localPath: string;
+    let origin: { owner: string; repo: string };
+    let defaultBase: string;
+    try {
+      localPath = await git.repoRoot(resolve(body.data.path));
+      origin = await git.originRepo(localPath);
+      defaultBase = await git.defaultBranch(localPath);
+    } catch (e) {
+      return badRequest(c, `not a git repository with a GitHub origin: ${errorMessage(e)}`);
+    }
+    return c.json({ project: runs.upsertProject({ ...origin, localPath, defaultBase }) });
+  });
+
+  app.post('/api/plans/validate', async (c) => {
+    const body = await parseBody(c, validatePlanSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    const parsed = parsePlan(body.data.text);
+    return c.json(
+      parsed.ok
+        ? {
+            ok: true,
+            title: parsed.plan.title,
+            acceptanceCriteria: parsed.plan.acceptanceCriteria,
+          }
+        : { ok: false, errors: parsed.errors },
+    );
+  });
+
+  app.post('/api/runs', async (c) => {
+    const body = await parseBody(c, startRunSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    const { projectId, baseRef, planText, title, mode, model, publish } = body.data;
+    // Checked here as well as by the manager, so these answers do not depend on it.
+    if (!runs.getProject(projectId)) return c.json({ error: 'project not found' }, 404);
+    const parsed = parsePlan(planText);
+    if (!parsed.ok) return c.json({ error: 'invalid plan', errors: parsed.errors }, 400);
+    const { manager } = deps;
+    if (!manager) return c.json({ error: 'this server cannot start runs' }, 503);
+    const flags: RunFlagOverrides = {};
+    if (mode) flags.mode = mode;
+    if (model) flags.model = model;
+    if (publish !== undefined) flags.publish = publish;
+    try {
+      const runId = await manager.start({
+        projectId,
+        baseRef,
+        planText,
+        ...(title ? { title } : {}),
+        flags,
+      });
+      return c.json({ runId }, 201);
+    } catch (e) {
+      if (e instanceof PlanValidationError) {
+        return c.json({ error: 'invalid plan', errors: e.errors }, 400);
+      }
+      if (e instanceof UnknownProjectError) return c.json({ error: 'project not found' }, 404);
+      return c.json({ error: `could not start the run: ${errorMessage(e)}` }, 500);
+    }
+  });
+
+  app.post('/api/runs/:id/cancel', (c) => {
+    const id = c.req.param('id');
+    if (!isRunId(id)) return badRequest(c, 'invalid run id');
+    return c.json({ cancelled: deps.manager?.cancel(id) ?? false });
+  });
 }
 
 interface SseFrame {

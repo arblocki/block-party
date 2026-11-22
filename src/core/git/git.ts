@@ -108,6 +108,13 @@ export function createGit(runner: GitRunner = defaultRunner) {
       return parsed;
     },
 
+    /** The default branch: `origin/HEAD`'s target, else `main`. */
+    async defaultBranch(cwd: string): Promise<string> {
+      const r = await runner(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
+      const name = r.code === 0 ? r.stdout.trim().replace(/^origin\//, '') : '';
+      return name || 'main';
+    },
+
     async fetchBase(
       repo: string,
       baseRef: string,

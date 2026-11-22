@@ -12,7 +12,8 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { registerApi, upstreamError } from './api.js';
-import { registerRunsApi } from './runs-api.js';
+import type { RunManager } from './run-manager.js';
+import { registerRunsApi, type RunsApiDeps } from './runs-api.js';
 import { hostGuard, tokenGuard } from './security.js';
 
 export interface AppOptions {
@@ -32,6 +33,10 @@ export interface AppOptions {
   webDir?: string;
   /** Live-stream timing overrides, for tests. */
   streamTiming?: { pollMs?: number; heartbeatMs?: number };
+  /** Starts and cancels runs; without one the server cannot start runs. */
+  runManager?: RunManager;
+  /** Git service for registering projects (default: the real one). */
+  git?: RunsApiDeps['git'];
 }
 
 export function createApp(opts: AppOptions): Hono {
@@ -53,7 +58,12 @@ export function createApp(opts: AppOptions): Hono {
     });
   });
   app.get('/api/repos', async (c) => c.json({ repos: await opts.github.listRepos() }));
-  registerRunsApi(app, { runs: opts.store.runs, ...opts.streamTiming });
+  registerRunsApi(app, {
+    runs: opts.store.runs,
+    ...opts.streamTiming,
+    ...(opts.runManager ? { manager: opts.runManager } : {}),
+    ...(opts.git ? { git: opts.git } : {}),
+  });
 
   // Repository routes; `:owner/:repo` must be a valid GitHub name pair.
   const repoOf = (c: { req: { param(name: string): string } }): RepoRef | null =>

@@ -7,6 +7,8 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
+import { reconcileRuns } from './reconcile.js';
+import type { RunManager } from './run-manager.js';
 import { generateToken } from './security.js';
 
 export interface RunningServer {
@@ -26,7 +28,13 @@ export function startServer(opts: {
   github: GitHubClient;
   store: Store;
   analysis?: AnalysisDeps;
+  runManager?: RunManager;
 }): Promise<RunningServer> {
+  // Runs whose driving process died while the server was down are marked interrupted.
+  const reconciled = reconcileRuns({ runs: opts.store.runs });
+  if (reconciled.length > 0) {
+    console.log(`Marked ${reconciled.length} run(s) interrupted: ${reconciled.join(', ')}`);
+  }
   // BLOCK_PARTY_TOKEN lets `npm run dev` keep one token across tsx-watch restarts,
   // so already-open tabs don't start getting 401s.
   const token = process.env.BLOCK_PARTY_TOKEN || generateToken();
@@ -38,6 +46,7 @@ export function startServer(opts: {
     github: opts.github,
     store: opts.store,
     analysis: opts.analysis,
+    ...(opts.runManager ? { runManager: opts.runManager } : {}),
     port: () => port,
     webDir: WEB_DIR,
   });
