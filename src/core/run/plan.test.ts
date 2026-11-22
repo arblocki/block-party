@@ -35,6 +35,30 @@ describe('parsePlan', () => {
     const edited = parsePlan(good + '\nmore');
     expect(edited.ok && edited.plan.contentHash).not.toBe(r.plan.contentHash);
   });
+  it('joins an indented continuation line onto its criterion', () => {
+    const wrapped = good.replace(
+      '- [ ] Thing works [browser]',
+      '- [ ] Thing works when the criterion\n      wraps   onto a second line\n\t  and a third',
+    );
+    const r = parsePlan(wrapped);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.acceptanceCriteria).toEqual([
+      'Thing works when the criterion wraps onto a second line and a third',
+      'Other',
+    ]);
+  });
+  it('ends a criterion at a blank line, a new item or non-indented text', () => {
+    const md = good.replace(
+      '- [ ] Thing works [browser]\n- [x] Other\n',
+      '- [ ] First\n\n  indented after blank\n- [ ] Second\n  continues\n  - nested item\n' +
+        '- [x] Third\nNot indented\n  indented after plain text\n',
+    );
+    const r = parsePlan(md);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.acceptanceCriteria).toEqual(['First', 'Second continues', 'Third']);
+  });
   it('reports missing title and sections', () => {
     const r = parsePlan('## Goal\n\nx\n');
     expect(r.ok).toBe(false);

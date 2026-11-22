@@ -11,6 +11,7 @@ export type ParsePlanResult = { ok: true; plan: Plan } | { ok: false; errors: st
 
 const REQUIRED = ['Goal', 'Approach', 'Acceptance criteria', 'Out of scope'];
 const FENCE = /^\s{0,3}(`{3,}|~{3,})(.*)$/;
+const LIST_ITEM = /^\s*(?:[-*+]|\d+[.)])(?:\s|$)/;
 
 export function parsePlan(markdown: string): ParsePlanResult {
   const errors: string[] = [];
@@ -64,9 +65,23 @@ export function parsePlan(markdown: string): ParsePlanResult {
   const acceptanceCriteria: string[] = [];
   const acc = proseBodies.get('acceptance criteria');
   if (acc) {
+    // An indented, non-empty line that is not a list item continues the current criterion;
+    // a blank line, a non-indented line or a new list item ends it.
+    let open = false;
     for (const line of acc) {
       const m = /^\s*[-*]\s+\[[ xX]\]\s+(.*\S)\s*$/.exec(line);
-      if (m) acceptanceCriteria.push(m[1]!);
+      if (m) {
+        acceptanceCriteria.push(m[1]!);
+        open = true;
+      } else if (open && /^\s+\S/.test(line) && !LIST_ITEM.test(line)) {
+        const i = acceptanceCriteria.length - 1;
+        acceptanceCriteria[i] = `${acceptanceCriteria[i]} ${line.trim()}`;
+      } else {
+        open = false;
+      }
+    }
+    for (let i = 0; i < acceptanceCriteria.length; i++) {
+      acceptanceCriteria[i] = acceptanceCriteria[i]!.replace(/\s+/g, ' ').trim();
     }
     if (acceptanceCriteria.length === 0) {
       errors.push('Acceptance criteria needs at least one "- [ ]" item');
