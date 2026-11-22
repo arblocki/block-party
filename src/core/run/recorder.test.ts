@@ -138,13 +138,23 @@ describe('RunRecorder', () => {
     const store = openStore(':memory:').runs;
     const { rec } = setup(store);
     rec.state(runState());
+    // Claude reports each prompt twice (agent state, then Notification hook), and a turn may
+    // prompt again: one open item per run is enough until the turn moves on.
     rec.permissionWait('rm -rf?', 'attach-cmd');
+    rec.permissionWait('Claude needs your permission', 'attach-cmd');
     rec.permissionWait('curl?', null);
-    expect(store.listDecisions({ status: 'open' })).toHaveLength(2);
+    expect(store.listDecisions({ status: 'open' })).toHaveLength(1);
     const [p] = store.listDecisions({ status: 'open' });
-    expect(p).toMatchObject({ kind: 'permission', title: 'Implementer needs approval' });
+    expect(p).toMatchObject({
+      kind: 'permission',
+      title: 'Implementer needs approval',
+      body: 'rm -rf?',
+    });
     rec.resolvePermissions();
     expect(store.openDecisionCount()).toBe(0);
+    rec.permissionWait('again?', null);
+    expect(store.openDecisionCount()).toBe(1);
+    rec.resolvePermissions();
     rec.openDecision('blocked', 'Run blocked', 'note', 'attach-cmd');
     expect(store.listDecisions({ status: 'open' })).toEqual([
       expect.objectContaining({ kind: 'blocked', body: 'note', attach: 'attach-cmd' }),

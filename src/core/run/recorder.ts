@@ -100,8 +100,12 @@ export class RunRecorder {
     this.openDecisionId(kind, title, body, attach);
   }
 
-  /** Opens a `permission` decision, resolved by the next `resolvePermissions`. */
+  /**
+   * Opens a `permission` decision, resolved by the next `resolvePermissions`. While one is
+   * open, further waits (Claude reports each prompt twice, and may prompt again) add nothing.
+   */
   permissionWait(message: string, attach: string | null): void {
+    if (this.permissions.length > 0) return;
     const id = this.openDecisionId('permission', 'Implementer needs approval', message, attach);
     if (id !== undefined) this.permissions.push(id);
   }
