@@ -144,7 +144,13 @@ export function renderPrBody(input: PrBodyInput): string {
   return out.join('\n');
 }
 
-export type PublishErrorCode = 'push_failed' | 'remote_mismatch' | 'head_mismatch' | 'interrupted';
+export type PublishErrorCode =
+  | 'push_failed'
+  | 'remote_mismatch'
+  | 'head_mismatch'
+  | 'interrupted'
+  /** A plain error (network, git) after the push; `done` still records what happened. */
+  | 'unexpected';
 
 export class PublishError extends Error {
   constructor(
@@ -152,8 +158,9 @@ export class PublishError extends Error {
     message: string,
     /** What had already happened externally when publishing stopped. */
     readonly done: { pushed: boolean; prNumber?: number } = { pushed: false },
+    options?: { cause?: unknown },
   ) {
-    super(message);
+    super(message, options);
     this.name = 'PublishError';
   }
 }
@@ -204,46 +211,62 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
     throw new PublishError('push_failed', `Pushing ${branch} failed: ${(e as Error).message}`);
   }
   done.pushed = true;
-  const remote = await git.remoteBranchSha(worktree, branch);
-  if (remote !== local) {
-    throw new PublishError(
-      'remote_mismatch',
-      `Remote ${branch} is at ${remote ?? 'nothing'}, expected ${local}`,
-    );
-  }
 
-  checkAbort();
-  let pr = await github.findOpenPrForBranch(repo, branch);
-  const created = pr === undefined;
-  checkAbort();
-  pr ??= await github.createPr(repo, {
-    head: branch,
-    base: opts.base,
-    title: opts.title,
-    body: opts.body,
-    draft: true,
-  });
-
-  done.prNumber = pr.number;
-  const deadline = now() + (opts.headTimeoutMs ?? 30_000);
-  for (;;) {
-    if (pr.headSha === local) {
-      return { prNumber: pr.number, url: pr.url, headSha: local, created };
-    }
-    if (now() >= deadline) {
+  const afterPush = async (): Promise<PublishResult> => {
+    const remote = await git.remoteBranchSha(worktree, branch);
+    if (remote !== local) {
       throw new PublishError(
-        'head_mismatch',
-        `PR #${pr.number} head is ${pr.headSha}, expected ${local}`,
+        'remote_mismatch',
+        `Remote ${branch} is at ${remote ?? 'nothing'}, expected ${local}`,
+        { ...done },
       );
     }
-    try {
-      await sleep(opts.headPollMs ?? 1000);
-    } catch (e) {
-      if (signal?.aborted) throw interrupted();
-      throw e;
-    }
+
     checkAbort();
-    pr = await github.getPr(repo, pr.number);
+    let pr = await github.findOpenPrForBranch(repo, branch);
+    const created = pr === undefined;
+    checkAbort();
+    pr ??= await github.createPr(repo, {
+      head: branch,
+      base: opts.base,
+      title: opts.title,
+      body: opts.body,
+      draft: true,
+    });
+
+    done.prNumber = pr.number;
+    const deadline = now() + (opts.headTimeoutMs ?? 30_000);
+    for (;;) {
+      if (pr.headSha === local) {
+        return { prNumber: pr.number, url: pr.url, headSha: local, created };
+      }
+      if (now() >= deadline) {
+        throw new PublishError(
+          'head_mismatch',
+          `PR #${pr.number} head is ${pr.headSha}, expected ${local}`,
+          { ...done },
+        );
+      }
+      await sleep(opts.headPollMs ?? 1000);
+      checkAbort();
+      pr = await github.getPr(repo, pr.number);
+    }
+  };
+
+  try {
+    return await afterPush();
+  } catch (e) {
+    if (e instanceof PublishError) throw e;
+    // Anything failing once the signal has aborted (an aborted sleep, a cancelled call) is
+    // an interrupt, not an unexpected failure.
+    if (signal?.aborted) throw interrupted();
+    const reason = e instanceof Error ? e.message : String(e);
+    throw new PublishError(
+      'unexpected',
+      `Publishing ${branch} failed after the push: ${reason}`,
+      { ...done },
+      { cause: e },
+    );
   }
 }
 

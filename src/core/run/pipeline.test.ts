@@ -15,7 +15,7 @@ import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
 import { RunLog } from './events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
-import { PublishError, type CiWaitState, type PublishOptions } from './publish.js';
+import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 
 const PLAN = `# Add widgets
@@ -87,6 +87,8 @@ interface Opts {
   hangFirstTurn?: boolean;
   permissionPrompts?: number;
   abortInPublish?: AbortController;
+  /** Replaces the fake publishRun (e.g. to run the real one against fakes). */
+  publishWith?: PipelineDeps['publishRun'];
   /** Abort the signal (and fail the call) when this step runs. */
   abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
@@ -212,6 +214,7 @@ function harness(o: Opts) {
     },
     publishRun: async (p) => {
       calls.published.push(p);
+      if (o.publishWith) return o.publishWith(p);
       if (o.abortInPublish) {
         o.abortInPublish.abort();
         throw new PublishError('interrupted', 'Publishing interrupted', {
@@ -514,6 +517,72 @@ describe('runPipeline', () => {
     expect(state(out).prNumber).toBe(9);
     expect(h.calls.published[0]!.signal).toBe(ac.signal);
     expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain('publish.stopped');
+  });
+
+  it('records the PR number when getPr fails with a plain error after the PR was created', async () => {
+    const h = harness({
+      turns: [{}],
+      publishWith: (p) =>
+        publishRun({
+          ...p,
+          sleep: async () => undefined,
+          github: {
+            findOpenPrForBranch: async () => undefined,
+            createPr: async () => ({
+              number: 11,
+              headSha: 'stale',
+              url: 'https://x/pr/11',
+              draft: true,
+            }),
+            getPr: async () => {
+              throw new Error('ECONNRESET');
+            },
+          },
+        }),
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(state(out)).toMatchObject({ stage: 'blocked', prNumber: 11 });
+    expect(state(out).stageNote).toContain('ECONNRESET');
+    const events = readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8');
+    expect(events).toContain('publish.stopped');
+    expect(events).toContain('unexpected');
+  });
+
+  it('records the PR number when the PR head never matches the pushed SHA', async () => {
+    let t = 0;
+    const h = harness({
+      turns: [{}],
+      publishWith: (p) =>
+        publishRun({
+          ...p,
+          now: () => t,
+          sleep: async (ms) => {
+            t += ms;
+          },
+          github: {
+            findOpenPrForBranch: async () => undefined,
+            createPr: async () => ({
+              number: 12,
+              headSha: 'stale',
+              url: 'https://x/pr/12',
+              draft: true,
+            }),
+            getPr: async () => ({
+              number: 12,
+              headSha: 'stale',
+              url: 'https://x/pr/12',
+              draft: true,
+            }),
+          },
+        }),
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(state(out)).toMatchObject({ stage: 'blocked', prNumber: 12 });
+    expect(state(out).stageNote).toContain('head_mismatch');
+    const events = readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8');
+    expect(events).toMatch(/publish\.stopped.*"pushed":true/);
   });
 
   it('logs each permission wait prominently and continues once the turn ends', async () => {
