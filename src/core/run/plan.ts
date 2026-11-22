@@ -34,7 +34,11 @@ export function parsePlan(markdown: string): ParsePlanResult {
       } else if (run[0] === fence[0] && run.length >= fence.length && rest.trim() === '') {
         fence = null;
       }
-      if (current) bodies.get(current)!.push(line);
+      if (current) {
+        bodies.get(current)!.push(line);
+        // Keeps the fence's place in the prose as a break, so a criterion ends at the block.
+        proseBodies.get(current)!.push('');
+      }
       continue;
     }
     if (fence === null) {

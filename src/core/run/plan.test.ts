@@ -48,6 +48,16 @@ describe('parsePlan', () => {
       'Other',
     ]);
   });
+  it('ends a criterion at a fenced code block', () => {
+    const md = good.replace(
+      '- [ ] Thing works [browser]\n',
+      '- [ ] Running it prints\n  ```\n  ok\n  ```\n  not part of the criterion\n',
+    );
+    const r = parsePlan(md);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.plan.acceptanceCriteria).toEqual(['Running it prints', 'Other']);
+  });
   it('ends a criterion at a blank line, a new item or non-indented text', () => {
     const md = good.replace(
       '- [ ] Thing works [browser]\n- [x] Other\n',
