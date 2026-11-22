@@ -25,6 +25,8 @@ import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 import type { RunStage } from './machine.js';
+import { openStore } from '../store/index.js';
+import type { RunStore } from '../store/runs.js';
 
 /** Lets a test declare one otherwise-legal move illegal, to force setStage to reject it. */
 const forced = vi.hoisted(() => ({ illegal: null as null | [string, string] }));
@@ -118,6 +120,7 @@ interface Opts {
   /** Abort the signal (and fail the call) when this step runs. */
   abortAt?: { step: 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
+  store?: RunStore;
 }
 
 function harness(o: Opts) {
@@ -254,6 +257,7 @@ function harness(o: Opts) {
     github: async () => ({}) as GitHubClient,
     createLog: (dir) => new RunLog(dir, { echo: (l) => echoed.push(l) }),
     hookArgv: ['node', 'hook'],
+    ...(o.store ? { store: o.store } : {}),
     paths: {
       runDir: (id) => join(root, 'runs', id),
       worktreePath: (ow, re, id) => join(root, 'wt', `${ow}__${re}`, id),
@@ -664,5 +668,245 @@ describe('runPipeline', () => {
     expect(brief).toContain('`node`');
     expect(brief).toContain('Anything else stops the run until a human approves it.');
     expect(brief).toContain(`The run directory ${out.runDir} is readable and writable for you.`);
+  });
+});
+
+function fileEvents(out: RunOutcome) {
+  return readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')
+    .trim()
+    .split('\n')
+    .map((l) => JSON.parse(l) as { ts: string; type: string; data?: Record<string, unknown> });
+}
+
+function stagesOf(store: RunStore, out: RunOutcome) {
+  return store.listStages(out.runId).map((s) => [s.kind, s.round, s.state]);
+}
+
+/** A store whose every method throws. */
+function brokenStore(): RunStore {
+  return new Proxy({} as RunStore, {
+    get: () => () => {
+      throw new Error('database is locked');
+    },
+  });
+}
+
+describe('runPipeline with a store', () => {
+  it('records a full run: run row, every event, stage rows, no open decisions', async () => {
+    const store = openStore(':memory:').runs;
+    const f = finding('f_1_1', 'P1', 'Null deref in widget');
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'guarded' }],
+          }),
+        },
+      ],
+      reviews: [review([f]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('complete');
+
+    const json = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    const row = store.getRun(out.runId)!;
+    expect(row).toMatchObject({
+      id: json.id,
+      title: json.title,
+      stage: json.stage,
+      stageNote: json.stageNote,
+      branch: json.branch,
+      worktreePath: json.worktreePath,
+      runDir: out.runDir,
+      baseRef: json.baseRef,
+      baseSha: json.baseSha,
+      headSha: json.headSha,
+      prNumber: json.prNumber,
+      planPath: json.planPath,
+      planHash: json.planHash,
+      implementer: json.implementer,
+      rounds: json.rounds,
+      createdAt: json.createdAt,
+      ownerPid: process.pid,
+    });
+    expect(row.ownerHost).toBeTruthy();
+    expect(store.getProject(row.projectId)).toMatchObject({
+      owner: 'o',
+      repo: 'r',
+      localPath: h.root,
+      defaultBase: 'main',
+    });
+
+    const events = fileEvents(out);
+    expect(events.some((e) => e.type === 'db.error')).toBe(false);
+    expect(store.listEvents(out.runId).map((e) => [e.ts, e.type, e.payload])).toEqual(
+      events.map((e) => [e.ts, e.type, e.data ?? null]),
+    );
+
+    expect(stagesOf(store, out)).toEqual([
+      ['implement', 1, 'succeeded'],
+      ['checks', 1, 'succeeded'],
+      ['review', 1, 'succeeded'],
+      ['review-fix', 1, 'succeeded'],
+      ['checks', 2, 'succeeded'],
+      ['review', 2, 'succeeded'],
+      ['publish', 1, 'succeeded'],
+      ['wait-ci', 1, 'succeeded'],
+    ]);
+    const stages = store.listStages(out.runId);
+    expect(stages.every((s) => s.endedAt !== null)).toBe(true);
+    expect(stages[0]!.input).toMatchObject({ brief: expect.stringContaining('implement-1.md') });
+    expect(stages[0]!.output).toEqual({ report: join(out.runDir, 'reports', 'implement-1.json') });
+    expect(stages[2]!.output).toMatchObject({ findings: 1, blocking: 1, bySeverity: { P1: 1 } });
+    expect(stages[6]!.output).toEqual({ prNumber: 7, url: 'https://x/pr/7' });
+    expect(stages[7]!.output).toEqual({ state: 'success' });
+
+    // Events inside a stage carry its id.
+    const reviewResults = store.listEvents(out.runId).filter((e) => e.type === 'review.result');
+    expect(reviewResults.map((e) => e.stageId)).toEqual([stages[2]!.id, stages[5]!.id]);
+    expect(store.openDecisionCount()).toBe(0);
+    expect(store.listDecisions()).toHaveLength(0);
+  });
+
+  it('opens a permission decision during the turn and resolves it when the turn ends', async () => {
+    const store = openStore(':memory:').runs;
+    let openAtReview = -1;
+    const h = harness({
+      store,
+      turns: [{}],
+      permissionPrompts: 1,
+      onReview: () => {
+        openAtReview = store.openDecisionCount();
+      },
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('complete');
+    expect(openAtReview).toBe(0);
+    const [d, ...rest] = store.listDecisions({ runId: out.runId });
+    expect(rest).toHaveLength(0);
+    expect(d).toMatchObject({
+      kind: 'permission',
+      status: 'resolved',
+      title: 'Implementer needs approval',
+      body: 'approve 1',
+      attach: 'attach-cmd',
+    });
+    expect(d!.resolvedAt).not.toBeNull();
+  });
+
+  it('resolves a permission decision when the turn ends blocked', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{ dirty: true }], permissionPrompts: 1 });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    const perms = store.listDecisions({ runId: out.runId }).filter((d) => d.kind === 'permission');
+    expect(perms.map((d) => d.status)).toEqual(['resolved']);
+  });
+
+  it('opens one blocked decision with the halt note', async () => {
+    const store = openStore(':memory:').runs;
+    const out = await harness({ store, turns: [{ dirty: true }] }).run();
+    expect(out.stage).toBe('blocked');
+    expect(store.listDecisions({ runId: out.runId })).toEqual([
+      expect.objectContaining({
+        kind: 'blocked',
+        status: 'open',
+        body: out.note,
+        attach: 'attach-cmd',
+      }),
+    ]);
+    expect(stagesOf(store, out)).toEqual([['implement', 1, 'blocked']]);
+    expect(store.getRun(out.runId)).toMatchObject({ stage: 'blocked', stageNote: out.note });
+  });
+
+  it('opens cap_reached when local CI still fails at the check-fix cap', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}, {}, {}], checks: [false, false, false] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(store.listDecisions({ runId: out.runId })).toEqual([
+      expect.objectContaining({ kind: 'cap_reached', status: 'open', body: out.note }),
+    ]);
+    const stages = stagesOf(store, out);
+    expect(stages[0]).toEqual(['implement', 1, 'succeeded']);
+    expect(stages.filter((s) => s[0] === 'checks').map((s) => s[2])).toEqual([
+      'failed',
+      'failed',
+      'failed',
+    ]);
+    expect(stages.filter((s) => s[0] === 'check-fix').map((s) => [s[1], s[2]])).toEqual([
+      [1, 'succeeded'],
+      [2, 'succeeded'],
+    ]);
+  });
+
+  it('opens a failed decision with the error when the run fails', async () => {
+    forced.illegal = ['reviewing', 'publishing'];
+    const store = openStore(':memory:').runs;
+    const out = await harness({ store, turns: [{}] }).run();
+    expect(out.stage).toBe('failed');
+    expect(store.listDecisions({ runId: out.runId })).toEqual([
+      expect.objectContaining({ kind: 'failed', status: 'open', body: out.note, attach: null }),
+    ]);
+  });
+
+  it('opens no decision for a cancelled run and ends the interrupted stage cancelled', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}], abortAt: { step: 'checks', ac } });
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('cancelled');
+    expect(store.listDecisions({ runId: out.runId })).toHaveLength(0);
+    expect(stagesOf(store, out)).toEqual([
+      ['implement', 1, 'succeeded'],
+      ['checks', 1, 'cancelled'],
+    ]);
+    expect(store.getRun(out.runId)?.stage).toBe('cancelled');
+  });
+
+  it('ends wait-ci failed and blocks when GitHub CI fails', async () => {
+    const store = openStore(':memory:').runs;
+    const out = await harness({ store, turns: [{}], ci: 'failure' }).run();
+    expect(out.stage).toBe('blocked');
+    expect(stagesOf(store, out).at(-1)).toEqual(['wait-ci', 1, 'failed']);
+    expect(store.listDecisions({ runId: out.runId }).map((d) => d.kind)).toEqual(['blocked']);
+  });
+
+  it('completes exactly as without a store when every store method throws', async () => {
+    const f = finding('f_1_1', 'P1', 'Bug');
+    const opts = (): Opts => ({
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'ok' }],
+          }),
+        },
+      ],
+      reviews: [review([f]), review([])],
+      permissionPrompts: 1,
+    });
+    const plain = await harness(opts()).run();
+    const broken = await harness({ ...opts(), store: brokenStore() }).run();
+
+    expect({ ...broken, runId: '', runDir: '' }).toEqual({ ...plain, runId: '', runDir: '' });
+    const strip = (o: RunOutcome) => {
+      const { id, branch, worktreePath, planPath, createdAt, updatedAt, repoPath, ...rest } =
+        JSON.parse(readFileSync(join(o.runDir, 'run.json'), 'utf8')) as Record<string, unknown>;
+      void [id, branch, worktreePath, planPath, createdAt, updatedAt, repoPath];
+      return rest;
+    };
+    expect(strip(broken)).toEqual(strip(plain));
+
+    const brokenEvents = fileEvents(broken);
+    expect(brokenEvents.some((e) => e.type === 'db.error')).toBe(true);
+    expect(brokenEvents.filter((e) => e.type !== 'db.error').map((e) => e.type)).toEqual(
+      fileEvents(plain).map((e) => e.type),
+    );
   });
 });
