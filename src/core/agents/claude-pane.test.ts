@@ -255,6 +255,53 @@ describe('createPaneClaude', () => {
     expect(outcome.kind).toBe('report');
   });
 
+  it('accepts the add-directory dialog for the run directory', async () => {
+    // Claude Code ≥ 2.1.328 asks about each --add-dir; long paths wrap in the pane.
+    const wrapped = input.runDir.replace(/\/([^/]*)$/, '/\n $1');
+    host.paneText =
+      `Adding a new directory:\n ${wrapped}\n` +
+      " This session hasn't worked here before. Is this a directory you created or one you trust?\n" +
+      ' ❯ No, exit\n   Yes, add it';
+    host.sendKeys = async (_p, keys) => {
+      host.keys.push(keys);
+      host.paneText = '';
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const { outcome } = await adapter().start(input);
+    expect(host.keys).toEqual([['Down', 'Enter']]);
+    expect(outcome.kind).toBe('report');
+  });
+
+  it('answers the folder trust dialog and then the add-directory dialog', async () => {
+    host.paneText = 'Do you trust this folder?\nYes, I trust this folder';
+    host.sendKeys = async (_p, keys) => {
+      host.keys.push(keys);
+      if (host.keys.length === 1) {
+        host.paneText = `Adding a new directory:\n ${input.runDir}\n ❯ No, exit\n   Yes, add it`;
+        return;
+      }
+      host.paneText = '';
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const { outcome } = await adapter().start(input);
+    expect(host.keys).toEqual([
+      ['Down', 'Enter'],
+      ['Down', 'Enter'],
+    ]);
+    expect(outcome.kind).toBe('report');
+  });
+
+  it('refuses the add-directory dialog for any other directory', async () => {
+    host.paneText = 'Adding a new directory:\n /etc\n ❯ No, exit\n   Yes, add it';
+    const { outcome } = await adapter().start(input);
+    expect(outcome).toEqual({ kind: 'permission', message: 'add-directory dialog' });
+    expect(host.keys).toEqual([]);
+  });
+
   it('refuses the trust dialog outside the worktrees root', async () => {
     input.cwd = dir;
     host.paneText = 'Do you trust this folder?';

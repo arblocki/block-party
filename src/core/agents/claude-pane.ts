@@ -75,6 +75,29 @@ async function isInside(child: string, root: string): Promise<boolean> {
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+/** The run directory as given and as resolved, either of which Claude may print. */
+async function runDirForms(dir: string): Promise<string[]> {
+  return [...new Set([path.resolve(dir), await real(dir)])];
+}
+
+/**
+ * Whether an "Adding a new directory" dialog names exactly one of `dirs`. The path is printed
+ * on the lines after the heading and wraps at the pane width, so those lines are trimmed and
+ * joined until the dialog's question or options begin. Only an exact match is accepted.
+ */
+function namesDir(text: string, dirs: string[]): boolean {
+  const lines = text.split('\n');
+  const start = lines.findIndex((l) => l.includes('Adding a new directory'));
+  if (start < 0) return false;
+  let shown = lines[start]!.split('Adding a new directory')[1]!.replace(/^:/, '').trim();
+  for (const line of lines.slice(start + 1)) {
+    const s = line.trim();
+    if (!s || /This session|Is this a directory|❯|Yes, add it|No, exit/.test(s)) break;
+    shown += s;
+  }
+  return dirs.includes(shown);
+}
+
 function stringEnv(): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(scrubbedEnv())) if (v !== undefined) out[k] = v;
@@ -200,25 +223,37 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     onOpened?.(pane);
     emit('agent.pane_opened', { label, sessionId });
 
+    // Startup dialogs, each answered at most once: folder trust for the worktree, then (Claude
+    // Code ≥ 2.1.328) one "Adding a new directory" confirmation for the --add-dir run directory.
     const deadline = now() + t.trustMaxMs;
-    let answered = false;
+    let trustAnswered = false;
+    let addDirAnswered = false;
+    const runDirs = await runDirForms(input.runDir);
     while (!hasEvent(input.eventsPath, offset, sessionId, 'SessionStart')) {
       if (now() >= deadline || input.signal?.aborted) break;
-      if (!answered) {
+      if (!trustAnswered || !addDirAnswered) {
         let text = '';
         try {
           text = await host.read(pane, 40);
         } catch {
           // diagnostics only
         }
-        if (text.includes('trust this folder')) {
+        if (!trustAnswered && text.includes('trust this folder')) {
           if (!(await isInside(input.cwd, worktreesRoot()))) {
             return { pane, outcome: { kind: 'permission', message: 'folder trust dialog' } };
           }
           if (input.signal?.aborted) break;
           await host.sendKeys(pane, ['Down', 'Enter']);
-          answered = true;
+          trustAnswered = true;
           emit('agent.trust_dialog_accepted', { cwd: input.cwd, sessionId });
+        } else if (!addDirAnswered && text.includes('Adding a new directory')) {
+          if (!namesDir(text, runDirs)) {
+            return { pane, outcome: { kind: 'permission', message: 'add-directory dialog' } };
+          }
+          if (input.signal?.aborted) break;
+          await host.sendKeys(pane, ['Down', 'Enter']);
+          addDirAnswered = true;
+          emit('agent.add_dir_accepted', { dir: input.runDir, sessionId });
         }
       }
       await sleep(t.loopMs);
