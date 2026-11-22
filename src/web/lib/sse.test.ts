@@ -132,6 +132,65 @@ describe('openStream', () => {
     expect(sleeps).toEqual([1000, 2000, 4000, 1000]);
   });
 
+  it('keeps reading when a message handler throws, without reconnecting', async () => {
+    const ctrl = new AbortController();
+    let fetches = 0;
+    const fakeFetch = (async () => {
+      fetches++;
+      if (fetches > 1) {
+        ctrl.abort();
+        throw new Error('aborted');
+      }
+      return streamOf(['id: 1\ndata: bad\n\n', 'id: 2\ndata: good\n\n']);
+    }) as unknown as typeof fetch;
+    const seen: string[] = [];
+    const errors: unknown[] = [];
+    const origError = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a);
+    try {
+      await openStream(
+        '/s',
+        (m) => {
+          seen.push(m.data);
+          if (m.data === 'bad') throw new Error('handler broke');
+        },
+        ctrl.signal,
+        { fetch: fakeFetch, sleep: async () => {} },
+      );
+    } finally {
+      console.error = origError;
+    }
+    expect(seen).toEqual(['bad', 'good']);
+    // One fetch for the stream, one more after it ended normally (then aborted).
+    expect(fetches).toBe(2);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('cancels the response body when it stops reading', async () => {
+    const ctrl = new AbortController();
+    let cancelled = 0;
+    const fakeFetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode('data: a\n\n'));
+        },
+        cancel() {
+          cancelled++;
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as unknown as typeof fetch;
+    await openStream(
+      '/s',
+      () => {
+        ctrl.abort();
+      },
+      ctrl.signal,
+      { fetch: fakeFetch, sleep: async () => {} },
+    );
+    expect(cancelled).toBe(1);
+  });
+
   it('caps backoff at 10s', async () => {
     const ctrl = new AbortController();
     const sleeps: number[] = [];

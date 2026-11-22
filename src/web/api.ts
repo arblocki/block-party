@@ -133,15 +133,30 @@ export async function openStream(
       if (res.ok && res.body) {
         delay = BACKOFF_START_MS;
         const reader = res.body.getReader();
-        const decoder = new TextDecoder();
-        const state = createSseState(lastId);
-        for (;;) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          for (const msg of parseSse(decoder.decode(value, { stream: true }), state)) {
-            if (msg.id !== undefined) lastId = msg.id;
-            onMessage(msg);
+        // Stopping must release the connection even while a read is pending.
+        const stop = () => void reader.cancel().catch(() => {});
+        signal.addEventListener('abort', stop);
+        try {
+          const decoder = new TextDecoder();
+          const state = createSseState(lastId);
+          while (!signal.aborted) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            for (const msg of parseSse(decoder.decode(value, { stream: true }), state)) {
+              if (msg.id !== undefined) lastId = msg.id;
+              // A failing handler is the page's bug, not a dropped connection: report it
+              // and keep reading, so it neither reconnects nor skips later messages.
+              try {
+                onMessage(msg);
+              } catch (err) {
+                console.error('stream message handler failed', err);
+              }
+              if (signal.aborted) break;
+            }
           }
+        } finally {
+          signal.removeEventListener('abort', stop);
+          stop();
         }
       } else {
         await res.body?.cancel().catch(() => {});
