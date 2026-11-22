@@ -313,6 +313,21 @@ describe('createPaneClaude', () => {
     expect(outcome.kind).toBe('report');
   });
 
+  it('reports a startup dialog that is still open when Claude never starts', async () => {
+    host.read = async () => 'Some new dialog\n ❯ 1. Yes\n   2. No\n Enter to confirm';
+    const { outcome } = await adapter().start(input);
+    expect(outcome).toEqual({
+      kind: 'permission',
+      message: expect.stringMatching(/did not start .*dialog/),
+    });
+  });
+
+  it('fails the turn when Claude never starts and shows no dialog', async () => {
+    host.read = async () => '';
+    const { outcome } = await adapter().start(input);
+    expect(outcome).toEqual({ kind: 'exited', reason: expect.stringMatching(/did not start/) });
+  });
+
   it('refuses the add-directory dialog for any other directory', async () => {
     host.paneText = 'Adding a new directory:\n /etc\n ❯ No, exit\n   Yes, add it';
     const { outcome } = await adapter().start(input);

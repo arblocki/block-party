@@ -113,7 +113,8 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     settleMs: opts.timing?.settleMs,
     pollMs: opts.timing?.pollMs,
     loopMs: opts.timing?.loopMs ?? 250,
-    trustMaxMs: opts.timing?.trustMaxMs ?? 20_000,
+    // Long enough for a slow first start (updates, plugin loading) plus startup dialogs.
+    trustMaxMs: opts.timing?.trustMaxMs ?? 90_000,
     idlePollMs: opts.timing?.idlePollMs ?? 500,
     idleMaxMs: opts.timing?.idleMaxMs ?? 60_000,
     confirmMs: opts.timing?.confirmMs ?? 5_000,
@@ -263,6 +264,26 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         }
       }
       await sleep(t.loopMs);
+    }
+
+    // Every session that starts logs SessionStart. Without it Claude is stuck before its first
+    // turn (usually on a dialog nobody answered), and waiting for the turn would hang forever.
+    if (!input.signal?.aborted && !hasEvent(input.eventsPath, offset, sessionId, 'SessionStart')) {
+      let text = '';
+      try {
+        text = await host.read(pane, 40);
+      } catch {
+        // diagnostics only
+      }
+      const secs = Math.round(t.trustMaxMs / 1000);
+      const outcome: TurnOutcome = /❯|Enter to confirm|Esc to (cancel|exit)|Do you want/.test(text)
+        ? {
+            kind: 'permission',
+            message: `Claude did not start within ${secs}s: a startup dialog is waiting`,
+          }
+        : { kind: 'exited', reason: `Claude did not start within ${secs}s` };
+      emit('agent.start_timeout', { sessionId, outcome: outcome.kind });
+      return { pane, outcome };
     }
 
     const outcome = await awaitTurn(pane, sessionId, input, offset);
