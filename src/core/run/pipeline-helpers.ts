@@ -11,6 +11,27 @@ export class InterruptedError extends Error {
   }
 }
 
+/**
+ * Abort reason meaning "the process driving this run is stopping", not "the user cancelled":
+ * a run aborted with it ends `interrupted` instead of `cancelled`.
+ */
+export class ShutdownError extends Error {
+  constructor(message = 'server stopped') {
+    super(message);
+    this.name = 'ShutdownError';
+  }
+}
+
+/** Whether `signal` was aborted because its owner is shutting down. */
+export function isShutdown(signal?: AbortSignal): boolean {
+  return signal?.aborted === true && signal.reason instanceof ShutdownError;
+}
+
+/** Body of the `interrupted` inbox item: where the run was and why it stopped. */
+export function interruptedBody(stage: string, stageNote: string | null, why: string): string {
+  return `The run stopped while ${stage}${stageNote ? ` (${stageNote})` : ''}: ${why}.`;
+}
+
 /** Rejects with InterruptedError when `signal` aborts first; the work itself is not cancelled. */
 export function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return work;

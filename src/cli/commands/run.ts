@@ -1,26 +1,11 @@
 import { execFile } from 'node:child_process';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
-import { hookArgv } from '../../core/agents/claude-config.js';
-import { createHeadlessClaude } from '../../core/agents/claude-headless.js';
-import { createPaneClaude } from '../../core/agents/claude-pane.js';
-import { HookWatcher } from '../../core/agents/hook-events.js';
-import type { ImplementerAdapter } from '../../core/agents/types.js';
-import { loadProjectChecks } from '../../core/checks/load.js';
-import { runChecks } from '../../core/checks/run.js';
-import { createGit } from '../../core/git/index.js';
-import { createGitHubClient, createOctokitClients } from '../../core/github/client.js';
-import { resolveToken } from '../../core/github/token.js';
-import { runShell } from '../../core/process/run-shell.js';
-import { reviewWithCodex } from '../../core/reviewer/codex-reviewer.js';
-import { ensureReviewerCodexHome } from '../../core/reviewer/codex-home.js';
 import { loadRunConfig, type RunFlagOverrides } from '../../core/run/config.js';
-import { RunLog } from '../../core/run/events.js';
-import { runPipeline, type PipelineDeps, type RunOutcome } from '../../core/run/pipeline.js';
-import { publishRun, waitForCi } from '../../core/run/publish.js';
+import { createRunDeps } from '../../core/run/deps.js';
+import { runPipeline, type RunOutcome } from '../../core/run/pipeline.js';
 import { dbPath } from '../../core/paths.js';
 import { openStore, type Store } from '../../core/store/index.js';
-import { createHerdrHost } from '../../core/terminal/index.js';
 
 export const RUN_USAGE = `Usage: block-party run --plan <file> [--repo <path>] [--base <ref>]
                        [--mode pane|headless] [--model <m>] [--reviewer-model <m>]
@@ -116,6 +101,7 @@ export function exitCodeFor(stage: RunOutcome['stage']): number {
     case 'blocked':
       return 3;
     case 'cancelled':
+    case 'interrupted':
       return 130;
     case 'failed':
       return 1;
@@ -136,17 +122,7 @@ export async function runMain(argv: string[] = []): Promise<void> {
   const { args } = parsed;
   try {
     const config = loadRunConfig(args.repo, args.flags);
-    const codexHome = await ensureReviewerCodexHome();
     const base = args.base ?? (await defaultBranch(args.repo));
-    const echo = (line: string) => console.log(line);
-    const adapter: ImplementerAdapter =
-      config.implementer.mode === 'pane'
-        ? createPaneClaude({
-            host: createHerdrHost(),
-            claudeBin: 'claude',
-            watcherFactory: (p, off) => new HookWatcher(p, { startOffset: off }),
-          })
-        : createHeadlessClaude();
     const ac = new AbortController();
     const onSigint = () => {
       if (ac.signal.aborted) process.exit(130);
@@ -166,21 +142,12 @@ export async function runMain(argv: string[] = []): Promise<void> {
       );
     }
 
-    const deps: PipelineDeps = {
-      git: createGit(),
-      runShell,
-      runChecks,
-      loadProjectChecks,
-      adapter,
-      reviewWithCodex: (o) => reviewWithCodex({ ...o, codexHome }),
-      publishRun,
-      waitForCi,
-      github: async () => createGitHubClient(createOctokitClients(await resolveToken())),
-      createLog: (dir) => new RunLog(dir, { echo }),
-      hookArgv: hookArgv(),
-      ...(store ? { store: store.runs } : {}),
-    };
     try {
+      const deps = await createRunDeps({
+        ...(store ? { store: store.runs } : {}),
+        echo: (line) => console.log(line),
+        mode: config.implementer.mode,
+      });
       const outcome = await runPipeline(
         {
           repo: args.repo,

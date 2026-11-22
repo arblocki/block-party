@@ -22,6 +22,7 @@ import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
 import { RunLog } from './events.js';
 import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
+import { ShutdownError } from './pipeline-helpers.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 import type { RunStage } from './machine.js';
@@ -263,7 +264,7 @@ function harness(o: Opts) {
       worktreePath: (ow, re, id) => join(root, 'wt', `${ow}__${re}`, id),
     },
   };
-  const run = (signal?: AbortSignal): Promise<RunOutcome> =>
+  const run = (signal?: AbortSignal, onStarted?: (id: string) => void): Promise<RunOutcome> =>
     runPipeline(
       {
         repo: root,
@@ -271,6 +272,7 @@ function harness(o: Opts) {
         baseRef: 'main',
         config: resolveRunConfig(o.section, o.flags),
         signal,
+        ...(onStarted ? { onStarted } : {}),
       },
       deps,
     );
@@ -893,6 +895,45 @@ describe('runPipeline with a store', () => {
       ['checks', 1, 'cancelled'],
     ]);
     expect(store.getRun(out.runId)?.stage).toBe('cancelled');
+  });
+
+  it('ends interrupted with an interrupted decision when aborted with a ShutdownError', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [], hangFirstTurn: true });
+    const started: string[] = [];
+    const p = h.run(ac.signal, (id) => started.push(id));
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    expect(started).toEqual([out.runId]);
+    expect(out.stage).toBe('interrupted');
+    expect(out.note).toBe('server stopped');
+    expect(state(out)).toMatchObject({ stage: 'interrupted', stageNote: 'server stopped' });
+    expect(store.getRun(out.runId)?.stage).toBe('interrupted');
+    expect(store.listDecisions({ runId: out.runId })).toEqual([
+      expect.objectContaining({
+        kind: 'interrupted',
+        status: 'open',
+        title: 'Run interrupted',
+        body: 'The run stopped while implementing: server stopped.',
+        attach: 'attach-cmd',
+      }),
+    ]);
+    expect(stagesOf(store, out)).toEqual([['implement', 1, 'cancelled']]);
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('run.interrupted');
+  });
+
+  it('still ends cancelled, with no decision, on a plain abort', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [], hangFirstTurn: true });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort();
+    const out = await p;
+    expect(out.stage).toBe('cancelled');
+    expect(store.listDecisions({ runId: out.runId })).toHaveLength(0);
   });
 
   it('ends wait-ci failed and blocks when GitHub CI fails', async () => {
