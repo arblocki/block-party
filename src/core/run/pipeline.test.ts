@@ -419,6 +419,32 @@ describe('runPipeline', () => {
     expect(h.calls.published[0]!.body).toContain('Still lossy');
   });
 
+  it('opens a cap_reached decision when it publishes with unresolved blocking findings', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'tried' }],
+          }),
+        },
+      ],
+      reviews: [
+        review([finding('f_1_1', 'P0', 'Data loss')]),
+        review([finding('f_2_1', 'P1', 'Still lossy')]),
+      ],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('complete');
+    const ds = store.listDecisions({ runId: out.runId });
+    expect(ds.map((d) => [d.kind, d.status])).toEqual([['cap_reached', 'open']]);
+    expect(ds[0]!.title).toBe('Unresolved blocking findings');
+    expect(ds[0]!.body).toContain('PR #7');
+    expect(ds[0]!.body).toContain('P1 Still lossy');
+  });
+
   it('accepts a fix round with only disputed findings and no new commit', async () => {
     const f = finding('f_1_1', 'P1', 'Maybe wrong');
     const h = harness({

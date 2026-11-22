@@ -41,6 +41,7 @@ import {
   type ResolutionKind,
   type ReviewRoundInput,
   type TurnReport,
+  unresolvedBlocking,
   type WaitForCiOptions,
 } from './publish.js';
 import { RunRecorder } from './recorder.js';
@@ -243,6 +244,23 @@ function openEndDecision(ctx: Ctx, e: unknown): void {
   }
 }
 
+/**
+ * The review-fix cap publishes rather than blocks (Phase 1 rule), so blocking findings it
+ * left unresolved would otherwise live only in the PR body: put them in the inbox too.
+ */
+function openUnresolvedDecision(ctx: Ctx): void {
+  const unresolved = unresolvedBlocking(ctx.rounds);
+  if (unresolved.length === 0) return;
+  const where = ctx.st.prNumber !== null ? `PR #${ctx.st.prNumber}` : 'The run';
+  const list = unresolved.map((f) => `- ${f.severity} ${f.title}`).join('\n');
+  ctx.rec.openDecision(
+    'cap_reached',
+    'Unresolved blocking findings',
+    `${where} still has blocking findings after the review-fix cap:\n${list}`,
+    null,
+  );
+}
+
 export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<RunOutcome> {
   const ctx = await preflight(input, deps);
   try {
@@ -254,6 +272,7 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     } else {
       await publish(ctx);
     }
+    openUnresolvedDecision(ctx);
   } catch (e) {
     await ctx.pending.catch(() => undefined);
     if (input.signal?.aborted || e instanceof InterruptedError) {
