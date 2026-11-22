@@ -50,7 +50,14 @@ async function nextStreamFile(runDir: string): Promise<string> {
 export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): ImplementerAdapter {
   const claudeBin = opts.claudeBin ?? 'claude';
   const uuid = opts.randomUUID ?? nodeRandomUUID;
-  const emit = (type: string, data: Record<string, unknown>) => opts.onEvent?.({ type, data });
+  const emit = (
+    input: Pick<ImplementerStartInput, 'onEvent'>,
+    type: string,
+    data: Record<string, unknown>,
+  ) => {
+    input.onEvent?.({ type, data });
+    opts.onEvent?.({ type, data });
+  };
   /** Live processes by session id, for `stop`. */
   const live = new Map<string, AbortController>();
   const streamFiles = new Map<string, string>();
@@ -102,7 +109,7 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
       for (const ev of events) {
         switch (ev.kind) {
           case 'init':
-            emit('agent.init', {
+            emit(input, 'agent.init', {
               claudeCodeVersion: ev.event.claude_code_version,
               sessionId: ev.event.session_id,
               model: ev.event.model,
@@ -110,17 +117,17 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
             break;
           case 'assistant':
             for (const b of ev.event.message.content)
-              if (b.type === 'tool_use') emit('agent.tool_use', { name: b.name });
+              if (b.type === 'tool_use') emit(input, 'agent.tool_use', { name: b.name });
             break;
           case 'permission_denied':
-            emit('agent.permission_denied', {
+            emit(input, 'agent.permission_denied', {
               tool: ev.event.tool_name,
               message: ev.event.message,
             });
             break;
           case 'result':
             result = ev.event;
-            emit('agent.result', {
+            emit(input, 'agent.result', {
               totalCostUsd: ev.event.total_cost_usd,
               numTurns: ev.event.num_turns,
               permissionDenials: ev.event.permission_denials.length,

@@ -82,6 +82,42 @@ Tasks are sequential; each gets its own run plan in `docs/plans/phase-2/`.
 9. **Exit check and docs.** Run the exit check myself through the browser, then update
    ARCHITECTURE checkboxes and the decision log.
 
+## Progress (2026-11-22)
+
+Each task runs through `block-party run` with its plan in `docs/plans/phase-2/`; I review
+the PR, fix remaining Codex P2s on the branch, and squash-merge.
+
+| Task | Status |
+| --- | --- |
+| 1 State machine | Merged, #17 |
+| 2 Run tables and RunStore | Merged, #18 |
+| 3 Pipeline records to the DB | Merged, #19 (adds a `cap_reached` inbox item when publishing with unresolved blocking findings) |
+| 4 Run API and SSE | Merged, #20 (checked against the real DB: auth, 400/401/403, stream) |
+| 5 RunManager and reconciliation | Merged, #21 (project, validate and start endpoints checked live) |
+| 6 Home page | **Next.** Two runs stopped before Claude started (see below); fixes are on main, re-run it |
+| 7 Run view | Plan written |
+| 8 New-run form | Plan written |
+| 9 Exit check and docs | Not started: do it in a browser (Playwright) once 6–8 are merged |
+
+Fixes made outside the task plans along the way (all on main):
+
+- Claude Code 2.1.328 asks to confirm each `--add-dir`. The pane adapter accepts it, but
+  only for the run directory itself. It now watches for startup dialogs for 90 s, presses
+  the keys again if a dialog is still showing 3 s later, and ends the turn (blocked, with an
+  inbox item) when Claude never logs `SessionStart`, instead of hanging.
+- Adapter `agent.*` events were never recorded; they now go to the run log and DB.
+- Agents inherited this Claude Code session's `CLAUDE_CODE_*` markers, including its
+  messaging socket and token; `scrubbedEnv` now drops them.
+- `checks.fix` (here `pnpm format`) can be run by implementers without approval; a
+  Prettier check is now a required check. Subagents get the same shell rules as the
+  implementer; `head`/`tail`/`wc` are pre-approved.
+- Each permission prompt opens one inbox item, not two.
+
+Open items: the run stuck in task 6's second attempt (`r20261122-6993e7`) left its pane
+waiting on the dialog, and every run leaves its worktree and `bp/*` branch (runs never delete
+work). Coming back after closing the browser needs the URL the server printed, because the
+session token lives in `sessionStorage`.
+
 ## Acceptance criteria
 
 - [ ] A run started from the UI shows its stages, events, checks, findings and PR in the run

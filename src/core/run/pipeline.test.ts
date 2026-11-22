@@ -122,6 +122,7 @@ interface Opts {
   abortAt?: { step: 'fetch' | 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
   store?: RunStore;
+  onStart?: (input: ImplementerStartInput) => void;
 }
 
 function harness(o: Opts) {
@@ -156,6 +157,7 @@ function harness(o: Opts) {
     async start(input) {
       calls.starts.push(input.prompt);
       input.onSession?.(session);
+      o.onStart?.(input);
       for (let i = 0; i < (o.permissionPrompts ?? 0); i++) input.onPermission?.(`approve ${i + 1}`);
       if (o.hangFirstTurn) await new Promise(() => undefined);
       return { session, outcome: doTurn(input) };
@@ -691,6 +693,19 @@ describe('runPipeline', () => {
     expect(waits[0]).toContain('⏸ Implementer needs your approval — attach: attach-cmd');
     expect(waits[1]).toContain('approve 2');
     expect(h.calls.checks).toBe(1);
+  });
+
+  it("records the adapter's agent.* events in the run log", async () => {
+    const h = harness({
+      turns: [{}],
+      onStart: (input) => input.onEvent?.({ type: 'agent.pane_opened', data: { label: 'x' } }),
+    });
+    const out = await h.run();
+    const types = readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((l) => (JSON.parse(l) as { type: string }).type);
+    expect(types).toContain('agent.pane_opened');
   });
 
   it('tells the implementer which shell commands need no approval', async () => {

@@ -97,12 +97,12 @@ function emitEvent(name: string, extra: Record<string, unknown> = {}) {
   );
 }
 
-function adapter() {
+function adapter(t: typeof timing & { dialogRetryMs?: number } = timing) {
   return createPaneClaude({
     host,
     claudeBin: 'claude',
     randomUUID: () => SID,
-    timing,
+    timing: t,
     watcherFactory: (p, off) => new HookWatcher(p, { startOffset: off, intervalMs: 10 }),
   });
 }
@@ -289,6 +289,26 @@ describe('createPaneClaude', () => {
       emitEvent('Stop', { background_tasks: [] });
     };
     const { outcome } = await adapter().start(input);
+    expect(host.keys).toEqual([
+      ['Down', 'Enter'],
+      ['Down', 'Enter'],
+    ]);
+    expect(outcome.kind).toBe('report');
+  });
+
+  it('presses the keys again when the add-directory dialog ignored the first press', async () => {
+    host.paneText = `Adding a new directory:\n\n ${input.runDir}\n\n ❯ No, exit\n   Yes, add it`;
+    host.sendKeys = async (_p, keys) => {
+      host.keys.push(keys);
+      if (host.keys.length < 2) return; // the first press is lost
+      host.paneText = '';
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const { outcome } = await adapter({ ...timing, trustMaxMs: 2000, dialogRetryMs: 50 }).start(
+      input,
+    );
     expect(host.keys).toEqual([
       ['Down', 'Enter'],
       ['Down', 'Enter'],

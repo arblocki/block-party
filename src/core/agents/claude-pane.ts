@@ -21,6 +21,8 @@ export interface PaneClaudeTiming {
   /** Cadence of the trust-dialog / hook-event polling loops. */
   loopMs?: number;
   trustMaxMs?: number;
+  /** How long a startup dialog may stay up after its keys were sent before they're resent. */
+  dialogRetryMs?: number;
   idlePollMs?: number;
   idleMaxMs?: number;
   confirmMs?: number;
@@ -105,6 +107,9 @@ function stringEnv(): Record<string, string> {
   return out;
 }
 
+/** Key presses per startup dialog before giving up on it. */
+const DIALOG_TRIES = 3;
+
 export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
   const { host, claudeBin } = opts;
   const uuid = opts.randomUUID ?? nodeRandomUUID;
@@ -115,12 +120,20 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     loopMs: opts.timing?.loopMs ?? 250,
     // Long enough for a slow first start (updates, plugin loading) plus startup dialogs.
     trustMaxMs: opts.timing?.trustMaxMs ?? 90_000,
+    dialogRetryMs: opts.timing?.dialogRetryMs ?? 3_000,
     idlePollMs: opts.timing?.idlePollMs ?? 500,
     idleMaxMs: opts.timing?.idleMaxMs ?? 60_000,
     confirmMs: opts.timing?.confirmMs ?? 5_000,
     stopWaitMs: opts.timing?.stopWaitMs ?? 10_000,
   };
-  const emit = (type: string, data: Record<string, unknown>) => opts.onEvent?.({ type, data });
+  const emit = (
+    input: Pick<ImplementerStartInput, 'onEvent'>,
+    type: string,
+    data: Record<string, unknown>,
+  ) => {
+    input.onEvent?.({ type, data });
+    opts.onEvent?.({ type, data });
+  };
   const sessions = new Map<string, SessionState>();
 
   async function findPane(label: string, cwd: string): Promise<PaneRef | undefined> {
@@ -223,45 +236,57 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     });
     if (st) st.pane = pane;
     onOpened?.(pane);
-    emit('agent.pane_opened', { label, sessionId });
+    emit(input, 'agent.pane_opened', { label, sessionId });
 
-    // Startup dialogs, each answered at most once: folder trust for the worktree, then (Claude
-    // Code ≥ 2.1.328) one "Adding a new directory" confirmation for the --add-dir run directory.
+    // Startup dialogs: folder trust for the worktree, then (Claude Code ≥ 2.1.328) one "Adding a
+    // new directory" confirmation for the --add-dir run directory. A key press sent before the
+    // dialog takes input is lost, so a dialog still showing `dialogRetryMs` after its keys were
+    // sent gets them again, up to DIALOG_TRIES times.
     const deadline = now() + t.trustMaxMs;
-    let trustAnswered = false;
-    let addDirAnswered = false;
+    const sent = { trust: { n: 0, at: 0 }, addDir: { n: 0, at: 0 } };
+    const due = (d: { n: number; at: number }) =>
+      d.n === 0 || (d.n < DIALOG_TRIES && now() - d.at >= t.dialogRetryMs);
+    const press = async (d: { n: number; at: number }) => {
+      await host.sendKeys(pane, ['Down', 'Enter']);
+      d.n += 1;
+      d.at = now();
+    };
     const runDirs = await runDirForms(input.runDir);
     while (!hasEvent(input.eventsPath, offset, sessionId, 'SessionStart')) {
       if (now() >= deadline || input.signal?.aborted) break;
-      if (!trustAnswered || !addDirAnswered) {
-        let text = '';
-        try {
-          text = await host.read(pane, 40);
-        } catch {
-          // diagnostics only
+      let text = '';
+      try {
+        text = await host.read(pane, 40);
+      } catch (e) {
+        emit(input, 'agent.read_failed', { error: (e as Error).message });
+      }
+      if (text.includes('trust this folder') && due(sent.trust)) {
+        if (!(await isInside(input.cwd, worktreesRoot()))) {
+          return { pane, outcome: { kind: 'permission', message: 'folder trust dialog' } };
         }
-        if (!trustAnswered && text.includes('trust this folder')) {
-          if (!(await isInside(input.cwd, worktreesRoot()))) {
-            return { pane, outcome: { kind: 'permission', message: 'folder trust dialog' } };
-          }
-          if (input.signal?.aborted) break;
-          await host.sendKeys(pane, ['Down', 'Enter']);
-          trustAnswered = true;
-          emit('agent.trust_dialog_accepted', { cwd: input.cwd, sessionId });
-        } else if (
-          !addDirAnswered &&
-          text.includes('Adding a new directory') &&
-          // Decide only once the dialog is fully drawn; a read mid-render has no path yet.
-          text.includes('Yes, add it')
-        ) {
-          if (!namesDir(text, runDirs)) {
-            return { pane, outcome: { kind: 'permission', message: 'add-directory dialog' } };
-          }
-          if (input.signal?.aborted) break;
-          await host.sendKeys(pane, ['Down', 'Enter']);
-          addDirAnswered = true;
-          emit('agent.add_dir_accepted', { dir: input.runDir, sessionId });
+        if (input.signal?.aborted) break;
+        await press(sent.trust);
+        emit(input, 'agent.trust_dialog_accepted', {
+          cwd: input.cwd,
+          sessionId,
+          attempt: sent.trust.n,
+        });
+      } else if (
+        text.includes('Adding a new directory') &&
+        // Decide only once the dialog is fully drawn; a read mid-render has no path yet.
+        text.includes('Yes, add it') &&
+        due(sent.addDir)
+      ) {
+        if (!namesDir(text, runDirs)) {
+          return { pane, outcome: { kind: 'permission', message: 'add-directory dialog' } };
         }
+        if (input.signal?.aborted) break;
+        await press(sent.addDir);
+        emit(input, 'agent.add_dir_accepted', {
+          dir: input.runDir,
+          sessionId,
+          attempt: sent.addDir.n,
+        });
       }
       await sleep(t.loopMs);
     }
@@ -282,7 +307,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
             message: `Claude did not start within ${secs}s: a startup dialog is waiting`,
           }
         : { kind: 'exited', reason: `Claude did not start within ${secs}s` };
-      emit('agent.start_timeout', { sessionId, outcome: outcome.kind });
+      emit(input, 'agent.start_timeout', { sessionId, outcome: outcome.kind });
       return { pane, outcome };
     }
 
@@ -307,7 +332,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       timeoutMs: input.timeoutMs,
       signal: input.signal,
       onPermission: (message) => {
-        emit('agent.permission_wait', { message });
+        emit(input, 'agent.permission_wait', { message });
         input.onPermission?.(message);
       },
     });
@@ -435,12 +460,12 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       await host.sendText(pane, message, { submit: true });
       let got = await confirm();
       if (got === 'timeout') {
-        emit('agent.send_unconfirmed', { attempt: 1 });
+        emit(input, 'agent.send_unconfirmed', { attempt: 1 });
         // The text may be typed but not submitted; press Enter rather than retyping it.
         if (input.signal?.aborted) return aborted;
         await host.sendKeys(pane, ['Enter']);
         got = await confirm();
-        if (got === 'timeout') emit('agent.send_unconfirmed', { attempt: 2 });
+        if (got === 'timeout') emit(input, 'agent.send_unconfirmed', { attempt: 2 });
       }
       if (got === 'aborted') return aborted;
       if (got === 'timeout') return { kind: 'no_report', detail: 'message was not submitted' };

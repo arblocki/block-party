@@ -416,6 +416,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
         });
         ctx.rec.permissionWait(message, attach);
       },
+      onEvent: (e) => ctx.rec.event(e.type, e.data),
     },
     briefBase: {
       runTitle: title,
