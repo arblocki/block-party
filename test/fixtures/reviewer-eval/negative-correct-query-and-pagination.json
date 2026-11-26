@@ -1,0 +1,12 @@
+{
+  "name": "negative-correct-query-and-pagination",
+  "kind": "synthetic",
+  "plan": "Add listUsersPage(db, page, pageSize) returning one page of users ordered by id plus the total count, for the admin table. Pages are 1-based; invalid page or pageSize throws RangeError. Queries must be parameterized.",
+  "files": {
+    "src/db/types.ts": "export interface Db {\n  query<T>(sql: string, params?: unknown[]): Promise<T[]>;\n}\n\nexport interface User {\n  id: number;\n  name: string;\n  email: string;\n}\n"
+  },
+  "patch": {
+    "src/db/list-users.ts": "import type { Db, User } from './types.js';\n\nexport interface UserPage {\n  users: User[];\n  total: number;\n  page: number;\n  pageSize: number;\n}\n\nexport async function listUsersPage(db: Db, page: number, pageSize: number): Promise<UserPage> {\n  if (!Number.isInteger(page) || page < 1) throw new RangeError('page must be an integer >= 1');\n  if (!Number.isInteger(pageSize) || pageSize < 1 || pageSize > 200) {\n    throw new RangeError('pageSize must be an integer between 1 and 200');\n  }\n  const offset = (page - 1) * pageSize;\n  const users = await db.query<User>(\n    'SELECT id, name, email FROM users ORDER BY id LIMIT $1 OFFSET $2',\n    [pageSize, offset],\n  );\n  const counts = await db.query<{ count: string }>('SELECT count(*) AS count FROM users');\n  const total = Number(counts[0]?.count ?? 0);\n  return { users, total, page, pageSize };\n}\n"
+  },
+  "expected": []
+}

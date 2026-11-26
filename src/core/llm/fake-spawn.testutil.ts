@@ -7,6 +7,7 @@ export interface SpawnCall {
   cwd?: string;
   stdin: string;
   detached?: boolean;
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface FakeProc {
@@ -28,7 +29,14 @@ export function fakeSpawn(handler: (call: SpawnCall) => FakeProc) {
   const calls: SpawnCall[] = [];
   const killed: string[] = [];
   const spawnFn: SpawnFn = (command, args, opts) => {
-    const call: SpawnCall = { command, args, cwd: opts.cwd, stdin: '', detached: opts.detached };
+    const call: SpawnCall = {
+      command,
+      args,
+      cwd: opts.cwd,
+      stdin: '',
+      detached: opts.detached,
+      env: opts.env,
+    };
     let spec: FakeProc = {};
     let exited = false;
     calls.push(call);

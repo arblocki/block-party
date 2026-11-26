@@ -1,4 +1,5 @@
 import type { KeyboardEvent, ReactNode } from 'react';
+import { LogoutButton } from './LogoutButton';
 
 const btn =
   'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
@@ -37,6 +38,7 @@ export function PickerShell(props: {
         <button type="button" className={btn} disabled={props.loading} onClick={props.onRefresh}>
           {props.loading ? 'Loading…' : 'Refresh'}
         </button>
+        <LogoutButton />
       </div>
       <input
         type="search"

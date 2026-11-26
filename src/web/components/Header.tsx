@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { pullsHref } from '../lib/route';
 import { useDraftCount, useReview } from '../state';
+import { LogoutButton } from './LogoutButton';
 import { ThemeToggle } from './ThemeToggle';
 
 const btn =
@@ -159,6 +160,7 @@ export function Header({ onSubmit, extra }: { onSubmit: () => void; extra?: Reac
             ))}
           </div>
           <ThemeToggle />
+          <LogoutButton />
           <button
             type="button"
             className={btn}

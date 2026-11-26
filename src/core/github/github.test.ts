@@ -430,3 +430,192 @@ describe('github client compare', () => {
     expect(r?.files).toHaveLength(300);
   });
 });
+
+describe('github client publish methods', () => {
+  const repo = { owner: 'o', repo: 'r' };
+  const prData = { number: 7, head: { sha: 'abc' }, html_url: 'https://x/pull/7', draft: true };
+
+  function recorder(respond: (route: string) => unknown) {
+    const calls: { route: string; params?: Record<string, unknown> }[] = [];
+    const rest: RestLike = {
+      async request(route, params) {
+        calls.push({ route, params });
+        return { data: respond(route) };
+      },
+    };
+    return { calls, client: createGitHubClient({ rest, gql: noGql }) };
+  }
+
+  it('findOpenPrForBranch queries by owner:branch', async () => {
+    const { calls, client } = recorder(() => [prData]);
+    expect(await client.findOpenPrForBranch(repo, 'bp/x')).toEqual({
+      number: 7,
+      headSha: 'abc',
+      url: 'https://x/pull/7',
+      draft: true,
+    });
+    expect(calls[0]).toEqual({
+      route: 'GET /repos/{owner}/{repo}/pulls',
+      params: { owner: 'o', repo: 'r', head: 'o:bp/x', state: 'open' },
+    });
+    const none = recorder(() => []);
+    expect(await none.client.findOpenPrForBranch(repo, 'bp/x')).toBeUndefined();
+  });
+
+  it('createPr posts a draft', async () => {
+    const { calls, client } = recorder(() => prData);
+    const pr = await client.createPr(repo, {
+      head: 'bp/x',
+      base: 'main',
+      title: 'T',
+      body: 'B',
+      draft: true,
+    });
+    expect(pr.number).toBe(7);
+    expect(calls[0]).toEqual({
+      route: 'POST /repos/{owner}/{repo}/pulls',
+      params: {
+        owner: 'o',
+        repo: 'r',
+        head: 'bp/x',
+        base: 'main',
+        title: 'T',
+        body: 'B',
+        draft: true,
+      },
+    });
+  });
+
+  it('getPr reads one PR', async () => {
+    const { calls, client } = recorder(() => prData);
+    expect((await client.getPr(repo, 7)).headSha).toBe('abc');
+    expect(calls[0]).toEqual({
+      route: 'GET /repos/{owner}/{repo}/pulls/{pull_number}',
+      params: { owner: 'o', repo: 'r', pull_number: 7 },
+    });
+  });
+
+  type Run = { name: string; status: string; conclusion: string | null };
+  type St = { context: string; state: string };
+  async function ci(runs: Run[], statuses: St[]) {
+    const { calls, client } = recorder((route) =>
+      route.endsWith('check-runs')
+        ? { check_runs: runs.map((r) => ({ ...r, html_url: 'u' })) }
+        : {
+            state: statuses.some((x) => x.state === 'failure' || x.state === 'error')
+              ? 'failure'
+              : statuses.some((x) => x.state === 'pending')
+                ? 'pending'
+                : 'success',
+            total_count: statuses.length,
+            statuses,
+          },
+    );
+    return { calls, status: await client.getCiStatus(repo, 'sha1') };
+  }
+  const run = (status: string, conclusion: string | null): Run => ({
+    name: 'n',
+    status,
+    conclusion,
+  });
+
+  it('requests check-runs and status for the sha', async () => {
+    const { calls } = await ci([], []);
+    expect(calls.map((c) => c.route)).toEqual([
+      'GET /repos/{owner}/{repo}/commits/{ref}/check-runs',
+      'GET /repos/{owner}/{repo}/commits/{ref}/status',
+    ]);
+    expect(calls[0]!.params).toMatchObject({ ref: 'sha1', per_page: 100 });
+  });
+
+  it.each([
+    ['nothing at all', [], [], 'none'],
+    ['all success', [run('completed', 'success'), run('completed', 'skipped')], [], 'success'],
+    ['neutral counts as ok', [run('completed', 'neutral')], [], 'success'],
+    ['in progress', [run('in_progress', null)], [], 'pending'],
+    ['queued', [run('queued', null)], [], 'pending'],
+    ['failure', [run('completed', 'failure')], [], 'failure'],
+    ['cancelled', [run('completed', 'cancelled')], [], 'failure'],
+    ['timed_out', [run('completed', 'timed_out')], [], 'failure'],
+    ['failure beats pending', [run('completed', 'failure'), run('queued', null)], [], 'failure'],
+    ['pending + success', [run('completed', 'success'), run('queued', null)], [], 'pending'],
+    ['status success only', [], [{ context: 'ci', state: 'success' }], 'success'],
+    ['status pending', [], [{ context: 'ci', state: 'pending' }], 'pending'],
+    ['status failure', [], [{ context: 'ci', state: 'failure' }], 'failure'],
+    ['status error', [], [{ context: 'ci', state: 'error' }], 'failure'],
+    [
+      'run success + status failure',
+      [run('completed', 'success')],
+      [{ context: 'ci', state: 'failure' }],
+      'failure',
+    ],
+  ] as [string, Run[], St[], string][])('CI state: %s -> %s', async (_n, runs, statuses, want) => {
+    const { status } = await ci(runs, statuses);
+    expect(status.state).toBe(want);
+    expect(status.checks).toHaveLength(runs.length + statuses.length);
+  });
+
+  describe('CI pagination', () => {
+    const mkRuns = (n: number, over: Partial<Run> = {}, offset = 0): Run[] =>
+      Array.from({ length: n }, (_, i) => ({
+        name: `c${offset + i}`,
+        status: 'completed',
+        conclusion: 'success',
+        ...over,
+      }));
+    function paged(all: Run[], combined: Record<string, unknown> = {}) {
+      const { calls, client } = (() => {
+        const calls: { route: string; params?: Record<string, unknown> }[] = [];
+        const rest: RestLike = {
+          async request(route, params) {
+            calls.push({ route, params });
+            if (route.endsWith('check-runs')) {
+              const page = params!.page as number;
+              const slice = all.slice((page - 1) * 100, page * 100);
+              return {
+                data: {
+                  total_count: all.length,
+                  check_runs: slice.map((r) => ({ ...r, html_url: 'u' })),
+                },
+              };
+            }
+            return { data: { state: 'success', total_count: 0, statuses: [], ...combined } };
+          },
+        };
+        return { calls, client: createGitHubClient({ rest, gql: noGql }) };
+      })();
+      return { calls, client };
+    }
+
+    it('failure on page 2 -> failure', async () => {
+      const all = [...mkRuns(100), ...mkRuns(1, { conclusion: 'failure' }, 100)];
+      const { client, calls } = paged(all);
+      expect((await client.getCiStatus(repo, 's')).state).toBe('failure');
+      expect(calls.filter((c) => c.route.endsWith('check-runs'))).toHaveLength(2);
+    });
+
+    it('pending on page 2 -> pending', async () => {
+      const all = [...mkRuns(100), ...mkRuns(1, { status: 'queued', conclusion: null }, 100)];
+      const { client } = paged(all);
+      expect((await client.getCiStatus(repo, 's')).state).toBe('pending');
+    });
+
+    it('hitting the page cap never reports success', async () => {
+      const { client, calls } = paged(mkRuns(1500));
+      const status = await client.getCiStatus(repo, 's');
+      expect(status.state).toBe('pending');
+      expect(status.checks.at(-1)?.name).toBe('block-party: results truncated');
+      expect(calls.filter((c) => c.route.endsWith('check-runs'))).toHaveLength(10);
+    });
+
+    it('combined failure with an empty statuses page -> failure', async () => {
+      const { client } = paged(mkRuns(1), { state: 'failure', total_count: 150, statuses: [] });
+      expect((await client.getCiStatus(repo, 's')).state).toBe('failure');
+    });
+
+    it('combined pending with statuses -> pending', async () => {
+      const { client } = paged(mkRuns(1), { state: 'pending', total_count: 3, statuses: [] });
+      expect((await client.getCiStatus(repo, 's')).state).toBe('pending');
+    });
+  });
+});

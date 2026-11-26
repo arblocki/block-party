@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import { LlmError } from './types.js';
 
 /** The slice of ChildProcess that spawnCli uses (easy to fake in tests). */
@@ -37,6 +38,11 @@ export interface SpawnCliOptions {
   /** After SIGTERM on timeout/abort, wait this long before SIGKILL (default 2000ms). */
   killGraceMs?: number;
   spawnFn?: SpawnFn;
+  /** Environment for the child (default: inherit). */
+  env?: NodeJS.ProcessEnv;
+  /** Called for every stdout/stderr chunk, in addition to buffering. */
+  onStdout?: (chunk: string) => void;
+  onStderr?: (chunk: string) => void;
 }
 
 export interface SpawnCliResult {
@@ -46,7 +52,7 @@ export interface SpawnCliResult {
 }
 
 export const DEFAULT_TIMEOUT_MS = 10 * 60_000;
-const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
+export const DEFAULT_MAX_BYTES = 16 * 1024 * 1024;
 export const DEFAULT_KILL_GRACE_MS = 2000;
 /** How long to wait for the child to be reaped after SIGKILL before giving up. */
 const POST_KILL_WAIT_MS = 1000;
@@ -93,7 +99,7 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     let child: ChildLike;
     try {
       // On POSIX the child leads its own process group so we can signal descendants too.
-      child = spawnFn(command, args, { cwd, detached: POSIX });
+      child = spawnFn(command, args, { cwd, env: opts.env, detached: POSIX });
     } catch (err) {
       reject(mapSpawnError(command, err as NodeJS.ErrnoException));
       return;
@@ -164,10 +170,24 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     };
     const onAbort = () => stop(new LlmError('aborted', `${command} aborted`));
 
-    const append = (cur: string, chunk: Buffer | string) =>
-      cur.length >= maxBytes ? cur : (cur + chunk.toString()).slice(0, maxBytes);
-    child.stdout.on('data', (c) => (stdout = append(stdout, c)));
-    child.stderr.on('data', (c) => (stderr = append(stderr, c)));
+    const append = (cur: string, text: string) =>
+      cur.length >= maxBytes ? cur : (cur + text).slice(0, maxBytes);
+    // Persistent decoders so a multibyte char split across chunks survives.
+    const outDec = new StringDecoder('utf8');
+    const errDec = new StringDecoder('utf8');
+    const onOut = (text: string) => {
+      if (!text) return;
+      stdout = append(stdout, text);
+      opts.onStdout?.(text);
+    };
+    const onErr = (text: string) => {
+      if (!text) return;
+      stderr = append(stderr, text);
+      opts.onStderr?.(text);
+    };
+    const dec = (d: StringDecoder, c: Buffer | string) => (typeof c === 'string' ? c : d.write(c));
+    child.stdout.on('data', (c) => onOut(dec(outDec, c)));
+    child.stderr.on('data', (c) => onErr(dec(errDec, c)));
     child.stdin.on('error', () => {
       /* process may exit before reading stdin; surfaced via close/error */
     });
@@ -179,7 +199,11 @@ export function spawnCli(opts: SpawnCliOptions): Promise<SpawnCliResult> {
     child.on('close', (code) => {
       leaderExited = true;
       if (stopping) settleIfStopped();
-      else finish(() => resolve({ stdout, stderr, code }));
+      else {
+        onOut(outDec.end());
+        onErr(errDec.end());
+        finish(() => resolve({ stdout, stderr, code }));
+      }
     });
 
     signal?.addEventListener('abort', onAbort, { once: true });

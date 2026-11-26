@@ -1,0 +1,20 @@
+{
+  "name": "real-codex-cli-adapter",
+  "kind": "git",
+  "repo": ".",
+  "base": "f03fe43^",
+  "head": "f03fe43",
+  "plan": "Add an LLM provider layer (src/core/llm): OpenRouter over fetch, plus claude and codex CLI adapters that shell out with --help feature detection, a shared spawnCli helper, config with defaults per provider, and a FakeProvider for tests. The codex adapter runs `codex exec` read-only against a PR checkout and must run in that checkout (or an empty temp dir when there is none), return the model's answer, and report token usage.",
+  "expected": [
+    {
+      "path": "src/core/llm/codex-cli.ts",
+      "minSeverity": "P2",
+      "keywords": ["--cd", "cwd", "working directory", "inherit"]
+    },
+    {
+      "path": "src/core/llm/codex-cli.ts",
+      "minSeverity": "P2",
+      "keywords": ["--json", "usage", "token"]
+    }
+  ]
+}

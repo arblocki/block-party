@@ -1,0 +1,268 @@
+import { closeSync, existsSync, openSync, readSync, statSync } from 'node:fs';
+import { z } from 'zod';
+import type { AgentState } from '../terminal/types.js';
+import type { TurnOutcome } from './types.js';
+
+export const HookEventSchema = z.looseObject({
+  hook_event_name: z.string(),
+  session_id: z.string().optional(),
+  background_tasks: z.array(z.unknown()).optional(),
+  agent_type: z.string().optional(),
+  agent_id: z.string().optional(),
+  transcript_path: z.string().optional(),
+  notification_type: z.string().optional(),
+  reason: z.string().optional(),
+  source: z.string().optional(),
+  message: z.string().optional(),
+});
+export type HookEvent = z.infer<typeof HookEventSchema> & { ts?: string };
+
+export function isFinalStop(ev: HookEvent): boolean {
+  return (
+    ev.hook_event_name === 'Stop' &&
+    (ev.background_tasks === undefined || ev.background_tasks.length === 0)
+  );
+}
+
+export function isRealSubagentStop(ev: HookEvent): boolean {
+  return ev.hook_event_name === 'SubagentStop' && !!ev.agent_type;
+}
+
+/**
+ * Reads complete lines from `fromOffset` (bytes). A trailing partial line is not consumed.
+ * Malformed lines are skipped (but consumed).
+ */
+export function readHookEvents(
+  path: string,
+  fromOffset: number,
+): { events: HookEvent[]; nextOffset: number } {
+  let size: number;
+  try {
+    size = statSync(path).size;
+  } catch {
+    return { events: [], nextOffset: fromOffset };
+  }
+  if (size <= fromOffset) return { events: [], nextOffset: fromOffset };
+  const buf = Buffer.alloc(size - fromOffset);
+  const fd = openSync(path, 'r');
+  let read = 0;
+  try {
+    while (read < buf.length) {
+      const n = readSync(fd, buf, read, buf.length - read, fromOffset + read);
+      if (n === 0) break;
+      read += n;
+    }
+  } finally {
+    closeSync(fd);
+  }
+  const lastNl = buf.subarray(0, read).lastIndexOf(0x0a);
+  if (lastNl === -1) return { events: [], nextOffset: fromOffset };
+  const events: HookEvent[] = [];
+  for (const line of buf.subarray(0, lastNl).toString('utf8').split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const row = z
+        .looseObject({ ts: z.string().optional(), payload: HookEventSchema })
+        .parse(JSON.parse(line));
+      events.push({ ...row.payload, ...(row.ts ? { ts: row.ts } : {}) });
+    } catch {
+      // skip malformed line
+    }
+  }
+  return { events, nextOffset: fromOffset + lastNl + 1 };
+}
+
+export type HookListener = (ev: HookEvent) => void;
+
+/** Polls an events file and emits typed events appended after `startOffset`. */
+export class HookWatcher {
+  private offset: number;
+  private timer: ReturnType<typeof setInterval> | undefined;
+
+  private listeners = new Set<HookListener>();
+  private readonly intervalMs: number;
+
+  constructor(
+    private readonly path: string,
+    opts: { startOffset?: number; intervalMs?: number } = {},
+  ) {
+    this.offset = opts.startOffset ?? 0;
+    this.intervalMs = opts.intervalMs ?? 250;
+  }
+
+  on(listener: HookListener): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** One poll; also callable directly. */
+  poll(): void {
+    const { events, nextOffset } = readHookEvents(this.path, this.offset);
+    this.offset = nextOffset;
+    for (const ev of events) for (const l of [...this.listeners]) l(ev);
+  }
+
+  get running(): boolean {
+    return this.timer !== undefined;
+  }
+
+  start(): void {
+    if (this.timer) return;
+    this.timer = setInterval(() => this.poll(), this.intervalMs);
+  }
+
+  stop(): void {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = undefined;
+  }
+}
+
+export interface WaitForTurnEndOptions {
+  watcher: HookWatcher;
+  sessionId: string;
+  reportPath: string;
+  /**
+   * Current terminal agent state. Polled at most once per tick with no overlapping calls;
+   * a rejection counts as 'unknown'.
+   */
+  agentState?: () => Promise<AgentState | undefined>;
+  settleMs?: number;
+  timeoutMs: number;
+  signal?: AbortSignal;
+  /** Re-check cadence for settle and blocked-state polling. */
+  pollMs?: number;
+  /**
+   * When given, a permission prompt (Notification, or blocked > 3 s) calls this and the wait
+   * continues on the same watcher instead of resolving `permission`. The blocked-state signal
+   * fires once per blocked episode.
+   */
+  onPermission?: (message: string) => void;
+}
+
+const BLOCKED_MS = 3000;
+
+/**
+ * Resolves with the first turn-ending condition. Only events the watcher emits while this
+ * call is pending count, so create the watcher with the offset taken before the turn began.
+ * Starts the watcher and stops it when the turn ends.
+ */
+export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome> {
+  const { watcher, sessionId, reportPath } = opts;
+  const settleMs = opts.settleMs ?? 1500;
+  const pollMs = opts.pollMs ?? 250;
+  return new Promise<TurnOutcome>((resolve) => {
+    /**
+     * The latest final Stop not yet cancelled by a UserPromptSubmit. A new Stop or a reset
+     * replaces the object, so a state query is tied to the stop it was issued under by
+     * identity. `postStopState` is the result of the latest state query issued under this
+     * stop that has completed (rejected or `undefined` results normalized to 'unknown').
+     */
+    let stop: { at: number; postStopState?: AgentState } | undefined;
+    /** Latest completed state from any query; drives the blocked > 3 s check. */
+    let lastState: AgentState | undefined;
+    let blockedSince: number | undefined;
+    /** A prompt was already reported for the current blocked episode. */
+    let promptReported = false;
+    let queryInFlight = false;
+    let done = false;
+
+    const finish = (outcome: TurnOutcome): void => {
+      if (done) return;
+      done = true;
+      unsubscribe();
+      clearInterval(tick);
+      clearTimeout(timeout);
+      opts.signal?.removeEventListener('abort', onAbort);
+      watcher.stop();
+      resolve(outcome);
+    };
+    const onAbort = (): void => finish({ kind: 'exited', reason: 'aborted' });
+
+    const unsubscribe = watcher.on((ev) => {
+      if (ev.session_id !== sessionId) return;
+      if (ev.hook_event_name === 'SessionEnd') {
+        finish({ kind: 'exited', reason: ev.reason ?? 'session_end' });
+      } else if (
+        ev.hook_event_name === 'Notification' &&
+        ev.notification_type === 'permission_prompt'
+      ) {
+        const message = ev.message ?? 'permission prompt';
+        if (opts.onPermission) {
+          promptReported = true;
+          opts.onPermission(message);
+        } else finish({ kind: 'permission', message });
+      } else if (isFinalStop(ev)) {
+        stop = { at: Date.now() };
+      } else if (ev.hook_event_name === 'UserPromptSubmit') {
+        stop = undefined;
+      }
+    });
+
+    /** Without agentState, no_report needs no confirmation. */
+    const stateAllowsNoReport = (s: NonNullable<typeof stop>): boolean =>
+      !opts.agentState || (s.postStopState !== undefined && s.postStopState !== 'working');
+
+    const evaluate = (): void => {
+      if (done) return;
+      if (lastState === 'blocked') {
+        blockedSince ??= Date.now();
+        if (Date.now() - blockedSince > BLOCKED_MS) {
+          const message = 'agent is blocked awaiting input';
+          if (!opts.onPermission) {
+            finish({ kind: 'permission', message });
+            return;
+          }
+          if (!promptReported) {
+            promptReported = true;
+            opts.onPermission(message);
+          }
+        }
+      } else {
+        blockedSince = undefined;
+        promptReported = false;
+      }
+      if (stop && Date.now() - stop.at >= settleMs) {
+        if (existsSync(reportPath)) finish({ kind: 'report' });
+        else if (stateAllowsNoReport(stop)) {
+          finish({ kind: 'no_report', detail: 'turn ended without report.json' });
+        }
+      }
+    };
+
+    const queryState = (agentState: () => Promise<AgentState | undefined>): void => {
+      queryInFlight = true;
+      const issuedUnder = stop;
+      let pending: Promise<AgentState | undefined>;
+      try {
+        pending = agentState();
+      } catch {
+        pending = Promise.resolve('unknown');
+      }
+      void pending
+        .then(
+          (s): AgentState => s ?? 'unknown',
+          (): AgentState => 'unknown',
+        )
+        .then((state) => {
+          queryInFlight = false;
+          lastState = state;
+          if (issuedUnder && issuedUnder === stop) issuedUnder.postStopState = state;
+          evaluate();
+        });
+    };
+
+    const tick = setInterval(() => {
+      // State queries never overlap and never gate the report check in evaluate().
+      if (opts.agentState && !queryInFlight && !done) queryState(opts.agentState);
+      evaluate();
+    }, pollMs);
+
+    const timeout = setTimeout(() => finish({ kind: 'timeout' }), opts.timeoutMs);
+    if (opts.signal?.aborted) {
+      onAbort();
+      return;
+    }
+    opts.signal?.addEventListener('abort', onAbort, { once: true });
+    watcher.start();
+  });
+}

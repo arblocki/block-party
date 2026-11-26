@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { Hono } from 'hono';
+import { deleteCookie, setCookie } from 'hono/cookie';
 import { serveStatic } from '@hono/node-server/serve-static';
 import {
   formatPrRef,
@@ -12,7 +13,9 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { registerApi, upstreamError } from './api.js';
-import { hostGuard, tokenGuard } from './security.js';
+import type { RunManager } from './run-manager.js';
+import { registerRunsApi, type RunsApiDeps } from './runs-api.js';
+import { hostGuard, SESSION_COOKIE, tokenGuard, tokensMatch } from './security.js';
 
 export interface AppOptions {
   token: string;
@@ -25,17 +28,46 @@ export interface AppOptions {
   analysis?: AnalysisDeps;
   /** Port the server listens on; used for Host/Origin checks. May be set after listen(). */
   port: () => number;
+  /** Extra `host[:port]` values accepted besides localhost (served as `https://<host>`). */
+  allowedHosts?: string[];
   /** How many PRs keep their in-memory caches (default 20); older ones are rebuilt on demand. */
   maxCachedPrs?: number;
   /** Directory containing the built UI. Omit to skip static serving. */
   webDir?: string;
+  /** Live-stream timing overrides, for tests. */
+  streamTiming?: { pollMs?: number; heartbeatMs?: number };
+  /** Starts and cancels runs; without one the server cannot start runs. */
+  runManager?: RunManager;
+  /** Git service for registering projects (default: the real one). */
+  git?: RunsApiDeps['git'];
 }
 
 export function createApp(opts: AppOptions): Hono {
   const app = new Hono();
   const maxPrApps = Math.max(1, opts.maxCachedPrs ?? 20);
 
-  app.use('*', hostGuard(opts.port));
+  app.use('*', hostGuard(opts.port, opts.allowedHosts ?? []));
+
+  // Browser login: trade a pasted token for a session cookie. Outside /api/* (no token yet),
+  // but behind hostGuard, which also rejects foreign Origins.
+  app.post('/auth/login', async (c) => {
+    const body = await c.req.json<{ token?: unknown }>().catch(() => ({}) as { token?: unknown });
+    const given = typeof body?.token === 'string' ? body.token.trim() : undefined;
+    if (!tokensMatch(opts.token, given)) return c.json({ error: 'unauthorized' }, 401);
+    setCookie(c, SESSION_COOKIE, opts.token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: 'Strict',
+      path: '/',
+      maxAge: 60 * 60 * 24 * 365,
+    });
+    return c.body(null, 204);
+  });
+  app.post('/auth/logout', (c) => {
+    deleteCookie(c, SESSION_COOKIE, { path: '/', secure: true });
+    return c.body(null, 204);
+  });
+
   app.use('/api/*', tokenGuard(opts.token));
 
   app.get('/api/health', (c) => c.json({ ok: true }));
@@ -50,6 +82,12 @@ export function createApp(opts: AppOptions): Hono {
     });
   });
   app.get('/api/repos', async (c) => c.json({ repos: await opts.github.listRepos() }));
+  registerRunsApi(app, {
+    runs: opts.store.runs,
+    ...opts.streamTiming,
+    ...(opts.runManager ? { manager: opts.runManager } : {}),
+    ...(opts.git ? { git: opts.git } : {}),
+  });
 
   // Repository routes; `:owner/:repo` must be a valid GitHub name pair.
   const repoOf = (c: { req: { param(name: string): string } }): RepoRef | null =>

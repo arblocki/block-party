@@ -6,6 +6,7 @@ import type { Side } from '../diff/types.js';
 import type { Analysis } from '../group/types.js';
 import type { ReviewEvent } from '../github/types.js';
 import { formatPrRef, type PrRef } from '../pr-ref.js';
+import { createRunStore, type RunStore } from './runs.js';
 import { MIGRATIONS } from './schema.js';
 
 /**
@@ -114,6 +115,8 @@ export interface Store {
   /** Records that the reviewer is caught up to `headSha` ("Done reviewing these changes"). */
   setReviewCheckpoint(ref: PrRef, headSha: string): void;
   recordSubmittedReview(ref: PrRef, rec: SubmittedReviewRecord): void;
+  /** Projects, runs, stage executions, run events and inbox decisions. */
+  runs: RunStore;
   close(): void;
 }
 
@@ -226,15 +229,11 @@ export function openStore(file: string): Store {
     'SELECT group_key, item_index, checked FROM verify_checks WHERE repo = ? AND pr = ? ORDER BY group_key, item_index',
   );
   const baseline = db.prepare<[string, number, string, number], { head_sha: string }>(
-    // Timestamps are millisecond ISO strings, so two writes can tie; rowid breaks the tie
-    // in insertion order (the later write wins).
     `SELECT head_sha FROM (
-       SELECT head_sha, created_at AS at, rowid AS seq FROM review_checkpoints
-         WHERE repo = ? AND pr = ?
+       SELECT head_sha, created_at AS at, id FROM review_checkpoints WHERE repo = ? AND pr = ?
        UNION ALL
-       SELECT head_sha, submitted_at AS at, rowid AS seq FROM reviews_submitted
-         WHERE repo = ? AND pr = ?
-     ) ORDER BY at DESC, seq DESC LIMIT 1`,
+       SELECT head_sha, submitted_at AS at, id FROM reviews_submitted WHERE repo = ? AND pr = ?
+     ) ORDER BY at DESC, id DESC LIMIT 1`, // timestamps are ms-resolution and can tie; autoincrement id breaks the tie
   );
   const firstMark = db.prepare<[string, number], { head_sha: string }>(
     `SELECT head_sha FROM reviewed_hunks WHERE repo = ? AND pr = ?
@@ -406,6 +405,7 @@ export function openStore(file: string): Store {
         new Date().toISOString(),
       );
     },
+    runs: createRunStore(db),
     close() {
       db.close();
     },

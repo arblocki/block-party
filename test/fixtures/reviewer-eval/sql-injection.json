@@ -1,0 +1,19 @@
+{
+  "name": "sql-injection",
+  "kind": "synthetic",
+  "plan": "Add searchUsers(db, term) to the users data layer so the admin screen can look users up by a name prefix. Results are ordered by name and capped at 20 rows.",
+  "files": {
+    "src/db/types.ts": "export interface Db {\n  query<T>(sql: string, params?: unknown[]): Promise<T[]>;\n}\n\nexport interface User {\n  id: number;\n  name: string;\n  email: string;\n}\n",
+    "src/db/users.ts": "import type { Db, User } from './types.js';\n\nexport async function findUserById(db: Db, id: number): Promise<User | undefined> {\n  const rows = await db.query<User>('SELECT id, name, email FROM users WHERE id = $1', [id]);\n  return rows[0];\n}\n"
+  },
+  "patch": {
+    "src/db/users.ts": "import type { Db, User } from './types.js';\n\nexport async function findUserById(db: Db, id: number): Promise<User | undefined> {\n  const rows = await db.query<User>('SELECT id, name, email FROM users WHERE id = $1', [id]);\n  return rows[0];\n}\n\nexport async function searchUsers(db: Db, term: string): Promise<User[]> {\n  const trimmed = term.trim();\n  if (trimmed === '') return [];\n  return db.query<User>(\n    `SELECT id, name, email FROM users WHERE name ILIKE '${trimmed}%' ORDER BY name LIMIT 20`,\n  );\n}\n"
+  },
+  "expected": [
+    {
+      "path": "src/db/users.ts",
+      "minSeverity": "P1",
+      "keywords": ["injection", "interpolat", "parameter", "sanitiz", "escap"]
+    }
+  ]
+}

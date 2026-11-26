@@ -14,6 +14,8 @@ export const checksSchema = z.object({
   setup: z.string().trim().min(1).optional(),
   required: z.array(checkSchema).default([]),
   optional: z.array(checkSchema).optional(),
+  /** Commands that fix check failures in place (e.g. a formatter); implementers may run them. */
+  fix: z.array(z.string().trim().min(1)).optional(),
   ciParity: z
     .object({
       workflows: z.array(z.string().min(1)).optional(),

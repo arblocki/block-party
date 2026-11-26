@@ -3,11 +3,14 @@ import { Octokit } from '@octokit/rest';
 import { extractFilePatch } from '../diff/parse.js';
 import type { RawFile } from '../diff/types.js';
 import type {
+  CiCheck,
+  CiStatus,
   GitHubClient,
   GraphqlLike,
   PrCommit,
   PrMeta,
   PrSummary,
+  PublishedPr,
   RepoSummary,
   RestLike,
   ReviewThread,
@@ -16,6 +19,8 @@ import type {
 
 const PER_PAGE = 100;
 const MAX_FILES = 3000;
+/** Hard cap on pages read per CI list (check runs, statuses). */
+const MAX_CI_PAGES = 10;
 /** Commits listed for an interdiff; more than this is reported as truncated. */
 export const MAX_COMPARE_COMMITS = 1000;
 /** The compare endpoint returns at most this many files and does not paginate them. */
@@ -66,6 +71,32 @@ function toThreadComment(c: Json): ThreadComment {
     createdAt: c.createdAt,
     url: c.url,
   };
+}
+
+function toPublishedPr(d: Json): PublishedPr {
+  return {
+    number: d.number,
+    headSha: d.head?.sha ?? '',
+    url: d.html_url ?? '',
+    draft: !!d.draft,
+  };
+}
+
+const OK_CONCLUSIONS = new Set(['success', 'neutral', 'skipped']);
+
+/**
+ * Combines checks into one state: any completed check without an OK conclusion (failure,
+ * cancelled, timed_out, ...) is `failure` and wins over pending; any incomplete check is
+ * `pending`; no checks at all is `none`.
+ */
+export function combineCiStatus(checks: CiCheck[]): CiStatus['state'] {
+  if (checks.length === 0) return 'none';
+  let pending = false;
+  for (const c of checks) {
+    if (c.status !== 'completed') pending = true;
+    else if (c.conclusion === null || !OK_CONCLUSIONS.has(c.conclusion)) return 'failure';
+  }
+  return pending ? 'pending' : 'success';
 }
 
 /** Builds the REST/GraphQL adapters for a token. The token never leaves these closures. */
@@ -357,6 +388,109 @@ export function createGitHubClient(deps: { rest: RestLike; gql: GraphqlLike }): 
       );
       const d = data as Json;
       return { id: d.id, url: d.html_url };
+    },
+
+    async findOpenPrForBranch(repo, branch) {
+      const { data } = await rest.request('GET /repos/{owner}/{repo}/pulls', {
+        owner: repo.owner,
+        repo: repo.repo,
+        head: `${repo.owner}:${branch}`,
+        state: 'open',
+      });
+      const first = (data as Json[])[0];
+      return first ? toPublishedPr(first) : undefined;
+    },
+
+    async createPr(repo, input) {
+      const { data } = await rest.request('POST /repos/{owner}/{repo}/pulls', {
+        owner: repo.owner,
+        repo: repo.repo,
+        head: input.head,
+        base: input.base,
+        title: input.title,
+        body: input.body,
+        draft: input.draft,
+      });
+      return toPublishedPr(data as Json);
+    },
+
+    async getPr(repo, number) {
+      const { data } = await rest.request('GET /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner: repo.owner,
+        repo: repo.repo,
+        pull_number: number,
+      });
+      return toPublishedPr(data as Json);
+    },
+
+    async getCiStatus(repo, sha) {
+      const base = { owner: repo.owner, repo: repo.repo, ref: sha };
+      const checks: CiCheck[] = [];
+      let truncated = false;
+
+      // Pages through a list endpoint (hard cap MAX_CI_PAGES); flags truncation if not exhausted.
+      async function pages(route: string, key: string, onItem: (i: Json) => void): Promise<Json> {
+        let first: Json = {};
+        let seen = 0;
+        for (let page = 1; page <= MAX_CI_PAGES; page++) {
+          const { data } = await rest.request(route, { ...base, per_page: PER_PAGE, page });
+          const d = data as Json;
+          if (page === 1) first = d;
+          const items = (d[key] ?? []) as Json[];
+          items.forEach(onItem);
+          seen += items.length;
+          const total = typeof d.total_count === 'number' ? d.total_count : undefined;
+          if (items.length < PER_PAGE || (total !== undefined && seen >= total)) return first;
+        }
+        truncated = true;
+        return first;
+      }
+
+      await pages('GET /repos/{owner}/{repo}/commits/{ref}/check-runs', 'check_runs', (r) =>
+        checks.push({
+          name: String(r.name ?? ''),
+          status: String(r.status ?? ''),
+          conclusion: typeof r.conclusion === 'string' ? r.conclusion : null,
+          url: String(r.html_url ?? ''),
+        }),
+      );
+      const combined = await pages(
+        'GET /repos/{owner}/{repo}/commits/{ref}/status',
+        'statuses',
+        (s) => {
+          const st = String(s.state ?? '');
+          checks.push({
+            name: String(s.context ?? ''),
+            status: st === 'pending' ? 'in_progress' : 'completed',
+            conclusion: st === 'pending' ? null : st === 'success' ? 'success' : 'failure',
+            url: String(s.target_url ?? ''),
+          });
+        },
+      );
+      // The aggregate is an additional signal in case the status list itself was incomplete.
+      const hasStatuses = (combined.total_count ?? 0) > 0 || (combined.statuses ?? []).length > 0;
+      const soFar = combineCiStatus(checks);
+      if (soFar === 'failure') {
+        /* already failing */
+      } else if (hasStatuses && (combined.state === 'failure' || combined.state === 'error')) {
+        checks.push({
+          name: 'combined status',
+          status: 'completed',
+          conclusion: 'failure',
+          url: '',
+        });
+      } else if (soFar !== 'pending' && hasStatuses && combined.state === 'pending') {
+        checks.push({ name: 'combined status', status: 'in_progress', conclusion: null, url: '' });
+      }
+      if (truncated) {
+        checks.push({
+          name: 'block-party: results truncated',
+          status: 'in_progress',
+          conclusion: null,
+          url: '',
+        });
+      }
+      return { state: combineCiStatus(checks), checks };
     },
 
     async replyToComment(ref, commentId, body) {

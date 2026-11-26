@@ -9,10 +9,11 @@ This doc is updated as the system is built. Each phase in the [roadmap](#10-road
 checkboxes, and every non-obvious choice goes in the [decision log](#12-decision-log). When
 the code and this doc disagree, fix whichever one is wrong in the same PR.
 
-- **Status:** Phase 0 complete (spike write-ups in [`docs/spikes/`](spikes/)); Phase 1 next.
+- **Status:** Phase 1 implemented (`block-party run`, plan in [`docs/plans/phase-1.md`](plans/phase-1.md));
+  its exit check passed with [#15](https://github.com/arblocki/block-party/pull/15). Phase 0 spike write-ups are in [`docs/spikes/`](spikes/).
   Review UI (M0–M3 of `PLAN.md`) is shipped.
 - **Owner:** Drew Blocki
-- **Last updated:** 2026-11-06
+- **Last updated:** 2026-11-09
 - **Related:** [`PLAN.md`](PLAN.md) is the detailed spec for the review subsystem (diff
   grouping, risk, comments, re-review). This doc covers everything around it.
 
@@ -360,7 +361,7 @@ as a **real interactive Claude Code session inside a terminal multiplexer** (her
 see [5.2.1](#521-terminal-host-herdr-or-tmux)), not a headless pipe:
 
 - **Launch:** the terminal host opens a pane in the worktree and runs
-  `claude --model <opus> --session-id <uuid> --settings <run settings> --agents <agents.json> "<prompt>"`.
+  `claude --model <opus> --session-id <uuid> --settings <run settings> --agents '<agents JSON>' "<prompt>"`.
   The session ID is chosen by block-party so it can resume or locate the transcript later.
 - **Attach:** the UI shows the host's attach command with a copy button (and later, possibly
   an embedded terminal via `xterm.js` + `node-pty`). Attaching doesn't disturb the run.
@@ -510,7 +511,8 @@ block-party supervises the Opus process; Opus supervises its Sonnet children. bl
 doesn't micromanage subagents in Phase 1–3.
 
 - Subagents are defined in a generated `agents.json` in the run directory, passed as
-  `--agents <path>` (verified: a file path works, and unlike `.claude/agents/` it doesn't
+  `--agents` (a file path works only with `-p`; interactive `claude` needs the JSON inline,
+  so the pane adapter reads the file and passes its content. Unlike `.claude/agents/` it doesn't
   leave files in the worktree), with model `sonnet`, a
   focused prompt, and restricted tools. Roles to start with: a general `implementer`, a
   `test-writer`, and a read-only `explorer`.
@@ -876,18 +878,21 @@ Verify the risky integration assumptions before building on them.
 `block-party run --repo <path> --plan plan.md [--base main]` does the whole chain once,
 with no UI beyond the terminal, logs, and artifacts.
 
-- [ ] Git service: worktree + branch creation, SHA recording, setup command.
-- [ ] Terminal host adapter (herdr or tmux, per the spike) and Claude adapter with hooks
+- [x] Git service: worktree + branch creation, SHA recording, setup command.
+- [x] Terminal host adapter (herdr; tmux deferred) and Claude adapter with hooks
       and `report.json` completion; headless fallback.
-- [ ] Local CI runner from `.block-party.yaml`, with `checks init` and CI drift warnings.
-- [ ] Codex reviewer adapter with schema-validated findings; only runs on green local CI.
-- [ ] Reviewer eval: a few past PRs with known issues, to tune the prompt before trusting
-      "no findings".
-- [ ] One automatic fix round for P0/P1 findings, then local CI and re-review.
-- [ ] Push + draft PR at the end + head SHA confirmation + wait for GitHub CI.
-- [ ] All artifacts saved under `~/.block-party/runs/<runId>/`.
-- **Exit check:** I run it on a real plan for this repo and get a draft PR with Codex
-  findings and their resolutions, without copying text between tools.
+- [x] Local CI runner from `.block-party.yaml`, with `checks init` and CI drift warnings.
+- [x] Codex reviewer adapter with schema-validated findings; only runs on green local CI.
+- [x] Reviewer eval: a few past PRs with known issues, to tune the prompt before trusting
+      "no findings". [Results](spikes/reviewer-eval.md): 5/6 recall, 0 false positives on a
+      small sample; an empty list is not yet trusted as "clean".
+- [x] One automatic fix round for P0/P1 findings, then local CI and re-review.
+- [x] Push + draft PR at the end + head SHA confirmation + wait for GitHub CI.
+- [x] All artifacts saved under `~/.block-party/runs/<runId>/`.
+- [x] **Exit check:** I run it on a real plan for this repo and get a draft PR with Codex
+  findings and their resolutions, without copying text between tools. Passed 2026-11-19 with
+  [#15](https://github.com/arblocki/block-party/pull/15): Opus implementer, one P1 from Codex,
+  one fix round, a clean second review, draft PR with a matching head.
 
 ### Phase 2: Persistent runs and the app shell (1–2 weeks)
 
@@ -973,6 +978,17 @@ See 5.7. Built driver by driver, in the order I need them:
 
 Newest first. Each entry: date, decision, why, and what would make us revisit it.
 
+- **2026-11-09: Phase 1 build decisions.** (1) Run state is `run.json` + `run-events.jsonl`
+  on disk; SQLite tables wait for Phase 2. (2) herdr only; tmux deferred. (3) Interactive
+  `claude --agents` needs inline JSON (file paths work only with `-p`). (4) The reviewer's
+  dedicated `CODEX_HOME` (`~/.block-party/codex-home`) holds only a symlinked `auth.json`
+  plus what Codex writes itself (it installs `skills/.system` on first run, which is allowed);
+  user config, `AGENTS.md`, or user skills there are rejected. (5) Agents, local checks, setup
+  commands, and block-party's herdr server all run with `GITHUB_TOKEN`/`GH_TOKEN` removed;
+  checks run agent-written code and their logs go back to the agent. (6) If blocking findings
+  remain after the review-fix cap, the draft PR is still opened with an "Unresolved blocking
+  findings" section: with no inbox yet, the draft PR is the escalation surface. *Revisit (6)*
+  once the Phase 2 inbox exists.
 - **2026-11-06: Phase 0 results.** Reviewer uses `codex exec --output-schema`. Agents
   file lives in the run dir and is passed as `--agents <path>`; `report.json` lives in the
   run dir. Runs use a dedicated herdr named session (`block-party`) that block-party

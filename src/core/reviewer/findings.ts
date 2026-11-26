@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-/** Zod mirror of findings.schema.json (ARCHITECTURE 3.3 finding schema + wrapper). */
+/** Zod mirror of FINDINGS_JSON_SCHEMA (schema.ts) (ARCHITECTURE 3.3 finding schema + wrapper). */
 export const SeveritySchema = z.enum(['P0', 'P1', 'P2', 'P3']);
 export const CategorySchema = z.enum([
   'correctness',
@@ -10,6 +10,7 @@ export const CategorySchema = z.enum([
   'tests',
   'design',
   'style',
+  'e2e',
   'other',
 ]);
 
@@ -43,7 +44,7 @@ export type ReviewerOutput = z.infer<typeof ReviewerOutputSchema>;
 export type ParseResult =
   { ok: true; value: ReviewerOutput } | { ok: false; error: string; raw: string };
 
-/** Validate the final agent message text (option 2). The error string is fit for a retry prompt. */
+/** Validate the final agent message text (`codex exec --output-schema` path). The error string is fit for a retry prompt. */
 export function parseReviewerOutput(text: string, expectedSha?: string): ParseResult {
   const raw = text.trim();
   // The model is told "no fences", but tolerate one fenced block.
@@ -111,31 +112,4 @@ export function lastAgentMessage(events: StreamEvent[]): string | undefined {
     }
   }
   return last;
-}
-
-/**
- * Option 1 (`codex review`): the result is free prose. We can only wrap it, never turn it into
- * findings without an LLM or a brittle regex. This deliberately does NOT return an empty
- * findings list: callers must treat `unstructured` as "needs extraction", not "clean".
- */
-export interface UnstructuredReview {
-  unstructured: true;
-  text: string;
-  /** Best-effort pickup of "[P1] Title - path:10-12" style headings, if the model used them. */
-  heuristicFindings: { severity: string; title: string; path?: string; startLine?: number }[];
-}
-
-export function normalizeProseReview(text: string): UnstructuredReview {
-  const heuristicFindings: UnstructuredReview['heuristicFindings'] = [];
-  const re = /^[-*]?\s*\[(P[0-3])\]\s*(.+?)(?:\s+[-—–]\s+(\S+?):(\d+)(?:-\d+)?)?\s*$/gm;
-  for (const m of text.matchAll(re)) {
-    const [, severity, title, path, line] = m;
-    if (!severity || !title) continue;
-    heuristicFindings.push({
-      severity,
-      title,
-      ...(path && line ? { path, startLine: Number(line) } : {}),
-    });
-  }
-  return { unstructured: true, text: text.trim(), heuristicFindings };
 }
