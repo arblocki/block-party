@@ -90,6 +90,7 @@ interface Entry {
   done: Promise<unknown>;
 }
 
+const MAX_DESCRIPTION = 20_000;
 const DEFAULT_SHUTDOWN_MS = 10_000;
 
 export function createRunManager(opts: RunManagerOptions): RunManager {
@@ -140,6 +141,13 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       if ((req.planText === undefined) === (req.description === undefined)) {
         throw new InvalidStartError('Give either planText or description');
       }
+      const description = req.description?.trim();
+      if (
+        description !== undefined &&
+        (description === '' || description.length > MAX_DESCRIPTION)
+      ) {
+        throw new InvalidStartError(`The description must be 1-${MAX_DESCRIPTION} characters`);
+      }
       const parsed = req.planText !== undefined ? parsePlan(req.planText) : undefined;
       if (parsed && !parsed.ok) throw new PlanValidationError(parsed.errors);
       const project = runs.getProject(req.projectId);
@@ -184,7 +192,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
             }
             if (ac.signal.aborted) throw stoppedError();
             const source: RunSource =
-              planFile !== undefined ? { planFile } : { description: req.description! };
+              planFile !== undefined ? { planFile } : { description: description! };
             const outcome = await startPipeline({
               repo: project.localPath,
               ...source,

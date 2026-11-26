@@ -497,6 +497,24 @@ describe('createPaneClaude', () => {
     expect(session.paneLabel).toBe('bp-r1-impl-r2');
   });
 
+  it('names a planner pane apart from the implementer, also after a resume', async () => {
+    host.onOpen = () => {
+      emitEvent('SessionStart');
+      writeFileSync(input.reportPath, '{}');
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const { session } = await adapter().start({ ...input, role: 'plan' });
+    expect(session.paneLabel).toBe('bp-r1-plan');
+    host.aliveLabels.clear();
+    host.onOpen = () => {
+      emitEvent('SessionStart', { source: 'resume' });
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    await adapter().send(session, { ...input, role: 'plan' }, 'hello');
+    expect(host.opens.at(-1)!.label).toBe('bp-r1-plan-r2');
+    expect(session.paneLabel).toBe('bp-r1-plan-r2');
+  });
+
   it('rejects over-long messages', async () => {
     const { a, session } = await started();
     await expect(a.send(session, input, 'x'.repeat(2001))).rejects.toThrow(/too long/);

@@ -542,6 +542,7 @@ function plannerStart(ctx: Ctx, planPath: string): Omit<ImplementerStartInput, '
   const perms = plannerPermissions(planPath, ctx.reportPath);
   return {
     ...ctx.start,
+    role: 'plan',
     settingsPath: join(ctx.runDir, 'planner-settings.json'),
     agentsPath: join(ctx.runDir, 'planner-agents.json'),
     permissionMode: 'default',
@@ -642,6 +643,7 @@ async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
   // One planner turn: the first starts the session, later ones continue it.
   const turn = async (prompt: string, kind: string) => {
     let outcome: TurnOutcome;
+    const headBefore = await deps.git.headSha(ctx.st.worktreePath);
     if (ctx.plannerSession) {
       outcome = await turnEnded(
         ctx,
@@ -660,7 +662,12 @@ async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
       await ctx.pending;
       outcome = started.outcome;
     }
-    await judgeTurn(ctx, outcome, kind, n, '', { planner: true });
+    // A resume may have relaunched the pane under a new label.
+    const label = ctx.plannerSession.paneLabel ?? null;
+    if (ctx.st.planner && ctx.st.planner.paneLabel !== label) {
+      await patchState(ctx, { planner: { ...ctx.st.planner, paneLabel: label } });
+    }
+    await judgeTurn(ctx, outcome, kind, n, headBefore, { planner: true });
   };
 
   const plan = await inStage(
@@ -717,13 +724,20 @@ async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
  * implement, verify and publish steps follow.
  */
 async function approvePlanStep(ctx: Ctx): Promise<void> {
-  const n = await latestPlanVersion(ctx.runDir);
+  // The latest stored version (without a store, the latest file).
+  const row = ctx.rec.listPlans().at(-1);
+  const n = row?.version ?? (await latestPlanVersion(ctx.runDir));
   if (n === 0) throw new Error('This run has no plan to approve');
   const path = join(ctx.runDir, 'plans', `v${n}.md`);
   const read = await readPlanFile(path);
   if (!read.ok) throw new Error(`Invalid plan:\n- ${read.errors.join('\n- ')}`);
   const { plan } = read;
-  // The run leaves rest first, so a failure up to here reopens the approval.
+  if (row && row.contentHash !== plan.contentHash) {
+    throw new Error(`Plan version ${n} changed after it was stored (hash mismatch)`);
+  }
+  // Still resting here, so a failure up to the stage move reopens the approval.
+  if (!ctx.rec.approvePlan(n))
+    throw new Error(`Could not record the approval of plan version ${n}`);
   await setStage(ctx, 'implementing');
   await patchState(ctx, {
     planPath: path,
@@ -731,7 +745,6 @@ async function approvePlanStep(ctx: Ctx): Promise<void> {
     planVersion: n,
     title: plan.title,
   });
-  ctx.rec.approvePlan(n);
   ctx.rec.event('plan.approved', { version: n });
   ctx.plan = plan;
   ctx.planPath = path;
@@ -869,8 +882,17 @@ async function judgeTurn(
   if (!(await deps.git.isClean(wt))) {
     throw new Halt('blocked', `Worktree has uncommitted changes after ${kind}-${n}.${attach}`);
   }
-  if (planner) return report;
   const head = await deps.git.headSha(wt);
+  if (planner) {
+    // A planner never commits; a moved HEAD means it changed the branch.
+    if (head !== prevHead) {
+      throw new Halt(
+        'blocked',
+        `Planner moved HEAD (${prevHead.slice(0, 7)} to ${head.slice(0, 7)}) during ${kind}-${n}.${attach}`,
+      );
+    }
+    return report;
+  }
   const needCommit = extra.requireCommit ? extra.requireCommit(report) : true;
   if (needCommit) {
     const commits = head === prevHead ? [] : await deps.git.commitsBetween(wt, prevHead, head);

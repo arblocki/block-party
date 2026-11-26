@@ -162,17 +162,11 @@ export function implementerPermissions(
   return { allowedTools: [...new Set(allowedTools)], disallowedTools };
 }
 
-/** Implementer allowlist entries a planner does not get: they change files or run repo code. */
-const NOT_FOR_PLANNER = new Set([
-  'Bash(git add:*)',
-  'Bash(git commit:*)',
-  'Bash(pnpm install --frozen-lockfile)',
-  'Bash(node:*)',
-]);
-
 /**
- * Permission profile for the planner: it reads and explores, and writes only the plan file
- * and its report. The rules for those two files use Claude Code's absolute-path form, a
+ * Permission profile for the planner: it explores with Read, Glob and Grep, and writes only
+ * the plan file and its report. It gets no `Bash(...)` rules: a prefix rule matches any
+ * trailing arguments, and `find -exec`, `find -delete` or `git diff --output=<file>` write
+ * anywhere. Every shell command therefore asks a human. The rules for those two files use Claude Code's absolute-path form, a
  * leading `//`. Used with permission mode `default`, so anything else that would write asks a
  * human instead of being denied or silently allowed.
  */
@@ -187,7 +181,6 @@ export function plannerPermissions(
     'Read',
     'Glob',
     'Grep',
-    ...base.allowedTools.filter((t) => t.startsWith('Bash(') && !NOT_FOR_PLANNER.has(t)),
     ...writable.flatMap((p) => [`Write(${p})`, `Edit(${p})`]),
   ];
   return {

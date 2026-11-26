@@ -8,6 +8,7 @@ import type {
   FindingStatus,
   FindingTriage,
   PlanInput,
+  PlanRow,
   RunStore,
   StageKind,
   StageState,
@@ -166,9 +167,15 @@ export class RunRecorder {
     this.withRun('addPlanVersion', (s, runId) => s.addPlanVersion({ ...input, runId }));
   }
 
-  /** Approves a plan version and supersedes the others. */
-  approvePlan(version: number): void {
-    this.withRun('approvePlan', (s, runId) => s.approvePlan(runId, version));
+  /** Approves a plan version and supersedes the others; false when the store could not. */
+  approvePlan(version: number): boolean {
+    if (!this.store) return true;
+    return this.withRun('approvePlan', (s, runId) => s.approvePlan(runId, version)) === true;
+  }
+
+  /** The run's plan versions; empty without a store. */
+  listPlans(): PlanRow[] {
+    return this.withRun('listPlans', (s, runId) => s.listPlans(runId)) ?? [];
   }
 
   /** Stores a review round's findings as rows. */

@@ -7,6 +7,8 @@ export interface ImplementerSession {
 
 export interface ImplementerStartInput {
   runId: string;
+  /** Which agent this is: names its pane and saved output apart (default `impl`). */
+  role?: 'impl' | 'plan';
   cwd: string;
   runDir: string;
   prompt: string;

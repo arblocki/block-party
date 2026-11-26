@@ -115,6 +115,8 @@ interface Turn {
   dirty?: boolean;
   /** Planner turns: the plan text to write (default PLAN); null writes nothing. */
   plan?: string | null;
+  /** Planner turns: move HEAD, as a commit would. */
+  moveHead?: boolean;
 }
 
 interface Opts {
@@ -160,6 +162,7 @@ function harness(o: Opts) {
       prior: number;
       priorFindings: PriorFinding[];
       headSha: string;
+      planPath: string;
     }[],
     published: [] as PublishOptions[],
     checks: 0,
@@ -177,6 +180,7 @@ function harness(o: Opts) {
       mkdirSync(join(path, '..'), { recursive: true });
       writeFileSync(path, t.plan ?? PLAN);
     }
+    if (planner && t.moveHead) git.head = 'f'.repeat(40);
     if (t.commit !== false && !planner) git.head = String(++git.n).padStart(40, 'c');
     git.dirty = t.dirty ?? false;
     if (t.report === 'invalid') writeFileSync(input.reportPath, '{nope');
@@ -283,6 +287,7 @@ function harness(o: Opts) {
         prior: opts.priorFindings.length,
         priorFindings: opts.priorFindings,
         headSha: opts.headSha,
+        planPath: opts.planPath,
       });
       o.onReview?.(git);
       if (o.abortAt?.step === 'review') {
@@ -2161,6 +2166,70 @@ describe('planning', () => {
     expect(out.stage).toBe('blocked');
     expect(out.note).toContain('Worktree has uncommitted changes');
     expect(store.listPlans(out.runId)).toHaveLength(0);
+  });
+
+  it('blocks when the planner moves HEAD', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: DESCRIPTION, turns: [{ moveHead: true }] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('Planner moved HEAD');
+    expect(store.listPlans(out.runId)).toHaveLength(0);
+  });
+
+  it('gives the reviewer the approved v2 plan', async () => {
+    const h = harness({ description: DESCRIPTION, turns: [{}, { plan: PLAN_V2 }, {}] });
+    const out = await h.run();
+    await continueRun(out.runId, { kind: 'plan_revise', note: 'smaller' }, h.deps);
+    await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(h.calls.reviews[0]!.planPath).toBe(join(out.runDir, 'plans', 'v2.md'));
+  });
+
+  it('blocks approval when the plan file no longer matches its stored hash', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+    const out = await h.run();
+    answerPlan(store, out.runId, 'approve', null);
+    writeFileSync(join(out.runDir, 'plans', 'v1.md'), PLAN_V2);
+    const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(next.stage).toBe('awaiting_plan_approval');
+    expect(store.listPlans(out.runId)[0]!.status).toBe('draft');
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open[0]!.body).toContain('hash mismatch');
+    expect(h.calls.starts).toHaveLength(1);
+  });
+
+  it('keeps the run resting when the store cannot record the approval', async () => {
+    const real = openStore(':memory:').runs;
+    const store: RunStore = new Proxy(real, {
+      get(t, prop, recv) {
+        if (prop === 'approvePlan') return () => false;
+        return Reflect.get(t, prop, recv) as unknown;
+      },
+    });
+    const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+    const out = await h.run();
+    answerPlan(real, out.runId, 'approve', null);
+    const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(next.stage).toBe('awaiting_plan_approval');
+    expect(real.getRun(out.runId)!.stage).toBe('awaiting_plan_approval');
+    expect(h.calls.starts).toHaveLength(1);
+  });
+
+  it('stores the pane label a resumed planner is relaunched under', async () => {
+    const h = harness({ description: DESCRIPTION, turns: [{}, { plan: PLAN_V2 }] });
+    const out = await h.run();
+    const send = h.deps.adapter.send.bind(h.deps.adapter);
+    h.deps.adapter.send = async (s, input, message) => {
+      s.paneLabel = `bp-${out.runId}-plan-r2`;
+      return send(s, input, message);
+    };
+    await continueRun(out.runId, { kind: 'plan_revise', note: 'x' }, h.deps);
+    const run = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as {
+      planner: { paneLabel: string };
+    };
+    expect(run.planner.paneLabel).toBe(`bp-${out.runId}-plan-r2`);
+    expect(h.calls.sendInputs[0]!.role).toBe('plan');
   });
 
   it('blocks with the questions when the planner reports blocked', async () => {

@@ -50,6 +50,7 @@ interface SessionState {
   runDir: string;
   eventsPath: string;
   resumes: number;
+  role: 'impl' | 'plan';
   /** False when `pane` is a placeholder (session recovered by a fresh adapter, pane not found). */
   known?: boolean;
 }
@@ -352,7 +353,10 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       const text = await host.read(st.pane, 200);
       const dir = path.join(st.runDir, 'agent');
       await mkdir(dir, { recursive: true });
-      await writeFile(path.join(dir, 'pane-final.txt'), text);
+      await writeFile(
+        path.join(dir, st.role === 'plan' ? 'pane-final-plan.txt' : 'pane-final.txt'),
+        text,
+      );
     } catch {
       // pane already gone or unreadable; nothing to save
     }
@@ -361,13 +365,15 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
   return {
     async start(input) {
       const sessionId = uuid();
-      const label = `bp-${input.runId}-impl`;
+      const role = input.role ?? 'impl';
+      const label = `bp-${input.runId}-${role}`;
       const st: SessionState = {
         pane: { session: '', label, cwd: input.cwd },
         runId: input.runId,
         runDir: input.runDir,
         eventsPath: input.eventsPath,
         resumes: 1,
+        role,
         known: true,
       };
       const session: ImplementerSession = {
@@ -407,7 +413,8 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       if (input.signal?.aborted) return aborted;
       let st = sessions.get(session.sessionId);
       if (!st) {
-        const label = session.paneLabel ?? `bp-${input.runId}-impl`;
+        const role = input.role ?? 'impl';
+        const label = session.paneLabel ?? `bp-${input.runId}-${role}`;
         const m = /-r(\d+)$/.exec(label);
         const found = await findPane(label, session.cwd);
         st = {
@@ -416,6 +423,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           runDir: input.runDir,
           eventsPath: input.eventsPath,
           resumes: m ? Number(m[1]) : 1,
+          role,
           known: found !== undefined,
         };
         sessions.set(session.sessionId, st);
@@ -429,7 +437,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       if (dead) {
         st.resumes += 1;
         st.known = true;
-        const label = `bp-${st.runId}-impl-r${st.resumes}`;
+        const label = `bp-${st.runId}-${st.role}-r${st.resumes}`;
         const { outcome } = await launch(
           st,
           input,

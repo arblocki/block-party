@@ -424,6 +424,11 @@ describe('RunManager.start from a description', () => {
       m.start({ projectId, baseRef: 'main', planText: PLAN, description: 'x' }),
     ).rejects.toBeInstanceOf(InvalidStartError);
     await expect(m.start({ projectId, baseRef: 'main' })).rejects.toBeInstanceOf(InvalidStartError);
+    for (const description of ['   ', 'x'.repeat(20_001)]) {
+      await expect(m.start({ projectId, baseRef: 'main', description })).rejects.toBeInstanceOf(
+        InvalidStartError,
+      );
+    }
     expect(fake.inputs).toHaveLength(0);
     await m.shutdown();
   });

@@ -122,20 +122,9 @@ describe('plannerPermissions', () => {
     expect(p.allowedTools).not.toContain('Edit');
   });
 
-  it('allows reading and the read-only commands, but not committing or running code', () => {
-    for (const t of [
-      'Read',
-      'Glob',
-      'Grep',
-      'Bash(git status:*)',
-      'Bash(git diff:*)',
-      'Bash(ls:*)',
-    ]) {
-      expect(p.allowedTools).toContain(t);
-    }
-    for (const t of ['Bash(git add:*)', 'Bash(git commit:*)', 'Bash(node:*)']) {
-      expect(p.allowedTools).not.toContain(t);
-    }
+  it('allows reading, and no shell command at all', () => {
+    for (const t of ['Read', 'Glob', 'Grep']) expect(p.allowedTools).toContain(t);
+    expect(p.allowedTools.filter((t) => t.startsWith('Bash('))).toEqual([]);
   });
 
   it('disallows everything the implementer is denied, plus commits', () => {
