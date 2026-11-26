@@ -90,6 +90,13 @@ const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : S
 
 const projectSchema = z.strictObject({ path: z.string().trim().min(1) });
 
+const MAX_NOTE_CHARS = 4000;
+
+const answerSchema = z.strictObject({
+  choice: z.string().min(1),
+  note: z.string().max(MAX_NOTE_CHARS).nullish(),
+});
+
 const validatePlanSchema = z.strictObject({ text: z.string() });
 
 const startRunSchema = z.strictObject({
@@ -358,7 +365,26 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   app.post('/api/inbox/:id/dismiss', (c) => {
     const id = intParam(c.req.param('id'));
     if (id === null || id === undefined || id === 0) return badRequest(c, 'invalid decision id');
+    // An unanswered question would strand the run that waits on it.
+    if (runs.getDecision(id)?.options?.length) {
+      return c.json({ error: 'this decision has options: answer it instead' }, 409);
+    }
     return c.json({ changed: runs.dismissDecision(id) });
+  });
+
+  app.post('/api/inbox/:id/answer', async (c) => {
+    const id = intParam(c.req.param('id'));
+    if (id === null || id === undefined || id === 0) return badRequest(c, 'invalid decision id');
+    if (!runs.getDecision(id)) return c.json({ error: 'decision not found' }, 404);
+    const body = await parseBody(c, answerSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    const result = runs.answerDecision(id, {
+      choice: body.data.choice,
+      note: body.data.note?.trim() || null,
+    });
+    if (result === 'not_open') return c.json({ error: 'decision is not open' }, 409);
+    if (result === 'bad_choice') return badRequest(c, 'choice is not one of the options');
+    return c.json({ decision: runs.getDecision(id) });
   });
 
   app.get('/api/projects', (c) => c.json({ projects: runs.listProjects() }));

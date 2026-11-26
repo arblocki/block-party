@@ -291,7 +291,9 @@ export function RunView({ id }: { id: string }) {
   }
 
   const project = runProject(run);
-  const open = detail.decisions.filter((d) => d.status === 'open');
+  const open = detail.decisions.filter(
+    (d) => d.status === 'open' || (d.status === 'answered' && d.options !== null),
+  );
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6">
@@ -341,7 +343,13 @@ export function RunView({ id }: { id: string }) {
           </h2>
           <ul className={listClass}>
             {open.map((d) => (
-              <DecisionItem key={d.id} d={d} hideRunLink onDismiss={() => dismiss(d.id)} />
+              <DecisionItem
+                key={d.id}
+                d={d}
+                hideRunLink
+                onDismiss={() => dismiss(d.id)}
+                onAnswered={() => refetchRef.current()}
+              />
             ))}
           </ul>
         </section>

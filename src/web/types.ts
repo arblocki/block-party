@@ -155,7 +155,13 @@ export type InboxDecision = Decision & {
 export type RunDecision = Decision;
 
 /** One stage execution of a run (GET /api/runs/:id `stages`). */
-export type { StageKind, StageState, StageRow } from '../core/store/runs';
+export type {
+  StageKind,
+  StageState,
+  StageRow,
+  DecisionOption,
+  DecisionAnswer,
+} from '../core/store/runs';
 
 /** The run row plus its summary fields (GET /api/runs/:id `run`). */
 export interface RunDetail extends RunSummary {

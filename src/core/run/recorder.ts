@@ -1,7 +1,15 @@
 import { hostname } from 'node:os';
-import type { DecisionKind, RunStore, StageKind, StageState } from '../store/runs.js';
+import type {
+  DecisionAnswer,
+  DecisionKind,
+  DecisionOption,
+  RunStore,
+  StageKind,
+  StageState,
+} from '../store/runs.js';
 import type { RunLog } from './events.js';
 import type { RunState } from './run-state.js';
+import { waitForAnswer } from './wait.js';
 
 export interface RecorderOptions {
   /** Process recorded as the run's owner (default: this process). */
@@ -99,8 +107,24 @@ export class RunRecorder {
     if (id !== null) this.withRun('endStage', (s) => s.endStage(id, { state, output }));
   }
 
-  openDecision(kind: DecisionKind, title: string, body: string, attach: string | null): void {
-    this.openDecisionId(kind, title, body, attach);
+  /** Opens a decision; returns its id, or null when the database is unavailable. */
+  openDecision(
+    kind: DecisionKind,
+    title: string,
+    body: string,
+    attach: string | null,
+    options?: DecisionOption[],
+  ): number | null {
+    return this.openDecisionId(kind, title, body, attach, options) ?? null;
+  }
+
+  /** Waits for decision `id` to be answered and records `decision.answered`. */
+  async awaitDecision(id: number, signal?: AbortSignal): Promise<DecisionAnswer> {
+    const store = this.store;
+    if (!store) throw new Error('Cannot await a decision without a store');
+    const answer = await waitForAnswer(store, id, { signal });
+    this.event('decision.answered', { id, choice: answer.choice });
+    return answer;
   }
 
   /**
@@ -125,9 +149,10 @@ export class RunRecorder {
     title: string,
     body: string,
     attach: string | null,
+    options?: DecisionOption[],
   ): number | undefined {
     return this.withRun('openDecision', (s, runId) =>
-      s.openDecision({ runId, kind, title, body, attach }),
+      s.openDecision({ runId, kind, title, body, attach, options }),
     );
   }
 

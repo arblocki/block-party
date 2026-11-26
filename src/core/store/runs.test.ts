@@ -178,6 +178,30 @@ describe('run store', () => {
       expect(runs.listRuns({ active: true }).map((r) => r.id)).toEqual(['a', 'c']);
     });
 
+    it('lists resting runs apart from active ones', () => {
+      for (const [id, stage] of [
+        ['a', 'awaiting_decision'],
+        ['b', 'awaiting_plan_approval'],
+        ['c', 'awaiting_review'],
+        ['d', 'planning'],
+        ['e', 'complete'],
+      ] as const) {
+        runs.createRun(runInput(projectId, { id, stage }));
+      }
+      expect(
+        runs
+          .listRuns({ active: true })
+          .map((r) => r.id)
+          .sort(),
+      ).toEqual(['a', 'd']);
+      expect(
+        runs
+          .listRuns({ resting: true })
+          .map((r) => r.id)
+          .sort(),
+      ).toEqual(['b', 'c']);
+    });
+
     it('rejects a run for an unknown project', () => {
       expect(() => runs.createRun(runInput('nope'))).toThrow();
     });
@@ -250,6 +274,53 @@ describe('run store', () => {
   });
 
   describe('decisions', () => {
+    const options = [
+      { id: 'yes', label: 'Yes' },
+      { id: 'no', label: 'No' },
+    ];
+
+    it('stores options and answers an open decision once', () => {
+      runs.createRun(runInput(projectId, { id: 'a' }));
+      const id = runs.openDecision({
+        runId: 'a',
+        kind: 'plan_approval',
+        title: 'Approve?',
+        body: 'b',
+        options,
+      });
+      expect(runs.getDecision(id)).toMatchObject({ options, answer: null, answeredAt: null });
+
+      expect(runs.answerDecision(id, { choice: 'maybe', note: null })).toBe('bad_choice');
+      expect(runs.getDecision(id)?.status).toBe('open');
+
+      expect(runs.answerDecision(id, { choice: 'yes', note: 'go' })).toBe('answered');
+      expect(runs.getDecision(id)).toMatchObject({
+        status: 'answered',
+        answer: { choice: 'yes', note: 'go' },
+        answeredAt: expect.any(String),
+      });
+      expect(runs.answerDecision(id, { choice: 'no', note: null })).toBe('not_open');
+      expect(runs.getDecision(id)?.answer?.choice).toBe('yes');
+      expect(runs.openDecisionCount()).toBe(0);
+
+      // An answered decision can still be resolved, but not dismissed.
+      expect(runs.dismissDecision(id)).toBe(false);
+      expect(runs.resolveDecision(id)).toBe(true);
+      expect(runs.getDecision(id)?.status).toBe('resolved');
+    });
+
+    it('does not answer unknown, dismissed or option-less decisions', () => {
+      runs.createRun(runInput(projectId, { id: 'a' }));
+      const plain = runs.openDecision({ runId: 'a', kind: 'blocked', title: 'Q', body: 'b' });
+      expect(runs.getDecision(plain)?.options).toBeNull();
+      expect(runs.answerDecision(plain, { choice: 'x', note: null })).toBe('bad_choice');
+      const d = runs.openDecision({ runId: 'a', kind: 'dispute', title: 'Q', body: 'b', options });
+      runs.dismissDecision(d);
+      expect(runs.answerDecision(d, { choice: 'yes', note: null })).toBe('not_open');
+      expect(runs.answerDecision(999, { choice: 'yes', note: null })).toBe('not_open');
+      expect(runs.getDecision(999)).toBeUndefined();
+    });
+
     it('resolves and dismisses only open decisions', () => {
       runs.createRun(runInput(projectId, { id: 'a' }));
       runs.createRun(runInput(projectId, { id: 'b' }));
@@ -324,6 +395,59 @@ describe('run store on a file', () => {
     const s2 = openStore(file);
     expect(s2.runs.getRun('r1')?.projectId).toBe(p.id);
     s2.close();
+  });
+
+  it('keeps old decision rows when the answerable-decisions migration runs', () => {
+    const file = join(dir, 'db.sqlite');
+    // The schema before the decisions rebuild: every migration but the last.
+    const before = MIGRATIONS.length - 1;
+    const old = new Database(file);
+    for (const m of MIGRATIONS.slice(0, before)) old.exec(m);
+    old.pragma(`user_version = ${before}`);
+    old
+      .prepare(
+        `INSERT INTO projects (id, owner, repo, local_path, default_base, created_at, updated_at)
+         VALUES ('p', 'o', 'r', '/x', 'main', 't', 't')`,
+      )
+      .run();
+    const run = runInput('p');
+    old
+      .prepare(
+        `INSERT INTO runs (id, project_id, title, stage, branch, worktree_path, run_dir, base_ref,
+           base_sha, plan_path, plan_hash, rounds_json, created_at, updated_at)
+         VALUES (?, 'p', 'T', 'implementing', 'b', '/wt', '/rd', 'main', 'sha', '/p', 'h', '{}', 't', 't')`,
+      )
+      .run(run.id);
+    const ins = old.prepare(
+      `INSERT INTO decisions (run_id, kind, status, title, body, attach, created_at, resolved_at)
+       VALUES (?, ?, ?, ?, 'body', 'pane', '2026-01-01T00:00:00Z', ?)`,
+    );
+    ins.run(run.id, 'blocked', 'open', 'Q1', null);
+    ins.run(run.id, 'failed', 'dismissed', 'Q2', '2026-01-02T00:00:00Z');
+    old.close();
+
+    const s = openStore(file);
+    try {
+      const all = s.runs.listDecisions();
+      expect(all.map((d) => [d.title, d.status, d.kind, d.attach, d.resolvedAt])).toEqual([
+        ['Q2', 'dismissed', 'failed', 'pane', '2026-01-02T00:00:00Z'],
+        ['Q1', 'open', 'blocked', 'pane', null],
+      ]);
+      for (const d of all)
+        expect(d).toMatchObject({ options: null, answer: null, answeredAt: null });
+      // The rebuilt table accepts the new status and new rows keep numbering on.
+      const id = s.runs.openDecision({
+        runId: run.id,
+        kind: 'final_review',
+        title: 'Q3',
+        body: 'b',
+        options: [{ id: 'ok', label: 'OK' }],
+      });
+      expect(id).toBeGreaterThan(Math.max(...all.map((d) => d.id)));
+      expect(s.runs.answerDecision(id, { choice: 'ok', note: null })).toBe('answered');
+    } finally {
+      s.close();
+    }
   });
 
   it("lets two handles on the same file see each other's run writes", () => {

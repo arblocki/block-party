@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { ACTIVE_STAGES, type RunStage } from '../run/machine.js';
+import { ACTIVE_STAGES, RESTING_STAGES, type RunStage } from '../run/machine.js';
 import type { RunState } from '../run/run-state.js';
 
 /** A local checkout block-party runs against. Keyed by `localPath`. */
@@ -73,8 +73,33 @@ export interface RunEventRow {
   payload: unknown;
 }
 
-export type DecisionKind = 'blocked' | 'permission' | 'interrupted' | 'cap_reached' | 'failed';
-export type DecisionStatus = 'open' | 'resolved' | 'dismissed';
+export type DecisionKind =
+  | 'blocked'
+  | 'permission'
+  | 'interrupted'
+  | 'cap_reached'
+  | 'failed'
+  | 'plan_approval'
+  | 'finding_triage'
+  | 'dispute'
+  | 'broad_fix'
+  | 'final_review'
+  | 'ci_gap';
+export type DecisionStatus = 'open' | 'answered' | 'resolved' | 'dismissed';
+
+/** One choice a decision offers. */
+export interface DecisionOption {
+  id: string;
+  label: string;
+}
+
+/** The person's answer: one of the option ids, and an optional note. */
+export interface DecisionAnswer {
+  choice: string;
+  note: string | null;
+}
+
+export type AnswerResult = 'answered' | 'not_open' | 'bad_choice';
 
 /** An inbox item: something a run needs a human for. */
 export interface Decision {
@@ -88,6 +113,10 @@ export interface Decision {
   createdAt: string;
   /** When it left `open` (resolved or dismissed). */
   resolvedAt: string | null;
+  /** The fixed choices, or null for an item that can only be dismissed. */
+  options: DecisionOption[] | null;
+  answer: DecisionAnswer | null;
+  answeredAt: string | null;
 }
 
 export interface RunStore {
@@ -105,8 +134,11 @@ export interface RunStore {
   /** Changes only the given columns and bumps `updatedAt`; undefined if the run doesn't exist. */
   updateRun(id: string, patch: RunPatch): RunRow | undefined;
   getRun(id: string): RunRow | undefined;
-  /** Newest first by `updatedAt`. `active` keeps only runs in an active stage. */
-  listRuns(opts?: { limit?: number; active?: boolean }): RunRow[];
+  /**
+   * Newest first by `updatedAt`. `active` keeps only runs in an active stage, `resting` only
+   * runs waiting at rest for a person.
+   */
+  listRuns(opts?: { limit?: number; active?: boolean; resting?: boolean }): RunRow[];
 
   /** Records a stage execution as `running`; returns its id. */
   startStage(input: { runId: string; kind: StageKind; round: number; input?: unknown }): number;
@@ -136,8 +168,15 @@ export interface RunStore {
     title: string;
     body: string;
     attach?: string | null;
+    options?: DecisionOption[] | null;
   }): number;
-  /** Marks an open decision resolved; returns whether a row changed. */
+  getDecision(id: number): Decision | undefined;
+  /**
+   * Records the answer to an open decision whose options include `answer.choice`, atomically:
+   * a second answer gets `not_open`.
+   */
+  answerDecision(id: number, answer: DecisionAnswer): AnswerResult;
+  /** Marks an open (or answered) decision resolved; returns whether a row changed. */
   resolveDecision(id: number): boolean;
   /** Marks an open decision dismissed; returns whether a row changed. */
   dismissDecision(id: number): boolean;
@@ -210,6 +249,9 @@ interface DecisionDb {
   attach: string | null;
   created_at: string;
   resolved_at: string | null;
+  options_json: string | null;
+  answer_json: string | null;
+  answered_at: string | null;
 }
 
 /** RunRow field → column. Drives inserts and patches; the only SQL built from field names. */
@@ -322,6 +364,9 @@ function toDecision(r: DecisionDb): Decision {
     attach: r.attach,
     createdAt: r.created_at,
     resolvedAt: r.resolved_at,
+    options: fromJson(r.options_json) as DecisionOption[] | null,
+    answer: fromJson(r.answer_json) as DecisionAnswer | null,
+    answeredAt: r.answered_at,
   };
 }
 
@@ -362,6 +407,11 @@ export function createRunStore(db: Database.Database): RunStore {
   );
   const runById = db.prepare<[string], RunDb>('SELECT * FROM runs WHERE id = ?');
   const activeList = ACTIVE_STAGES.map((s) => `'${s}'`).join(', ');
+  const restingList = RESTING_STAGES.map((s) => `'${s}'`).join(', ');
+  const listRunsResting = db.prepare<[number], RunDb>(
+    `SELECT * FROM runs WHERE stage IN (${restingList})
+     ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
+  );
   const listRunsAll = db.prepare<[number], RunDb>(
     'SELECT * FROM runs ORDER BY updated_at DESC, rowid DESC LIMIT ?',
   );
@@ -388,10 +438,17 @@ export function createRunStore(db: Database.Database): RunStore {
   const maxEventId = db.prepare<[], { id: number | null }>('SELECT max(id) AS id FROM run_events');
 
   const insertDecision = db.prepare(`
-    INSERT INTO decisions (run_id, kind, status, title, body, attach, created_at)
-    VALUES (?, ?, 'open', ?, ?, ?, ?)`);
+    INSERT INTO decisions (run_id, kind, status, title, body, attach, created_at, options_json)
+    VALUES (?, ?, 'open', ?, ?, ?, ?, ?)`);
   const closeDecision = db.prepare(`
     UPDATE decisions SET status = ?, resolved_at = ? WHERE id = ? AND status = 'open'`);
+  const resolveStmt = db.prepare(`
+    UPDATE decisions SET status = 'resolved', resolved_at = ?
+    WHERE id = ? AND status IN ('open', 'answered')`);
+  const decisionById = db.prepare<[number], DecisionDb>('SELECT * FROM decisions WHERE id = ?');
+  const answerStmt = db.prepare(`
+    UPDATE decisions SET status = 'answered', answer_json = ?, answered_at = ?
+    WHERE id = ? AND status = 'open'`);
   const listDecisionsStmt = db.prepare<
     { status: string | null; runId: string | null },
     DecisionDb
@@ -474,7 +531,7 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     getRun,
     listRuns(opts = {}) {
-      const stmt = opts.active ? listRunsActive : listRunsAll;
+      const stmt = opts.active ? listRunsActive : opts.resting ? listRunsResting : listRunsAll;
       return stmt.all(limitOf(opts.limit)).map(toRun);
     },
 
@@ -500,13 +557,32 @@ export function createRunStore(db: Database.Database): RunStore {
       return maxEventId.get()?.id ?? 0;
     },
 
-    openDecision({ runId, kind, title, body, attach }) {
+    openDecision({ runId, kind, title, body, attach, options }) {
       return Number(
-        insertDecision.run(runId, kind, title, body, attach ?? null, now()).lastInsertRowid,
+        insertDecision.run(runId, kind, title, body, attach ?? null, now(), toJson(options))
+          .lastInsertRowid,
       );
     },
+    getDecision(id) {
+      const row = decisionById.get(id);
+      return row ? toDecision(row) : undefined;
+    },
+    answerDecision(id, answer) {
+      return db
+        .transaction((): AnswerResult => {
+          const row = decisionById.get(id);
+          if (!row || row.status !== 'open') return 'not_open';
+          const options = fromJson(row.options_json) as DecisionOption[] | null;
+          if (!options?.some((o) => o.id === answer.choice)) return 'bad_choice';
+          const stored: DecisionAnswer = { choice: answer.choice, note: answer.note ?? null };
+          return answerStmt.run(JSON.stringify(stored), now(), id).changes > 0
+            ? 'answered'
+            : 'not_open';
+        })
+        .immediate();
+    },
     resolveDecision(id) {
-      return closeDecision.run('resolved', now(), id).changes > 0;
+      return resolveStmt.run(now(), id).changes > 0;
     },
     dismissDecision(id) {
       return closeDecision.run('dismissed', now(), id).changes > 0;

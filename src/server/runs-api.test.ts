@@ -203,6 +203,7 @@ const ENDPOINTS: [string, string][] = [
   ['GET', '/api/stream'],
   ['GET', '/api/inbox'],
   ['POST', '/api/inbox/1/dismiss'],
+  ['POST', '/api/inbox/1/answer'],
   ['GET', '/api/projects'],
   ['POST', '/api/projects'],
   ['POST', '/api/plans/validate'],
@@ -361,6 +362,107 @@ describe('JSON endpoints', () => {
       [d1, 'dismissed'],
     ]);
     expect((await req('/api/inbox?status=weird')).status).toBe(400);
+  });
+
+  describe('answering decisions', () => {
+    const options = [
+      { id: 'yes', label: 'Yes' },
+      { id: 'no', label: 'No' },
+    ];
+    const answer = (id: number | string, body: unknown) =>
+      req(`/api/inbox/${id}/answer`, { method: 'POST', body: JSON.stringify(body) });
+    const open = () => {
+      runs.createRun(runInput(projectId));
+      return runs.openDecision({
+        runId: RUN_A,
+        kind: 'plan_approval',
+        title: 'Approve?',
+        body: 'b',
+        options,
+      });
+    };
+
+    it('answers an open decision and shows options and answer in the inbox', async () => {
+      const id = open();
+      const listed = (await json('/api/inbox')).decisions as unknown[];
+      expect(listed).toEqual([expect.objectContaining({ id, options, answer: null })]);
+
+      const res = await answer(id, { choice: 'yes', note: '  ship it ' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        decision: expect.objectContaining({
+          id,
+          status: 'answered',
+          answer: { choice: 'yes', note: 'ship it' },
+          answeredAt: expect.any(String),
+        }),
+      });
+      const all = (await json('/api/inbox?status=all')).decisions as unknown[];
+      expect(all).toEqual([
+        expect.objectContaining({ id, answer: { choice: 'yes', note: 'ship it' } }),
+      ]);
+      expect((await json(`/api/runs/${RUN_A}`)).decisions).toEqual([
+        expect.objectContaining({ id, status: 'answered', options }),
+      ]);
+    });
+
+    it('answers without a note', async () => {
+      const id = open();
+      const res = await answer(id, { choice: 'no' });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { decision: { answer: unknown } }).decision.answer).toEqual({
+        choice: 'no',
+        note: null,
+      });
+    });
+
+    it('answers 404 for an unknown id, 409 when not open, 400 for bad input', async () => {
+      const id = open();
+      expect((await answer(999, { choice: 'yes' })).status).toBe(404);
+      expect((await answer('abc', { choice: 'yes' })).status).toBe(400);
+      expect((await answer(id, { choice: 'maybe' })).status).toBe(400);
+      expect((await answer(id, { choice: 'yes', note: 'x'.repeat(4001) })).status).toBe(400);
+      expect((await answer(id, { note: 'x' })).status).toBe(400);
+      expect((await answer(id, 'nope')).status).toBe(400);
+      expect(runs.getDecision(id)?.status).toBe('open');
+
+      expect((await answer(id, { choice: 'yes', note: 'x'.repeat(4000) })).status).toBe(200);
+      expect((await answer(id, { choice: 'no' })).status).toBe(409);
+      expect(runs.getDecision(id)?.answer?.choice).toBe('yes');
+    });
+
+    it('refuses to dismiss a decision that has options', async () => {
+      const id = open();
+      const res = await req(`/api/inbox/${id}/dismiss`, { method: 'POST' });
+      expect(res.status).toBe(409);
+      expect(runs.getDecision(id)?.status).toBe('open');
+    });
+
+    it('carries options and answer in the stream inbox frame', async () => {
+      const id = open();
+      runs.answerDecision(id, { choice: 'yes', note: null });
+      const id2 = runs.openDecision({
+        runId: RUN_A,
+        kind: 'dispute',
+        title: 'Q',
+        body: 'b',
+        options,
+      });
+      const res = await req('/api/stream');
+      const reader = res.body!.getReader();
+      const dec = new TextDecoder();
+      let text = '';
+      while (!text.includes('event: inbox')) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        text += dec.decode(value);
+      }
+      await reader.cancel();
+      const data = text.split('event: inbox\ndata: ')[1]!.split('\n')[0]!;
+      expect(JSON.parse(data).decisions).toEqual([
+        expect.objectContaining({ id: id2, options, answer: null }),
+      ]);
+    });
   });
 
   it('lists projects', async () => {

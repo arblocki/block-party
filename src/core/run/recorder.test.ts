@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { openStore } from '../store/index.js';
 import type { RunStore } from '../store/runs.js';
 import { RunLog } from './events.js';
@@ -63,6 +63,47 @@ describe('RunRecorder', () => {
     rec.endStage('succeeded');
     rec.openDecision('blocked', 't', 'b', null);
     expect(fileEvents().map((e) => e.type)).toEqual(['hello']);
+  });
+
+  it('opens a decision with options and awaits its answer', async () => {
+    const store = openStore(':memory:').runs;
+    const { rec, fileEvents } = setup(store);
+    rec.state(runState());
+    const id = rec.openDecision('dispute', 'Q', 'b', null, [
+      { id: 'a', label: 'A' },
+      { id: 'b', label: 'B' },
+    ]);
+    expect(id).toEqual(expect.any(Number));
+    expect(store.getDecision(id as number)?.options).toEqual([
+      { id: 'a', label: 'A' },
+      { id: 'b', label: 'B' },
+    ]);
+
+    vi.useFakeTimers();
+    try {
+      const waiting = rec.awaitDecision(id as number, new AbortController().signal);
+      await vi.advanceTimersByTimeAsync(1500);
+      store.answerDecision(id as number, { choice: 'b', note: null });
+      await vi.advanceTimersByTimeAsync(1000);
+      await expect(waiting).resolves.toEqual({ choice: 'b', note: null });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(fileEvents().at(-1)).toMatchObject({
+      type: 'decision.answered',
+      data: { id, choice: 'b' },
+    });
+    expect(store.listEvents('r1').at(-1)).toMatchObject({
+      type: 'decision.answered',
+      payload: { id, choice: 'b' },
+    });
+  });
+
+  it('returns null from openDecision when the database fails, and without a store', () => {
+    const { rec } = setup();
+    expect(rec.openDecision('blocked', 't', 'b', null)).toBeNull();
+    const broken = setup(brokenStore());
+    expect(broken.rec.openDecision('blocked', 't', 'b', null)).toBeNull();
   });
 
   it('creates the project and run row, then updates it', () => {

@@ -115,6 +115,24 @@ describe('reconcileRuns', () => {
     for (const r of before) expect(store.runs.listEvents(r.id)).toEqual([]);
   });
 
+  it('leaves resting runs alone even when their owner is gone', () => {
+    addRun('r20260101-aaaaaa', { stage: 'awaiting_plan_approval' });
+    addRun('r20260101-bbbbbb', { stage: 'awaiting_review' });
+    const before = store.runs.listRuns();
+    expect(reconcile()).toEqual([]);
+    expect(store.runs.listRuns()).toEqual(before);
+    expect(store.runs.listDecisions()).toEqual([]);
+  });
+
+  it('marks a dead-owner awaiting_decision run interrupted', () => {
+    addRun('r20260101-aaaaaa', { stage: 'awaiting_decision', stageNote: null });
+    expect(reconcile()).toEqual(['r20260101-aaaaaa']);
+    expect(store.runs.getRun('r20260101-aaaaaa')?.stage).toBe('interrupted');
+    expect(store.runs.listEvents('r20260101-aaaaaa')[0]).toMatchObject({
+      payload: { stage: 'awaiting_decision' },
+    });
+  });
+
   it('changes a run only once', () => {
     addRun('r20260101-aaaaaa');
     expect(reconcile()).toHaveLength(1);

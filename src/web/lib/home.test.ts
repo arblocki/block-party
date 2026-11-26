@@ -27,6 +27,10 @@ describe('stageTone', () => {
     fixing: 'active',
     publishing: 'active',
     waiting_ci: 'active',
+    planning: 'active',
+    awaiting_decision: 'active',
+    awaiting_plan_approval: 'waiting',
+    awaiting_review: 'waiting',
     complete: 'done',
     blocked: 'attention',
     failed: 'attention',
@@ -53,6 +57,16 @@ describe('orderRuns', () => {
       run('act-new', 'waiting_ci', '2026-01-04T00:00:00Z'),
     ]);
     expect(out.map((r) => r.id)).toEqual(['act-new', 'act-old', 'done-new', 'done-old']);
+  });
+
+  it('puts resting runs right after active ones', () => {
+    const out = orderRuns([
+      run('done', 'complete', '2026-01-09T00:00:00Z'),
+      run('rest-old', 'awaiting_review', '2026-01-02T00:00:00Z'),
+      run('act', 'awaiting_decision', '2026-01-01T00:00:00Z'),
+      run('rest-new', 'awaiting_plan_approval', '2026-01-03T00:00:00Z'),
+    ]);
+    expect(out.map((r) => r.id)).toEqual(['act', 'rest-new', 'rest-old', 'done']);
   });
 
   it('caps the non-active runs but never the active ones', () => {
@@ -86,6 +100,12 @@ describe('decisionLabel', () => {
     ['interrupted', 'Interrupted'],
     ['cap_reached', 'Cap reached'],
     ['failed', 'Failed'],
+    ['plan_approval', 'Plan approval'],
+    ['finding_triage', 'Finding triage'],
+    ['dispute', 'Dispute'],
+    ['broad_fix', 'Broad fix'],
+    ['final_review', 'Final review'],
+    ['ci_gap', 'CI gap'],
   ])('%s -> %s', (kind, label) => {
     expect(decisionLabel(kind)).toBe(label);
   });

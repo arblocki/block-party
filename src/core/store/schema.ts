@@ -169,4 +169,31 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX decisions_by_status ON decisions (status, created_at);
   `,
+  `
+  -- Answerable decisions: options, the answer and when it came. SQLite cannot change a CHECK
+  -- constraint in place, so the table is rebuilt (with the new columns) to allow 'answered'.
+  CREATE TABLE decisions_new (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT NOT NULL REFERENCES runs (id),
+    kind         TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('open', 'answered', 'resolved', 'dismissed')),
+    title        TEXT NOT NULL,
+    body         TEXT NOT NULL,
+    attach       TEXT,
+    created_at   TEXT NOT NULL,
+    resolved_at  TEXT,
+    options_json TEXT,
+    answer_json  TEXT,
+    answered_at  TEXT
+  );
+  INSERT INTO decisions_new
+    (id, run_id, kind, status, title, body, attach, created_at, resolved_at,
+     options_json, answer_json, answered_at)
+  SELECT id, run_id, kind, status, title, body, attach, created_at, resolved_at,
+     NULL, NULL, NULL
+  FROM decisions;
+  DROP TABLE decisions;
+  ALTER TABLE decisions_new RENAME TO decisions;
+  CREATE INDEX decisions_by_status ON decisions (status, created_at);
+  `,
 ];
