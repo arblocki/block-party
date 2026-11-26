@@ -481,6 +481,51 @@ describe('run plan and findings', () => {
     ]);
   });
 
+  it('keeps resolutions per round when finding ids repeat, and none for a round without a fix', async () => {
+    addRun();
+    mkdirSync(join(dir, 'reviews', 'round-2'), { recursive: true });
+    mkdirSync(join(dir, 'reviews', 'round-3'), { recursive: true });
+    for (const n of [1, 2, 3]) {
+      writeFileSync(
+        join(dir, 'reviews', `round-${n}`, 'findings.json'),
+        JSON.stringify({ reviewedSha: 'abcdef1234', summary: `r${n}`, findings: [finding('f_1')] }),
+      );
+    }
+    const resolve = (n: number, resolution: string) => {
+      writeFileSync(
+        join(dir, 'reports', `review-fix-${n}.json`),
+        JSON.stringify({ findingResolutions: [{ findingId: 'f_1', resolution, note: `n${n}` }] }),
+      );
+    };
+    resolve(1, 'fixed');
+    resolve(2, 'disputed');
+    const review = (n: number) => {
+      const id = runs.startStage({ runId: RUN_A, kind: 'review', round: n });
+      runs.endStage(id, {
+        state: 'succeeded',
+        output: { findingsPath: join(dir, 'reviews', `round-${n}`, 'findings.json') },
+      });
+    };
+    const fix = (n: number) => {
+      const id = runs.startStage({ runId: RUN_A, kind: 'review-fix', round: n });
+      runs.endStage(id, {
+        state: 'succeeded',
+        output: { report: join(dir, 'reports', `review-fix-${n}.json`) },
+      });
+    };
+    review(1);
+    fix(1);
+    review(2);
+    fix(2);
+    review(3);
+
+    const body = (await json(`/api/runs/${RUN_A}/findings`)) as {
+      rounds: { findings: { resolution: string | null; resolutionNote: string | null }[] }[];
+    };
+    expect(body.rounds.map((r) => r.findings[0]!.resolution)).toEqual(['fixed', 'disputed', null]);
+    expect(body.rounds[2]!.findings[0]!.resolutionNote).toBeNull();
+  });
+
   it('returns no rounds before any review, and skips unreadable findings files', async () => {
     addRun();
     expect(await json(`/api/runs/${RUN_A}/findings`)).toEqual({ rounds: [] });

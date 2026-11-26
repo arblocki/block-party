@@ -215,8 +215,11 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const run = runOf(c);
     if (run instanceof Response) return run;
     const stages = runs.listStages(run.id);
-    // What the implementer said about each finding, from its review-fix reports.
-    const resolutions: Record<string, { resolution: string; note: string }> = {};
+    // What the implementer said about each finding, from its review-fix reports. Finding ids
+    // repeat across rounds (f_1 ...), so each report belongs to the review it followed: the
+    // closest earlier review stage (stages come in execution order).
+    type Resolutions = Record<string, { resolution: string; note: string }>;
+    const resolutionsByReview = new Map<number, Resolutions>();
     const rounds: {
       round: number;
       reviewedSha: string;
@@ -227,9 +230,11 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       })[];
     }[] = [];
     try {
+      let lastReviewId: number | null = null;
       for (const st of stages) {
+        if (st.kind === 'review') lastReviewId = st.id;
         const reportPath = st.kind === 'review-fix' ? stringField(st.output, 'report') : null;
-        if (!reportPath) continue;
+        if (!reportPath || lastReviewId === null) continue;
         let report: unknown;
         try {
           report = readJsonInside(run.runDir, reportPath);
@@ -237,6 +242,8 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
           if (e instanceof OutsideRunDirError) throw e;
           continue;
         }
+        const resolutions: Resolutions = resolutionsByReview.get(lastReviewId) ?? {};
+        resolutionsByReview.set(lastReviewId, resolutions);
         const list = (report as { findingResolutions?: unknown } | null)?.findingResolutions;
         for (const r of Array.isArray(list) ? list : []) {
           const id = stringField(r, 'findingId');
@@ -257,6 +264,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         }
         const out = ReviewerOutputSchema.safeParse(raw);
         if (!out.success) continue;
+        const resolutions = resolutionsByReview.get(st.id) ?? {};
         rounds.push({
           round: st.round,
           reviewedSha: out.data.reviewedSha,
