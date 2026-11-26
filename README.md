@@ -44,6 +44,14 @@ By default the browser is opened for you. With `--no-open` the full URL is print
 contains a session token (`#token=...`), so don't share or log it. When the browser is
 opened automatically, the printed URL is redacted.
 
+To reach the server through a reverse proxy (e.g. over a tailnet), set
+`BLOCK_PARTY_ALLOWED_HOSTS` to a comma-separated list of extra `host[:port]` names; each is
+accepted as the Host and as `https://<host>` for Origin. The server still binds 127.0.0.1. A
+browser without `#token=` in its URL shows a login page: paste the token (set a stable one with
+`BLOCK_PARTY_TOKEN`) once and the device gets an HttpOnly session cookie (`__Host-bp_session`);
+the **Log out** button clears it. Cookie-only requests must carry `Sec-Fetch-Site: same-origin`.
+Unset, behaviour is unchanged.
+
 Flags: `--provider`, `--model`, `--port`, `--no-open`, `--debug`.
 
 After `pnpm link --global`, run it as `block-party owner/repo#123`.

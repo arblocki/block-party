@@ -9,7 +9,7 @@ import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
 import { reconcileRuns } from './reconcile.js';
 import type { RunManager } from './run-manager.js';
-import { generateToken } from './security.js';
+import { generateToken, parseAllowedHosts } from './security.js';
 
 export interface RunningServer {
   port: number;
@@ -48,6 +48,7 @@ export function startServer(opts: {
     analysis: opts.analysis,
     ...(opts.runManager ? { runManager: opts.runManager } : {}),
     port: () => port,
+    allowedHosts: parseAllowedHosts(process.env.BLOCK_PARTY_ALLOWED_HOSTS),
     webDir: WEB_DIR,
   });
 
