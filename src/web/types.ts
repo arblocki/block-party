@@ -1,4 +1,6 @@
 import type { ParsedFile, Side } from '../core/diff/types';
+import type { DecisionKind } from '../core/store/runs';
+import type { RunStage } from '../core/run/machine';
 import type { PrMeta, ReviewEvent } from '../core/github/types';
 
 export type { Hunk, DiffLine, ParsedFile, Side, LineRange } from '../core/diff/types';
@@ -125,4 +127,34 @@ export interface InterdiffResponse {
   totalCommits: number;
   commitsTruncated: boolean;
   filesTruncated: boolean;
+}
+
+/** A run as GET /api/runs and the global stream list it. */
+export interface RunSummary {
+  id: string;
+  title: string;
+  stage: RunStage;
+  stageNote: string | null;
+  owner: string | null;
+  repo: string | null;
+  branch: string;
+  prNumber: number | null;
+  createdAt: string;
+  updatedAt: string;
+  openDecisions: number;
+}
+
+/** An inbox item (GET /api/inbox) with the run it belongs to. */
+export interface InboxDecision {
+  id: number;
+  runId: string;
+  kind: DecisionKind;
+  status: 'open' | 'resolved' | 'dismissed';
+  title: string;
+  body: string;
+  attach: string | null;
+  createdAt: string;
+  resolvedAt: string | null;
+  runTitle: string | null;
+  runStage: RunStage | null;
 }

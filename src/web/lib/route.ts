@@ -1,25 +1,36 @@
 import { parsePrRef, parseRepoRef } from '../../core/pr-ref';
+import { isRunId } from '../../core/run/id';
 import type { PrRef, PrSummary, RepoRef } from '../types';
 
-/** Which page to show: the repository list, one repo's open PRs, or one PR's review. */
+/** Which page to show: home, a run, the new-run form, the repository list, a repo's PRs or a PR. */
 export type Route =
-  { kind: 'repos' } | { kind: 'pulls'; repo: RepoRef } | { kind: 'pr'; pr: PrRef };
+  | { kind: 'home' }
+  | { kind: 'run'; id: string }
+  | { kind: 'new-run' }
+  | { kind: 'repos' }
+  | { kind: 'pulls'; repo: RepoRef }
+  | { kind: 'pr'; pr: PrRef };
 
 /**
- * Reads the route from the query string: `?repos` is the repository list, `?repo=o/r` that
+ * Reads the route from the query string: `?home` is home, `?run=<id>` a run (an invalid id
+ * shows home), `?new-run` the new-run form, `?repos` the repository list, `?repo=o/r` that
  * repo's open PRs, and `?repo=o/r&pr=12` PR 12. With no query, the PR or repo the server was
- * started with opens, else the repository list. An invalid `repo` shows the repository list.
+ * started with opens, else home. An invalid `repo` shows the repository list.
  */
 export function routeFromSearch(
   search: string,
   start: { repo: RepoRef | null; pr: PrRef | null },
 ): Route {
   const params = new URLSearchParams(search);
+  if (params.has('home')) return { kind: 'home' };
+  if (params.has('new-run')) return { kind: 'new-run' };
+  const runId = params.get('run');
+  if (runId !== null) return isRunId(runId) ? { kind: 'run', id: runId } : { kind: 'home' };
   if (params.has('repos')) return { kind: 'repos' };
   const rawRepo = params.get('repo');
   if (rawRepo === null) {
     if (start.pr) return { kind: 'pr', pr: start.pr };
-    return start.repo ? { kind: 'pulls', repo: start.repo } : { kind: 'repos' };
+    return start.repo ? { kind: 'pulls', repo: start.repo } : { kind: 'home' };
   }
   const repo = parseRepoRef(rawRepo);
   if (!repo) return { kind: 'repos' };
@@ -37,6 +48,12 @@ export function prHref(repo: RepoRef, number: number): string {
 }
 
 export const REPOS_HREF = '?repos';
+export const HOME_HREF = '?home';
+export const NEW_RUN_HREF = '?new-run';
+
+export function runHref(id: string): string {
+  return `?run=${encodeURIComponent(id)}`;
+}
 
 /**
  * Filters the open-PR list by free text. Every whitespace-separated term must match: a number

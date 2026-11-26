@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import type { PrSummary } from '../types';
-import { filterPrs, prHref, pullsHref, relativeTime, routeFromSearch } from './route';
+import {
+  filterPrs,
+  HOME_HREF,
+  NEW_RUN_HREF,
+  prHref,
+  pullsHref,
+  relativeTime,
+  routeFromSearch,
+  runHref,
+} from './route';
 
 describe('routeFromSearch', () => {
   const repo = { owner: 'octocat', repo: 'hello-world' };
@@ -28,7 +37,20 @@ describe('routeFromSearch', () => {
   it('falls back to the starting PR, then repo, then the repository list', () => {
     expect(routeFromSearch('', startPr)).toEqual({ kind: 'pr', pr: startPr.pr });
     expect(routeFromSearch('', { repo, pr: null })).toEqual({ kind: 'pulls', repo });
-    expect(routeFromSearch('', none)).toEqual({ kind: 'repos' });
+    expect(routeFromSearch('', none)).toEqual({ kind: 'home' });
+  });
+
+  it('parses ?home, ?new-run and ?run=<id>', () => {
+    expect(routeFromSearch('?home', startPr)).toEqual({ kind: 'home' });
+    expect(routeFromSearch('?new-run', startPr)).toEqual({ kind: 'new-run' });
+    expect(routeFromSearch('?run=r20260101-abcdef', startPr)).toEqual({
+      kind: 'run',
+      id: 'r20260101-abcdef',
+    });
+  });
+
+  it.each(['?run=', '?run=nope', '?run=r1-xyz'])('shows home for invalid %s', (q) => {
+    expect(routeFromSearch(q, startPr)).toEqual({ kind: 'home' });
   });
 
   it.each(['?repo=nope', '?repo=a/b/c', '?repo='])('shows the repository list for %s', (q) => {
@@ -44,6 +66,12 @@ describe('routeFromSearch', () => {
 
   it('builds hrefs that round-trip', () => {
     expect(routeFromSearch(pullsHref(repo), none)).toEqual({ kind: 'pulls', repo });
+    expect(routeFromSearch(HOME_HREF, startPr)).toEqual({ kind: 'home' });
+    expect(routeFromSearch(NEW_RUN_HREF, startPr)).toEqual({ kind: 'new-run' });
+    expect(routeFromSearch(runHref('r20260101-abcdef'), startPr)).toEqual({
+      kind: 'run',
+      id: 'r20260101-abcdef',
+    });
     expect(routeFromSearch(prHref(repo, 9), none)).toEqual({
       kind: 'pr',
       pr: { ...repo, number: 9 },
