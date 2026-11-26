@@ -82,10 +82,12 @@ Tasks are sequential; each gets its own run plan in `docs/plans/phase-2/`.
 9. **Exit check and docs.** Run the exit check myself through the browser, then update
    ARCHITECTURE checkboxes and the decision log.
 
-## Progress (2026-11-22)
+## Progress (2026-11-26)
 
 Each task runs through `block-party run` with its plan in `docs/plans/phase-2/`; I review
 the PR, fix remaining Codex P2s on the branch, and squash-merge.
+Tasks 6–8 were built directly on main by Sonnet subagents instead, each with a task review,
+then one whole-range review and fix wave.
 
 | Task | Status |
 | --- | --- |
@@ -94,10 +96,10 @@ the PR, fix remaining Codex P2s on the branch, and squash-merge.
 | 3 Pipeline records to the DB | Merged, #19 (adds a `cap_reached` inbox item when publishing with unresolved blocking findings) |
 | 4 Run API and SSE | Merged, #20 (checked against the real DB: auth, 400/401/403, stream) |
 | 5 RunManager and reconciliation | Merged, #21 (project, validate and start endpoints checked live) |
-| 6 Home page | **Next.** Two runs stopped before Claude started (see below); fixes are on main, re-run it |
-| 7 Run view | Plan written |
-| 8 New-run form | Plan written |
-| 9 Exit check and docs | Not started: do it in a browser (Playwright) once 6–8 are merged |
+| 6 Home page | On main (9651575, 8dc79c6), built by Sonnet subagents with a review per task |
+| 7 Run view | On main (f6168ab, 72d1e86) |
+| 8 New-run form | On main (cc96376) |
+| 9 Exit check and docs | Passed 2026-11-26 in a browser (see below); final-review fixes e4a2d9c..1645912 |
 
 Fixes made outside the task plans along the way (all on main):
 
@@ -113,6 +115,14 @@ Fixes made outside the task plans along the way (all on main):
   implementer; `head`/`tail`/`wc` are pre-approved.
 - Each permission prompt opens one inbox item, not two.
 
+Exit check (2026-11-26, Playwright against the real DB): a run started from the new-run form
+(`r20261126-cf4879`, the CLI help fix, cherry-picked as 08f77c8) moved live in the run view;
+reopening the browser showed its local CI and review stage; `kill -9` of the server and a
+restart marked it `interrupted` with an inbox item, completed runs unchanged; dismiss
+persisted after reload; Cancel ended a second run `cancelled`; `?repos`, the PR route and
+`block-party owner/repo#123` still work. Runs started with `block-party run` (#20, #21) show
+in the list.
+
 Open items: the run stuck in task 6's second attempt (`r20261122-6993e7`) left its pane
 waiting on the dialog, and every run leaves its worktree and `bp/*` branch (runs never delete
 work). Coming back after closing the browser needs the URL the server printed, because the
@@ -120,17 +130,18 @@ session token lives in `sessionStorage`.
 
 ## Acceptance criteria
 
-- [ ] A run started from the UI shows its stages, events, checks, findings and PR in the run
+- [x] A run started from the UI shows its stages, events, checks, findings and PR in the run
       view, live, without a page reload. [browser]
-- [ ] Closing the browser during a run and reopening the app shows the same run with
+- [x] Closing the browser during a run and reopening the app shows the same run with
       everything that happened in between. [browser]
-- [ ] Killing and restarting the server during a run shows that run as `interrupted` with an
+- [x] Killing and restarting the server during a run shows that run as `interrupted` with an
       inbox item; completed runs are unchanged. [browser]
-- [ ] Runs started with `block-party run` in a terminal appear in the UI too. [browser]
-- [ ] Blocked runs, permission waits, interrupted runs and cap-reached runs each produce an
-      inbox item linking to the run. [browser]
-- [ ] `block-party owner/repo#123` and the repository/PR pages still work. [browser]
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm build` pass.
+- [x] Runs started with `block-party run` in a terminal appear in the UI too. [browser]
+- [x] Blocked runs, permission waits, interrupted runs and cap-reached runs each produce an
+      inbox item linking to the run. [browser] (Blocked and interrupted items seen in the
+      browser; permission-wait and cap-reached items are covered by pipeline tests only.)
+- [x] `block-party owner/repo#123` and the repository/PR pages still work. [browser]
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm test` and `pnpm build` pass.
 
 ## Tests
 

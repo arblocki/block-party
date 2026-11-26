@@ -896,14 +896,17 @@ with no UI beyond the terminal, logs, and artifacts.
 
 ### Phase 2: Persistent runs and the app shell (1–2 weeks)
 
-- [ ] Server refactor to the app shell (section 4.2); review becomes a route.
-- [ ] Run tables + migrations; engine as a pure state machine with tests.
-- [ ] SSE run stream; run list and run view (stage strip, activity feed, attach command).
-- [ ] Decision inbox (blocked, permission prompts, stopped-without-report, cap reached).
-- [ ] Basic reconciliation on server restart.
-- [ ] Start a run from the UI (pick project, base, upload/paste a plan).
-- **Exit check:** I start a run, close the browser and even restart the server, come back,
-  and see exactly what happened and what needs me.
+- [x] Server refactor to the app shell (section 4.2); review becomes a route.
+- [x] Run tables + migrations; engine as a pure state machine with tests.
+- [x] SSE run stream; run list and run view (stage strip, activity feed, attach command).
+- [x] Decision inbox (blocked, permission prompts, stopped-without-report, cap reached).
+- [x] Basic reconciliation on server restart.
+- [x] Start a run from the UI (pick project, base, upload/paste a plan).
+- [x] **Exit check:** I start a run, close the browser and even restart the server, come back,
+  and see exactly what happened and what needs me. Passed 2026-11-26 in a browser: a run
+  started from the new-run form showed live in the run view, kept its history across a
+  closed browser, and after a `kill -9` of the server came back `interrupted` with an inbox
+  item; cancel, dismiss, `?repos` and `block-party owner/repo#123` were checked too.
 
 ### Phase 3: Planning in-app and the integrated review loop (1–2 weeks)
 
@@ -978,6 +981,18 @@ See 5.7. Built driver by driver, in the order I need them:
 
 Newest first. Each entry: date, decision, why, and what would make us revisit it.
 
+- **2026-11-26: Phase 2 build decisions.** (1) SQLite owns the run list and run state;
+  `run.json` and `run-events.jsonl` are still written through one `RunRecorder`. (2) The
+  pipeline stays sequential code; stage changes go through a pure `transition()`. (3) Every
+  run, CLI or UI, reaches the browser through the same `run_events` tail, so the UI is one
+  event path. (4) UI-started runs live in the server process; on start, active runs whose
+  owner pid is gone become `interrupted` with an inbox item. (5) Inbox items are
+  informational for now (attach command, link, dismiss); answering them waits for Phase 4.
+  (6) Routes stay query-string based (`?home`, `?run=`, `?new-run`); no argument opens home.
+  (7) Run-view file endpoints (`/plan`, `/findings`) read only real paths inside the run's
+  directory. (8) Review findings from round n are matched to the fix report that follows
+  that review, since reviewer ids (`f_1`…) restart every round. *Revisit (6)* if deep links
+  need paths, and (4) when runs move out of the server process (Phase 4).
 - **2026-11-09: Phase 1 build decisions.** (1) Run state is `run.json` + `run-events.jsonl`
   on disk; SQLite tables wait for Phase 2. (2) herdr only; tmux deferred. (3) Interactive
   `claude --agents` needs inline JSON (file paths work only with `-p`). (4) The reviewer's
