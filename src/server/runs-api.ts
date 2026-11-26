@@ -234,7 +234,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       for (const st of stages) {
         if (st.kind === 'review') lastReviewId = st.id;
         const reportPath = st.kind === 'review-fix' ? stringField(st.output, 'report') : null;
-        if (!reportPath || lastReviewId === null) continue;
+        if (!reportPath) continue;
         let report: unknown;
         try {
           report = readJsonInside(run.runDir, reportPath);
@@ -242,6 +242,8 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
           if (e instanceof OutsideRunDirError) throw e;
           continue;
         }
+        // A fix with no review before it has no round to show on, but is still read above.
+        if (lastReviewId === null) continue;
         const resolutions: Resolutions = resolutionsByReview.get(lastReviewId) ?? {};
         resolutionsByReview.set(lastReviewId, resolutions);
         const list = (report as { findingResolutions?: unknown } | null)?.findingResolutions;
