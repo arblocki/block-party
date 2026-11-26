@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { ACTIVE_STAGES, RUN_STAGES } from '../../core/run/machine';
+import { RUN_STAGES } from '../../core/run/machine';
 import type { DecisionKind } from '../../core/store/runs';
 import type { RunSummary } from '../types';
-import { decisionLabel, orderRuns, stageTone } from './home';
+import { decisionLabel, orderRuns, stageTone, type StageTone } from './home';
 
 const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSummary => ({
   id,
@@ -19,15 +19,22 @@ const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSumm
 });
 
 describe('stageTone', () => {
+  const expected: Record<(typeof RUN_STAGES)[number], StageTone> = {
+    setup: 'active',
+    implementing: 'active',
+    checking: 'active',
+    reviewing: 'active',
+    fixing: 'active',
+    publishing: 'active',
+    waiting_ci: 'active',
+    complete: 'done',
+    blocked: 'attention',
+    failed: 'attention',
+    cancelled: 'stopped',
+    interrupted: 'stopped',
+  };
   it.each(RUN_STAGES)('maps %s', (stage) => {
-    const expected = (ACTIVE_STAGES as readonly string[]).includes(stage)
-      ? 'active'
-      : stage === 'complete'
-        ? 'done'
-        : stage === 'blocked' || stage === 'failed'
-          ? 'attention'
-          : 'stopped';
-    expect(stageTone(stage)).toBe(expected);
+    expect(stageTone(stage)).toBe(expected[stage]);
   });
 
   it('pins the terminal tones', () => {

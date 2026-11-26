@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { api, openStream } from '../api';
 import { decisionLabel, orderRuns } from '../lib/home';
-import { NEW_RUN_HREF, prHref, relativeTime, REPOS_HREF, runHref } from '../lib/route';
+import { HOME_HREF, NEW_RUN_HREF, prHref, relativeTime, REPOS_HREF, runHref } from '../lib/route';
 import type { InboxDecision, RunSummary } from '../types';
 import { LogoutButton } from './LogoutButton';
 import { listClass } from './PickerShell';
@@ -14,7 +14,7 @@ const linkBtn =
 export function TopBar() {
   return (
     <div className="mb-5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <a href="?home" className="text-lg font-semibold">
+      <a href={HOME_HREF} className="text-lg font-semibold">
         block-party
       </a>
       <span className="flex-1" />
@@ -29,20 +29,29 @@ export function TopBar() {
   );
 }
 
-function CopyButton({ text }: { text: string }) {
+function CopyButton({ text, codeRef }: { text: string; codeRef: RefObject<HTMLElement | null> }) {
   const [copied, setCopied] = useState(false);
+  const selectText = () => {
+    const el = codeRef.current;
+    if (el) window.getSelection()?.selectAllChildren(el);
+  };
   return (
     <button
       type="button"
       className="rounded-md border border-line px-2 py-0.5 text-xs hover:bg-surface-hover"
       onClick={() => {
-        navigator.clipboard.writeText(text).then(
-          () => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1500);
-          },
-          () => {},
-        );
+        // navigator.clipboard is missing on insecure origins (plain-http tailnet).
+        let write: Promise<void> | undefined;
+        try {
+          write = navigator.clipboard?.writeText(text);
+        } catch {
+          write = undefined;
+        }
+        if (!write) return selectText();
+        write.then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1500);
+        }, selectText);
       }}
     >
       {copied ? 'Copied' : 'Copy'}
@@ -55,6 +64,7 @@ const BODY_LINES = 6;
 function DecisionItem({ d, onDismiss }: { d: InboxDecision; onDismiss(): void }) {
   const lines = d.body.split('\n');
   const body = lines.slice(0, BODY_LINES).join('\n');
+  const codeRef = useRef<HTMLElement>(null);
   return (
     <li className="px-3 py-2.5">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -76,10 +86,13 @@ function DecisionItem({ d, onDismiss }: { d: InboxDecision; onDismiss(): void })
       )}
       {d.attach && (
         <div className="mt-2 flex items-center gap-2">
-          <code className="min-w-0 flex-1 overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs">
+          <code
+            ref={codeRef}
+            className="min-w-0 flex-1 overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs"
+          >
             {d.attach}
           </code>
-          <CopyButton text={d.attach} />
+          <CopyButton text={d.attach} codeRef={codeRef} />
         </div>
       )}
       <div className="mt-2 flex gap-3 text-sm">
@@ -95,7 +108,8 @@ function DecisionItem({ d, onDismiss }: { d: InboxDecision; onDismiss(): void })
 }
 
 function RunRow({ run }: { run: RunSummary }) {
-  const repoLabel = run.owner && run.repo ? `${run.owner}/${run.repo}` : null;
+  const project = run.owner && run.repo ? { owner: run.owner, repo: run.repo } : null;
+  const repoLabel = project ? `${project.owner}/${project.repo}` : null;
   return (
     <li className="relative px-3 py-2.5 hover:bg-surface-hover">
       <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
@@ -116,9 +130,9 @@ function RunRow({ run }: { run: RunSummary }) {
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-muted">
         {repoLabel && <span>{repoLabel}</span>}
         {run.stageNote && <span>{run.stageNote}</span>}
-        {repoLabel && run.prNumber !== null && (
+        {project && run.prNumber !== null && (
           <a
-            href={prHref({ owner: run.owner!, repo: run.repo! }, run.prNumber)}
+            href={prHref(project, run.prNumber)}
             className="relative z-10 text-accent hover:underline"
           >
             PR #{run.prNumber}
@@ -136,6 +150,7 @@ export function Home() {
   const [openCount, setOpenCount] = useState(0);
   const [error, setError] = useState<string | null>(null);
   // Once the stream has spoken, a slower initial response must not overwrite it.
+  const fullFetch = useRef(0);
   const streamed = useRef({ runs: false, inbox: false });
 
   const load = useCallback(() => {
@@ -166,11 +181,23 @@ export function Home() {
           const data = JSON.parse(msg.data) as { runs: RunSummary[] };
           streamed.current.runs = true;
           setRuns(data.runs);
+          setError(null);
         } else if (msg.event === 'inbox') {
           const data = JSON.parse(msg.data) as { openCount: number; decisions: InboxDecision[] };
           streamed.current.inbox = true;
           setInbox(data.decisions);
           setOpenCount(data.openCount);
+          setError(null);
+          // The frame carries only the newest decisions; fetch the rest.
+          if (data.openCount > data.decisions.length) {
+            const seq = ++fullFetch.current;
+            api<{ decisions: InboxDecision[] }>('/api/inbox').then(
+              (r) => {
+                if (seq === fullFetch.current) setInbox(r.decisions);
+              },
+              () => {},
+            );
+          }
         }
       },
       ctrl.signal,
@@ -262,7 +289,7 @@ export function ComingSoon({ what }: { what: string }) {
     <div className="mx-auto max-w-4xl px-4 py-6">
       <TopBar />
       <p className="text-muted">{what} is coming soon.</p>
-      <a href="?home" className="mt-2 inline-block text-accent hover:underline">
+      <a href={HOME_HREF} className="mt-2 inline-block text-accent hover:underline">
         Back to home
       </a>
     </div>
