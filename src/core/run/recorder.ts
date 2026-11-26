@@ -86,6 +86,20 @@ export class RunRecorder {
     });
   }
 
+  /** Adopts an existing run row (a continuation after rest): this process becomes its owner. */
+  resume(st: RunState): void {
+    this.runId = st.id;
+    this.created = true;
+    this.db('claimRun', (s) => s.updateRun(st.id, { ownerPid: this.pid, ownerHost: this.host }));
+  }
+
+  /** Clears the run's owner: nothing drives a run that is resting, so reconciliation skips it. */
+  release(): void {
+    this.withRun('releaseRun', (s, runId) =>
+      s.updateRun(runId, { ownerPid: null, ownerHost: null }),
+    );
+  }
+
   /** Logs an event to the file (and terminal), then to `run_events` under the open stage. */
   event(type: string, data?: Record<string, unknown>): void {
     const ts = this.log.log(type, data);

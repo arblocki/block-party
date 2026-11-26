@@ -16,7 +16,7 @@ const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
   { key: 'implement', label: 'Implement', kinds: ['implement'] },
   { key: 'checks', label: 'Local CI', kinds: ['checks'] },
   { key: 'review', label: 'Codex', kinds: ['review'] },
-  { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix'] },
+  { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix', 'feedback'] },
   { key: 'publish', label: 'Publish', kinds: ['publish'] },
   { key: 'ci', label: 'CI', kinds: ['wait-ci'] },
 ];

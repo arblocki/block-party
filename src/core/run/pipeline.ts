@@ -2,20 +2,9 @@ import { z } from 'zod';
 import { scrubbedEnv } from '../process/env.js';
 import { mkdir, readFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  buildAgents,
-  buildSettings,
-  implementerPermissions,
-  shellRules,
-} from '../agents/claude-config.js';
+import { buildAgents, buildSettings, shellRules } from '../agents/claude-config.js';
 import { renderBrief } from '../agents/brief.js';
-import type {
-  ImplementerAdapter,
-  ImplementerSession,
-  ImplementerStartInput,
-  TurnOutcome,
-} from '../agents/types.js';
-import type { ChecksConfig } from '../checks/config.js';
+import type { ImplementerAdapter, ImplementerSession, TurnOutcome } from '../agents/types.js';
 import type { loadProjectChecks as LoadProjectChecks } from '../checks/load.js';
 import type { ChecksRunResult, RunChecksOptions } from '../checks/run.js';
 import type { Git } from '../git/index.js';
@@ -28,8 +17,8 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
-import { assertTransition, isTerminal } from './machine.js';
-import { parsePlan, type Plan } from './plan.js';
+import { assertTransition, isResting, isTerminal } from './machine.js';
+import { parsePlan } from './plan.js';
 import {
   abortable,
   failedChecks,
@@ -49,10 +38,10 @@ import {
   type PublishResult,
   type ResolutionKind,
   type ReviewRoundInput,
-  type TurnReport,
   unresolvedBlocking,
   type WaitForCiOptions,
 } from './publish.js';
+import { attachCommand, buildCtx, loadContext, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
 import { saveRunState, type RunState } from './run-state.js';
@@ -74,7 +63,7 @@ export interface RunInput {
 export interface RunOutcome {
   runId: string;
   runDir: string;
-  stage: 'complete' | 'blocked' | 'failed' | 'cancelled' | 'interrupted';
+  stage: 'complete' | 'awaiting_review' | 'blocked' | 'failed' | 'cancelled' | 'interrupted';
   note: string | null;
   prNumber: number | null;
 }
@@ -125,44 +114,6 @@ class Halt extends Error {
   }
 }
 
-interface Ctx {
-  input: RunInput;
-  deps: PipelineDeps;
-  /** Every event and state change goes through here (files, plus the store when given). */
-  rec: RunRecorder;
-  st: RunState;
-  runDir: string;
-  plan: Plan;
-  planPath: string;
-  checks: ChecksConfig;
-  reportPath: string;
-  start: Omit<ImplementerStartInput, 'prompt'>;
-  briefBase: Omit<
-    Parameters<typeof renderBrief>[0],
-    'stage' | 'round' | 'findingsPath' | 'rulingsPath'
-  >;
-  session?: ImplementerSession;
-  rounds: ReviewRoundInput[];
-  lastReport?: Report;
-  /** Every accepted implementer report, in turn order. */
-  reports: TurnReport[];
-  lastChecks?: ChecksRunResult;
-  /** Local CI runs so far (the `checks` stage round). */
-  checkRuns: number;
-  rulingsWritten: boolean;
-  /** In-flight run.json save started from a synchronous callback. */
-  pending: Promise<void>;
-}
-
-/** Brief line telling the implementer which shell commands need no approval. */
-function toolsLine(allowedTools: string[], runDir: string): string {
-  return (
-    `- ${shellRules(allowedTools)} ` +
-    `The run directory ${runDir} is readable and writable for you. ` +
-    'Subagents you start get the same rules.'
-  );
-}
-
 const PROMPT_IMPLEMENT = (p: string) => `Read the task brief at ${p} and follow it.`;
 const PROMPT_FIX = (p: string) => `Read the fix brief at ${p} and follow it.`;
 
@@ -181,6 +132,8 @@ async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null 
   ctx.st = next;
   ctx.rec.state(next);
   ctx.rec.event('stage', { stage, note: note ?? undefined });
+  // Nothing drives a resting run: it has no owner until a continuation claims it.
+  if (isResting(stage)) ctx.rec.release();
   // A run that ended can't act on an unanswered question.
   if (isTerminal(stage)) ctx.rec.closeOpenQuestions();
 }
@@ -193,10 +146,6 @@ async function patchState(ctx: Ctx, patch: Partial<RunState>) {
 
 function describeSession(ctx: Ctx): string {
   return ctx.session ? ` Attach: ${ctx.deps.adapter.describe(ctx.session)}` : '';
-}
-
-function attachCommand(ctx: Ctx): string | null {
-  return ctx.session ? ctx.deps.adapter.describe(ctx.session) : null;
 }
 
 /** How a stage execution ends when `e` interrupts it. */
@@ -278,38 +227,17 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     await implement(ctx);
     await verifyLoop(ctx);
     if (!input.config.publish) {
-      await finish(ctx, 'Publishing disabled (--no-publish); stopped after review');
+      await restForReview(ctx, 'Publishing disabled (--no-publish); stopped after review');
     } else {
       await publish(ctx);
     }
-    openUnresolvedDecision(ctx);
   } catch (e) {
-    await ctx.pending.catch(() => undefined);
-    if (isShutdown(input.signal)) {
-      // The process driving the run is stopping: the run did not choose to end here.
-      const reason = (input.signal!.reason as ShutdownError).message;
-      const last = ctx.st.stage;
-      const lastNote = ctx.st.stageNote;
-      await setStage(ctx, 'interrupted', reason);
-      ctx.rec.event('run.interrupted', { stage: last, note: reason });
-      ctx.rec.openDecision(
-        'interrupted',
-        'Run interrupted',
-        interruptedBody(last, lastNote, reason),
-        attachCommand(ctx),
-      );
-    } else if (input.signal?.aborted || e instanceof InterruptedError) {
-      // Cancellation wins over whatever failure the killed work produced.
-      await setStage(ctx, 'cancelled', 'cancelled');
-    } else if (e instanceof Halt) {
-      await setStage(ctx, e.stage, e.message);
-      openEndDecision(ctx, e);
-    } else {
-      // Includes IllegalTransitionError: failed is reachable from every active stage.
-      await setStage(ctx, 'failed', (e as Error).message);
-      openEndDecision(ctx, e);
-    }
+    await endRun(ctx, e);
   }
+  return outcomeOf(ctx);
+}
+
+function outcomeOf(ctx: Ctx): RunOutcome {
   return {
     runId: ctx.st.id,
     runDir: ctx.runDir,
@@ -317,6 +245,36 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
     note: ctx.st.stageNote,
     prNumber: ctx.st.prNumber,
   };
+}
+
+/** Moves a run that stopped on `e` to its end stage, with the inbox item that explains it. */
+async function endRun(ctx: Ctx, e: unknown): Promise<void> {
+  const { input } = ctx;
+  await ctx.pending.catch(() => undefined);
+  if (isShutdown(input.signal)) {
+    // The process driving the run is stopping: the run did not choose to end here.
+    const reason = (input.signal!.reason as ShutdownError).message;
+    const last = ctx.st.stage;
+    const lastNote = ctx.st.stageNote;
+    await setStage(ctx, 'interrupted', reason);
+    ctx.rec.event('run.interrupted', { stage: last, note: reason });
+    ctx.rec.openDecision(
+      'interrupted',
+      'Run interrupted',
+      interruptedBody(last, lastNote, reason),
+      attachCommand(ctx),
+    );
+  } else if (input.signal?.aborted || e instanceof InterruptedError) {
+    // Cancellation wins over whatever failure the killed work produced.
+    await setStage(ctx, 'cancelled', 'cancelled');
+  } else if (e instanceof Halt) {
+    await setStage(ctx, e.stage, e.message);
+    openEndDecision(ctx, e);
+  } else {
+    // Includes IllegalTransitionError: failed is reachable from every active stage.
+    await setStage(ctx, 'failed', (e as Error).message);
+    openEndDecision(ctx, e);
+  }
 }
 
 /** Step 1. Errors before the run directory exists are thrown to the caller. */
@@ -353,8 +311,9 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const title = input.title ?? plan.title;
   const branch = branchName(title, runId);
   const planPath = (await writeArtifact(runDir, 'plans/v1.md', planText)).path;
+  // What a continuation needs to rebuild this run's context later.
+  await writeArtifact(runDir, 'inputs/config.json', input.config);
   const ts = now().toISOString();
-  const { config } = input;
   const st: RunState = {
     id: runId,
     title,
@@ -368,10 +327,12 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     headSha: null,
     planPath,
     planHash: plan.contentHash,
+    planVersion: 1,
     stage: 'setup',
     stageNote: null,
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0 },
+    sessionEnded: false,
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
     prNumber: null,
     createdAt: ts,
     updatedAt: ts,
@@ -380,65 +341,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const rec = new RunRecorder(log, deps.store);
   rec.state(st);
 
-  const perms = implementerPermissions(
-    checks.required.map((c) => c.run),
-    checks.fix ?? [],
-  );
-  const eventsPath = join(runDir, 'events.jsonl');
-  const subagentModels = config.subagents;
-  const ctx: Ctx = {
-    input,
-    deps,
-    rec,
-    st,
-    runDir,
-    plan,
-    planPath,
-    checks,
-    reportPath: join(runDir, 'report.json'),
-    start: {
-      runId,
-      cwd: wt,
-      runDir,
-      model: config.implementer.model,
-      agentsPath: join(runDir, 'agents.json'),
-      settingsPath: join(runDir, 'settings.json'),
-      eventsPath,
-      reportPath: join(runDir, 'report.json'),
-      permissionMode: 'acceptEdits',
-      allowedTools: perms.allowedTools,
-      disallowedTools: perms.disallowedTools,
-      timeoutMs: config.policy.stageTimeoutMs,
-      signal: input.signal,
-      onPermission: (message) => {
-        const attach = attachCommand(ctx);
-        ctx.rec.event('implementer.waiting_for_human', {
-          notice: `⏸ Implementer needs your approval — attach: ${attach ?? '(session starting)'}`,
-          message,
-        });
-        ctx.rec.permissionWait(message, attach);
-      },
-      onEvent: (e) => ctx.rec.event(e.type, e.data),
-    },
-    briefBase: {
-      runTitle: title,
-      worktreePath: wt,
-      branch,
-      baseRef: input.baseRef,
-      baseSha: base.sha,
-      runDir,
-      planPath,
-      planVersion: 1,
-      extraBoundaries: `${toolsLine(perms.allowedTools, runDir)}\n- The report schema is at \`${join(runDir, 'report.schema.json')}\`; read it before writing report.json.`,
-      subagentList: Object.keys(subagentModels).join(', '),
-      checkCommands: checks.required.map((c) => `- \`${c.run}\``).join('\n'),
-    },
-    rounds: [],
-    reports: [],
-    checkRuns: 0,
-    rulingsWritten: false,
-    pending: Promise.resolve(),
-  };
+  const ctx = buildCtx({ input, deps, rec, st, runDir, plan, checks });
 
   for (const e of configErrors) rec.event('checks.warning', { warning: e });
   rec.event('run.started', { runId, runDir, worktree: wt, branch });
@@ -651,7 +554,7 @@ async function writeRulingsOnce(ctx: Ctx): Promise<string> {
 
 async function fixTurn(
   ctx: Ctx,
-  kind: 'check-fix' | 'review-fix',
+  kind: 'check-fix' | 'review-fix' | 'feedback',
   n: number,
   findingsPath: string,
   extra: TurnChecks,
@@ -737,10 +640,11 @@ async function checksGreen(ctx: Ctx): Promise<void> {
     const names = failedChecks(res.results)
       .map((r) => r.name)
       .join(', ');
-    if (ctx.st.rounds.checkFix >= policy.maxCheckFixRounds) {
+    const usedCheckFix = ctx.st.rounds.checkFix - ctx.fixBase.checkFix;
+    if (usedCheckFix >= policy.maxCheckFixRounds) {
       throw new Halt(
         'blocked',
-        `Local CI still failing (${names}) after ${ctx.st.rounds.checkFix} fix round(s).${describeSession(ctx)}`,
+        `Local CI still failing (${names}) after ${usedCheckFix} fix round(s).${describeSession(ctx)}`,
         true,
       );
     }
@@ -759,7 +663,8 @@ async function checksGreen(ctx: Ctx): Promise<void> {
 async function verifyLoop(ctx: Ctx): Promise<void> {
   const { deps, input } = ctx;
   const policy = input.config.policy;
-  for (let round = 1; ; round++) {
+  // A continuation numbers its reviews after the ones already done.
+  for (let round = ctx.rounds.length + 1; ; round++) {
     await checksGreen(ctx);
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
@@ -814,7 +719,12 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
         };
       },
     );
-    if (blocking.length === 0 || ctx.st.rounds.reviewFix >= policy.maxReviewFixRounds) return;
+    if (
+      blocking.length === 0 ||
+      ctx.st.rounds.reviewFix - ctx.fixBase.reviewFix >= policy.maxReviewFixRounds
+    ) {
+      return;
+    }
     await reviewFix(ctx, rec, blocking);
   }
 }
@@ -845,15 +755,40 @@ async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, blocking: Finding[]): 
   }
 }
 
-async function finish(ctx: Ctx, note: string | null): Promise<void> {
-  await setStage(ctx, 'complete', note);
-  if (ctx.session) {
-    try {
-      await ctx.deps.adapter.stop(ctx.session);
-    } catch (e) {
-      ctx.rec.event('implementer.stop_failed', { error: (e as Error).message });
-    }
+/** Stops the implementer process; the conversation can still be resumed later. */
+async function stopSession(ctx: Ctx): Promise<void> {
+  if (!ctx.session) return;
+  try {
+    await ctx.deps.adapter.stop(ctx.session);
+  } catch (e) {
+    ctx.rec.event('implementer.stop_failed', { error: (e as Error).message });
   }
+}
+
+/**
+ * The end of every successful pass: the run rests in `awaiting_review` with a `final_review`
+ * inbox item. The implementer is stopped first, while the run is still active, so a failure
+ * there still ends the run normally.
+ */
+async function restForReview(ctx: Ctx, note: string | null): Promise<void> {
+  openUnresolvedDecision(ctx);
+  await stopSession(ctx);
+  await patchState(ctx, { sessionEnded: true });
+  await setStage(ctx, 'awaiting_review', note);
+  const pr =
+    ctx.st.prNumber !== null
+      ? `https://github.com/${ctx.st.owner}/${ctx.st.repo}/pull/${ctx.st.prNumber}`
+      : null;
+  ctx.rec.openDecision(
+    'final_review',
+    'Ready for your review',
+    pr ? `${ctx.st.title} is ready for review: ${pr}` : `${ctx.st.title} is ready for review.`,
+    null,
+    [
+      { id: 'approve', label: 'Approve' },
+      { id: 'send_back', label: 'Send back' },
+    ],
+  );
 }
 
 /** Step 8: push, draft PR, then wait for GitHub CI. */
@@ -886,7 +821,7 @@ async function publish(ctx: Ctx): Promise<void> {
   const pr = await inStage(
     ctx,
     'publish',
-    1,
+    ctx.st.rounds.feedback + 1,
     { headSha: head },
     async (): Promise<PublishResult> => {
       let pr: PublishResult;
@@ -921,13 +856,13 @@ async function publish(ctx: Ctx): Promise<void> {
     },
     (p) => ({ output: { prNumber: p.prNumber, url: p.url } }),
   );
-  if (!input.config.waitForCi) return finish(ctx, `PR #${pr.prNumber} ${pr.url}`);
+  if (!input.config.waitForCi) return restForReview(ctx, `PR #${pr.prNumber} ${pr.url}`);
 
   await setStage(ctx, 'waiting_ci', `PR #${pr.prNumber}`);
   const ci = await inStage(
     ctx,
     'wait-ci',
-    1,
+    ctx.st.rounds.feedback + 1,
     { prNumber: pr.prNumber, headSha: head },
     () =>
       abortable(deps.waitForCi({ github, repo, sha: head, signal: input.signal }), input.signal),
@@ -948,5 +883,64 @@ async function publish(ctx: Ctx): Promise<void> {
       `Timed out waiting for GitHub CI on PR #${pr.prNumber}.${describeSession(ctx)}`,
     );
   }
-  return finish(ctx, `PR #${pr.prNumber} ${pr.url} (CI: ${ci.state})`);
+  return restForReview(ctx, `PR #${pr.prNumber} ${pr.url} (CI: ${ci.state})`);
+}
+
+export type ContinueEntry = { kind: 'feedback'; text: string } | { kind: 'approve' };
+
+/** Header of a feedback file: what the implementer is asked to do with the text below it. */
+const FEEDBACK_HEADER = `# Feedback from your human reviewer
+
+The pull request is ready, and your human sent it back with the feedback below. Address every
+item: change the code (and tests) where the feedback is right, and explain where you
+disagree. If you answer every item without changing any code, start the \`summary\` of your
+report with "No changes:" and say why; otherwise commit your changes.
+
+---
+
+`;
+
+/**
+ * Continues a run that is resting in `awaiting_review`: approval completes it; feedback goes
+ * to the same implementer session, then local CI, review, a push to the same PR and CI again,
+ * and the run rests for review once more. Errors end the run as in `runPipeline`.
+ */
+export async function continueRun(
+  runId: string,
+  entry: ContinueEntry,
+  deps: PipelineDeps,
+  signal?: AbortSignal,
+): Promise<RunOutcome> {
+  const ctx = await loadContext(runId, deps, signal);
+  if (ctx.st.stage !== 'awaiting_review') {
+    throw new Error(`Run ${runId} is not waiting for review (stage: ${ctx.st.stage})`);
+  }
+  ctx.rec.resume(ctx.st);
+  try {
+    if (entry.kind === 'approve') {
+      await setStage(ctx, 'complete', 'Approved');
+      return outcomeOf(ctx);
+    }
+    const n = ctx.st.rounds.feedback + 1;
+    await setStage(ctx, 'fixing', `feedback ${n}`);
+    await patchState(ctx, { rounds: { ...ctx.st.rounds, feedback: n }, sessionEnded: false });
+    const file = await writeArtifact(
+      ctx.runDir,
+      `inputs/feedback-${n}.md`,
+      FEEDBACK_HEADER + entry.text,
+    );
+    await fixTurn(ctx, 'feedback', n, file.path, {
+      // Answering without changing anything is allowed when the report says so.
+      requireCommit: (r) => !/^no changes\b/i.test(r.summary.trim()),
+    });
+    await verifyLoop(ctx);
+    if (!ctx.input.config.publish) {
+      await restForReview(ctx, 'Publishing disabled; stopped after review');
+    } else {
+      await publish(ctx);
+    }
+  } catch (e) {
+    await endRun(ctx, e);
+  }
+  return outcomeOf(ctx);
 }

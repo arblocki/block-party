@@ -1,6 +1,7 @@
 import {
   chmodSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
@@ -21,7 +22,7 @@ import type { Finding } from '../reviewer/findings.js';
 import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
 import { RunLog } from './events.js';
-import { runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
+import { continueRun, runPipeline, type PipelineDeps, type RunOutcome } from './pipeline.js';
 import { ShutdownError } from './pipeline-helpers.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
@@ -133,6 +134,7 @@ function harness(o: Opts) {
   const git = { head: 'a'.repeat(40), n: 0, dirty: false };
   const calls = {
     sends: [] as string[],
+    sendSessions: [] as string[],
     starts: [] as string[],
     stops: 0,
     reviews: [] as { round: number; prior: number; headSha: string }[],
@@ -162,8 +164,9 @@ function harness(o: Opts) {
       if (o.hangFirstTurn) await new Promise(() => undefined);
       return { session, outcome: doTurn(input) };
     },
-    async send(_s, input, message) {
+    async send(s, input, message) {
       calls.sends.push(message);
+      calls.sendSessions.push(s.sessionId);
       return doTurn(input);
     },
     async stop() {
@@ -248,6 +251,11 @@ function harness(o: Opts) {
       }
       const r = reviews.shift() ?? review([]);
       if (r instanceof Error) throw r;
+      if (r.ok) {
+        // The real reviewer leaves its findings in the round directory.
+        mkdirSync(opts.outDir, { recursive: true });
+        writeFileSync(join(opts.outDir, 'findings.json'), JSON.stringify(r.output));
+      }
       return r;
     },
     publishRun: async (p) => {
@@ -284,7 +292,7 @@ function harness(o: Opts) {
       },
       deps,
     );
-  return { run, calls, git, root, echoed };
+  return { run, calls, git, root, echoed, deps };
 }
 
 function state(out: RunOutcome) {
@@ -312,7 +320,7 @@ describe('runPipeline', () => {
       reviews: [review([f]), review([])],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(out.prNumber).toBe(7);
     expect(h.calls.reviews.map((r) => [r.round, r.prior])).toEqual([
       [1, 0],
@@ -329,7 +337,7 @@ describe('runPipeline', () => {
     expect(pub.base).toBe('main');
     expect(pub.title).toBe('Add widgets');
     expect(h.calls.stops).toBe(1);
-    expect(state(out)).toMatchObject({ stage: 'complete', prNumber: 7 });
+    expect(state(out)).toMatchObject({ stage: 'awaiting_review', prNumber: 7 });
     expect(existsSync(join(out.runDir, 'reports', 'implement-1.json'))).toBe(true);
     expect(existsSync(join(out.runDir, 'reports', 'review-fix-1.json'))).toBe(true);
     expect(readFileSync(join(out.runDir, 'inputs', 'rulings.json'), 'utf8').trim()).toBe('[]');
@@ -339,7 +347,7 @@ describe('runPipeline', () => {
   it('runs a check-fix round after a failing check', async () => {
     const h = harness({ turns: [{}, {}], checks: [false, true] });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(state(out).rounds.checkFix).toBe(1);
     const failures = readFileSync(join(out.runDir, 'inputs', 'check-failures-1.md'), 'utf8');
     expect(failures).toContain('pnpm test');
@@ -423,7 +431,7 @@ describe('runPipeline', () => {
       reviews: [review([f1]), review([f2])],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(h.calls.reviews).toHaveLength(2);
     expect(h.calls.published[0]!.body).toContain('Unresolved blocking findings');
     expect(h.calls.published[0]!.body).toContain('Still lossy');
@@ -447,12 +455,15 @@ describe('runPipeline', () => {
       ],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     const ds = store.listDecisions({ runId: out.runId });
-    expect(ds.map((d) => [d.kind, d.status])).toEqual([['cap_reached', 'open']]);
-    expect(ds[0]!.title).toBe('Unresolved blocking findings');
-    expect(ds[0]!.body).toContain('PR #7');
-    expect(ds[0]!.body).toContain('P1 Still lossy');
+    expect(ds.map((d) => [d.kind, d.status])).toEqual([
+      ['final_review', 'open'],
+      ['cap_reached', 'open'],
+    ]);
+    expect(ds[1]!.title).toBe('Unresolved blocking findings');
+    expect(ds[1]!.body).toContain('PR #7');
+    expect(ds[1]!.body).toContain('P1 Still lossy');
   });
 
   it('accepts a fix round with only disputed findings and no new commit', async () => {
@@ -470,7 +481,7 @@ describe('runPipeline', () => {
       reviews: [review([f]), review([f])],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(h.calls.published[0]!.body).toContain('disputed');
   });
 
@@ -488,7 +499,7 @@ describe('runPipeline', () => {
       reviews: [review([finding('f_1_1', 'P2', 'Nit')])],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(h.calls.sends).toHaveLength(0);
     expect(h.calls.published[0]!.body).toContain('Nit');
   });
@@ -496,14 +507,14 @@ describe('runPipeline', () => {
   it('stops after review with --no-publish', async () => {
     const h = harness({ turns: [{}], flags: { publish: false } });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(h.calls.published).toHaveLength(0);
     expect(h.calls.stops).toBe(1);
   });
 
   it('treats no_ci as complete', async () => {
     const out = await harness({ turns: [{}], ci: 'no_ci' }).run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(out.note).toContain('no_ci');
   });
 
@@ -687,7 +698,7 @@ describe('runPipeline', () => {
   it('logs each permission wait prominently and continues once the turn ends', async () => {
     const h = harness({ turns: [{}], permissionPrompts: 2 });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     const waits = h.echoed.filter((l) => l.includes('implementer.waiting_for_human'));
     expect(waits).toHaveLength(2);
     expect(waits[0]).toContain('⏸ Implementer needs your approval — attach: attach-cmd');
@@ -763,16 +774,17 @@ describe('runPipeline with a store', () => {
         return Reflect.get(target, prop, recv) as unknown;
       },
     });
-    const h = harness({ store, turns: [{}], reviews: [review([])] });
+    const h = harness({ store, turns: [{}], reviews: [new Error('boom')] });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('failed');
     expect(store.listDecisions({ runId: out.runId }).map((d) => [d.title, d.status])).toEqual([
+      ['Run failed', 'open'],
       ['P', 'open'],
       ['Q', 'dismissed'],
     ]);
   });
 
-  it('records a full run: run row, every event, stage rows, no open decisions', async () => {
+  it('records a full run: run row, every event, stage rows, only the final review open', async () => {
     const store = openStore(':memory:').runs;
     const f = finding('f_1_1', 'P1', 'Null deref in widget');
     const h = harness({
@@ -788,7 +800,7 @@ describe('runPipeline with a store', () => {
       reviews: [review([f]), review([])],
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
 
     const json = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as Record<
       string,
@@ -812,9 +824,9 @@ describe('runPipeline with a store', () => {
       implementer: json.implementer,
       rounds: json.rounds,
       createdAt: json.createdAt,
-      ownerPid: process.pid,
+      ownerPid: null,
+      ownerHost: null,
     });
-    expect(row.ownerHost).toBeTruthy();
     expect(store.getProject(row.projectId)).toMatchObject({
       owner: 'o',
       repo: 'r',
@@ -849,8 +861,10 @@ describe('runPipeline with a store', () => {
     // Events inside a stage carry its id.
     const reviewResults = store.listEvents(out.runId).filter((e) => e.type === 'review.result');
     expect(reviewResults.map((e) => e.stageId)).toEqual([stages[2]!.id, stages[5]!.id]);
-    expect(store.openDecisionCount()).toBe(0);
-    expect(store.listDecisions()).toHaveLength(0);
+    // Only the final review is left open.
+    expect(store.listDecisions().map((d) => [d.kind, d.status])).toEqual([
+      ['final_review', 'open'],
+    ]);
   });
 
   it('opens a permission decision during the turn and resolves it when the turn ends', async () => {
@@ -865,9 +879,10 @@ describe('runPipeline with a store', () => {
       },
     });
     const out = await h.run();
-    expect(out.stage).toBe('complete');
+    expect(out.stage).toBe('awaiting_review');
     expect(openAtReview).toBe(0);
-    const [d, ...rest] = store.listDecisions({ runId: out.runId });
+    const [review, d, ...rest] = store.listDecisions({ runId: out.runId });
+    expect(review!.kind).toBe('final_review');
     expect(rest).toHaveLength(0);
     expect(d).toMatchObject({
       kind: 'permission',
@@ -1057,5 +1072,158 @@ describe('runPipeline with a store', () => {
     expect(brokenEvents.filter((e) => e.type !== 'db.error').map((e) => e.type)).toEqual(
       fileEvents(plain).map((e) => e.type),
     );
+  });
+});
+
+describe('final review and continuations', () => {
+  const finalReviews = (store: RunStore, runId: string) =>
+    store.listDecisions({ runId }).filter((d) => d.kind === 'final_review');
+
+  it('rests in awaiting_review with an open final_review, the implementer stopped, no owner', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(h.calls.stops).toBe(1);
+    const [d, ...rest] = finalReviews(store, out.runId);
+    expect(rest).toHaveLength(0);
+    expect(d).toMatchObject({
+      status: 'open',
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'send_back', label: 'Send back' },
+      ],
+    });
+    expect(d!.body).toContain('https://github.com/o/r/pull/7');
+    expect(store.getRun(out.runId)).toMatchObject({
+      stage: 'awaiting_review',
+      ownerPid: null,
+      ownerHost: null,
+    });
+    expect(JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8'))).toMatchObject({
+      sessionEnded: true,
+      planVersion: 1,
+    });
+    expect(existsSync(join(out.runDir, 'inputs', 'config.json'))).toBe(true);
+  });
+
+  it('rests for review without a PR link when publishing is off', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}], flags: { publish: false } });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(finalReviews(store, out.runId)[0]!.body).not.toContain('github.com');
+  });
+
+  it('completes the run when approved', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    const next = await continueRun(out.runId, { kind: 'approve' }, h.deps);
+    expect(next.stage).toBe('complete');
+    expect(store.getRun(out.runId)!.stage).toBe('complete');
+    expect(state(out).stage).toBe('complete');
+    expect(h.calls.sends).toHaveLength(0);
+  });
+
+  it('refuses to continue a run that is not resting', async () => {
+    const h = harness({ turns: [{}], ci: 'failure' });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    await expect(continueRun(out.runId, { kind: 'approve' }, h.deps)).rejects.toThrow(
+      /not resting/,
+    );
+  });
+
+  it('sends feedback to the same session, re-verifies, updates the PR and rests again', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { report: report({ summary: 'Renamed x' }) }],
+      reviews: [review([]), review([])],
+    });
+    const out = await h.run();
+    const owners: (number | null | undefined)[] = [];
+    const startedWith = h.deps.runChecks;
+    h.deps.runChecks = (o) => {
+      owners.push(store.getRun(out.runId)?.ownerPid);
+      return startedWith(o);
+    };
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'Rename x to y' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sends[0]).toMatch(/feedback-1\.md and follow it\.$/);
+    expect(h.calls.sendSessions).toEqual(['s1']);
+    expect(readFileSync(join(out.runDir, 'inputs', 'feedback-1.md'), 'utf8')).toContain(
+      'Rename x to y',
+    );
+    expect(h.calls.checks).toBe(2);
+    expect(h.calls.reviews.map((r) => r.round)).toEqual([1, 2]);
+    expect(h.calls.published).toHaveLength(2);
+    expect(h.calls.published[1]!.body).toContain('Renamed x');
+    expect(next.prNumber).toBe(7);
+    expect(owners).toEqual([process.pid]);
+    expect(store.getRun(out.runId)).toMatchObject({ ownerPid: null, ownerHost: null });
+    expect(state(out)).toMatchObject({ stage: 'awaiting_review', rounds: { feedback: 1 } });
+    expect(h.calls.stops).toBe(2);
+    const reviews = finalReviews(store, out.runId);
+    expect(reviews.map((d) => d.status)).toEqual(['open', 'open']);
+    expect(stagesOf(store, out).map((s) => s[0])).toContain('feedback');
+    const publishRounds = store
+      .listStages(out.runId)
+      .filter((s) => s.kind === 'publish')
+      .map((s) => s.round);
+    expect(publishRounds).toEqual([1, 2]);
+  });
+
+  it('accepts feedback answered without changes and no new commit', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { commit: false, report: report({ summary: 'No changes: it is intended' }) }],
+    });
+    const out = await h.run();
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'Why x?' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+  });
+
+  it('blocks feedback that changes nothing without saying so', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}, { commit: false }] });
+    const out = await h.run();
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'Fix it' }, h.deps);
+    expect(next.stage).toBe('blocked');
+    expect(next.note).toContain('No new commits after feedback-1');
+  });
+
+  it('gives a continuation its own fix-round budget and numbers its reviews on', async () => {
+    const f = finding('f_1_1', 'P1', 'Null deref');
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'guarded' }],
+          }),
+        },
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_3_1', resolution: 'fixed', note: 'again' }],
+          }),
+        },
+      ],
+      reviews: [review([f]), review([]), review([finding('f_3_1', 'P1', 'New bug')]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.reviews.map((r) => r.round)).toEqual([1, 2, 3, 4]);
+    // The first round's resolution was rebuilt from disk, so it is not prior-unresolved.
+    expect(h.calls.reviews[2]!.prior).toBe(1);
+    expect(state(out).rounds).toEqual({ checkFix: 0, reviewFix: 2, feedback: 1 });
   });
 });

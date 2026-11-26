@@ -97,6 +97,7 @@ function defaultBranch(repo: string): Promise<string> {
 export function exitCodeFor(stage: RunOutcome['stage']): number {
   switch (stage) {
     case 'complete':
+    case 'awaiting_review':
       return 0;
     case 'blocked':
       return 3;
@@ -163,6 +164,11 @@ export async function runMain(argv: string[] = []): Promise<void> {
         `\nRun ${outcome.runId}: ${outcome.stage}${outcome.note ? ` - ${outcome.note}` : ''}`,
       );
       console.log(`Run directory: ${outcome.runDir}`);
+      if (outcome.stage === 'awaiting_review') {
+        console.log(
+          'The run is waiting for your review in the app (open it with `block-party review`).',
+        );
+      }
       process.exitCode = exitCodeFor(outcome.stage);
     } finally {
       process.removeListener('SIGINT', onSigint);

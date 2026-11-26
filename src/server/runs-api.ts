@@ -383,14 +383,32 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (!runs.getDecision(id)) return c.json({ error: 'decision not found' }, 404);
     const body = await parseBody(c, answerSchema);
     if ('error' in body) return c.json({ error: body.error }, 400);
-    const result = runs.answerDecision(id, {
-      choice: body.data.choice,
-      note: body.data.note?.trim() || null,
-    });
+    const note = body.data.note?.trim() || null;
+    const existing = runs.getDecision(id)!;
+    const isFinalReview = existing.kind === 'final_review';
+    if (isFinalReview) {
+      // Checked before answering: an answer that cannot start its continuation would strand the run.
+      if (!deps.manager) return c.json({ error: 'this server cannot continue runs' }, 503);
+      if (body.data.choice === 'send_back' && !note) {
+        return badRequest(c, 'a note is required to send the run back');
+      }
+    }
+    const result = runs.answerDecision(id, { choice: body.data.choice, note });
     if (result === 'not_open') return c.json({ error: 'decision is not open' }, 409);
     if (result === 'run_ended') return c.json({ error: 'the run has ended' }, 409);
     if (result === 'bad_choice') return badRequest(c, 'choice is not one of the options');
-    return c.json({ decision: runs.getDecision(id) });
+    // Only the one request that answered the decision gets here, so it starts one continuation.
+    let continued: boolean | undefined;
+    if (isFinalReview) {
+      continued = deps.manager!.continue(
+        existing.runId,
+        body.data.choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
+      );
+    }
+    return c.json({
+      decision: runs.getDecision(id),
+      ...(continued === undefined ? {} : { continued }),
+    });
   });
 
   app.get('/api/projects', (c) => c.json({ projects: runs.listProjects() }));

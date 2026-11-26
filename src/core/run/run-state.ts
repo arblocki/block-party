@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { RUN_STAGES } from './machine.js';
@@ -17,6 +17,8 @@ export const RunStateSchema = z.strictObject({
   headSha: z.string().nullable(),
   planPath: z.string(),
   planHash: z.string(),
+  /** Which plan version the run implements (Phase 3 planning adds new versions). */
+  planVersion: z.number().int().default(1),
   stage: z.enum(RUN_STAGES),
   stageNote: z.string().nullable(),
   implementer: z
@@ -26,7 +28,14 @@ export const RunStateSchema = z.strictObject({
       paneLabel: z.string().nullable(),
     })
     .nullable(),
-  rounds: z.strictObject({ checkFix: z.number().int(), reviewFix: z.number().int() }),
+  /** The implementer process was stopped (the conversation can still be resumed). */
+  sessionEnded: z.boolean().default(false),
+  rounds: z.strictObject({
+    checkFix: z.number().int(),
+    reviewFix: z.number().int(),
+    /** Fix turns that answered the human's send-back feedback. */
+    feedback: z.number().int().default(0),
+  }),
   prNumber: z.number().int().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
@@ -41,4 +50,10 @@ export async function saveRunState(runDir: string, state: RunState): Promise<voi
   const tmp = join(runDir, `run.json.${randomUUID()}.tmp`);
   await writeFile(tmp, JSON.stringify(valid, null, 2) + '\n');
   await rename(tmp, join(runDir, 'run.json'));
+}
+
+/** Reads and validates `<runDir>/run.json`; fields added later take their defaults. */
+export async function loadRunState(runDir: string): Promise<RunState> {
+  const text = await readFile(join(runDir, 'run.json'), 'utf8');
+  return RunStateSchema.parse(JSON.parse(text));
 }

@@ -48,7 +48,14 @@ export type RunInput = Omit<RunRow, 'createdAt' | 'updatedAt'> & {
 export type RunPatch = Partial<Omit<RunRow, 'id' | 'createdAt' | 'updatedAt'>>;
 
 export type StageKind =
-  'implement' | 'check-fix' | 'review-fix' | 'checks' | 'review' | 'publish' | 'wait-ci';
+  | 'implement'
+  | 'check-fix'
+  | 'review-fix'
+  | 'feedback'
+  | 'checks'
+  | 'review'
+  | 'publish'
+  | 'wait-ci';
 
 export type StageState = 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
 

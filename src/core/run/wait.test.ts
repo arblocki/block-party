@@ -35,7 +35,7 @@ beforeEach(() => {
     planPath: '/p',
     planHash: 'h',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
     ownerPid: null,
     ownerHost: null,
   });

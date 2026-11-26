@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { RunInput, RunOutcome } from '../core/run/pipeline.js';
+import type { ContinueEntry, RunInput, RunOutcome } from '../core/run/pipeline.js';
 import { ShutdownError } from '../core/run/pipeline-helpers.js';
 import { parsePlan } from '../core/run/plan.js';
 import { openStore, type Store } from '../core/store/index.js';
@@ -65,7 +65,7 @@ function createRow() {
     planPath: '/p',
     planHash: 'h',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
     ownerPid: process.pid,
     ownerHost: 'h',
   });
@@ -269,5 +269,95 @@ describe('RunManager.shutdown', () => {
     const t0 = Date.now();
     await m.shutdown(30);
     expect(Date.now() - t0).toBeLessThan(1000);
+  });
+});
+
+describe('RunManager.continue', () => {
+  const outcome: RunOutcome = {
+    runId: RUN_ID,
+    runDir: '/runs/a',
+    stage: 'awaiting_review',
+    note: null,
+    prNumber: null,
+  };
+
+  /** A continuation that runs until released (or its signal aborts). */
+  function fakeContinuation() {
+    const calls: { runId: string; entry: ContinueEntry; signal: AbortSignal }[] = [];
+    let release: () => void = () => undefined;
+    const continuePipeline = (runId: string, entry: ContinueEntry, signal: AbortSignal) => {
+      calls.push({ runId, entry, signal });
+      return new Promise<RunOutcome>((resolve) => {
+        release = () => resolve(outcome);
+        signal.addEventListener('abort', () => resolve(outcome));
+      });
+    };
+    return { calls, continuePipeline, release: () => release() };
+  }
+
+  const rest = (stage = 'awaiting_review' as const) => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage });
+  };
+
+  it('starts a continuation for a resting run and tracks it until it ends', async () => {
+    rest();
+    const fake = fakeContinuation();
+    const m = manager({ continuePipeline: fake.continuePipeline });
+    expect(m.continue(RUN_ID, { kind: 'feedback', text: 'more' })).toBe(true);
+    expect(fake.calls.map((c) => [c.runId, c.entry])).toEqual([
+      [RUN_ID, { kind: 'feedback', text: 'more' }],
+    ]);
+    // Driven in this process now: a second continuation is refused.
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false);
+    fake.release();
+    await m.shutdown();
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false); // stopping
+  });
+
+  it('can continue again once the first continuation has ended', async () => {
+    rest();
+    const fake = fakeContinuation();
+    const m = manager({ continuePipeline: fake.continuePipeline });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    fake.release();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    await m.shutdown();
+  });
+
+  it('refuses a run that is unknown or not resting, starting nothing', () => {
+    const fake = fakeContinuation();
+    const m = manager({ continuePipeline: fake.continuePipeline });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false);
+    createRow(); // stage: setup
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false);
+    store.runs.updateRun(RUN_ID, { stage: 'complete' });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false);
+    expect(fake.calls).toEqual([]);
+  });
+
+  it('cancels a continuation it drives, and interrupts it on shutdown', async () => {
+    rest();
+    const fake = fakeContinuation();
+    const m = manager({ continuePipeline: fake.continuePipeline });
+    m.continue(RUN_ID, { kind: 'approve' });
+    expect(m.cancel(RUN_ID)).toBe(true);
+    expect(fake.calls[0]!.signal.aborted).toBe(true);
+    await m.shutdown();
+  });
+
+  it('reports a continuation that throws and frees the run', async () => {
+    rest();
+    const errors: unknown[] = [];
+    const m = manager({
+      continuePipeline: () => Promise.reject(new Error('boom')),
+      onError: (_id, err) => errors.push(err),
+    });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    expect((errors[0] as Error).message).toBe('boom');
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    await m.shutdown();
   });
 });

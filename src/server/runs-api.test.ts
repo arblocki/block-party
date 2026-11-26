@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fakeGitHub } from '../core/testing/fakes.testutil.js';
 import { openStore, type Store } from '../core/store/index.js';
 import type { RunInput, RunStore } from '../core/store/runs.js';
+import type { ContinueEntry } from '../core/run/pipeline.js';
 import { createApp } from './app.js';
 import { PlanValidationError, type RunManager, type StartRunRequest } from './run-manager.js';
 import { TOKEN_HEADER } from './security.js';
@@ -33,7 +34,7 @@ function runInput(projectId: string, over: Partial<RunInput> = {}): RunInput {
     planPath: '/runs/a/plans/v1.md',
     planHash: 'hash1',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
     ownerPid: null,
     ownerHost: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -62,11 +63,16 @@ function makeApp(runStore: RunStore = runs, runManager?: RunManager) {
 function fakeManager(opts: { fail?: Error } = {}) {
   const starts: StartRunRequest[] = [];
   const cancels: string[] = [];
+  const continues: { runId: string; entry: ContinueEntry }[] = [];
   const manager: RunManager = {
     async start(req) {
       starts.push(req);
       if (opts.fail) throw opts.fail;
       return RUN_A;
+    },
+    continue(runId, entry) {
+      continues.push({ runId, entry });
+      return true;
     },
     cancel(id) {
       cancels.push(id);
@@ -74,7 +80,7 @@ function fakeManager(opts: { fail?: Error } = {}) {
     },
     async shutdown() {},
   };
-  return { manager, starts, cancels };
+  return { manager, starts, cancels, continues };
 }
 
 const PLAN = `# Add widgets
@@ -429,6 +435,68 @@ describe('JSON endpoints', () => {
       expect((await answer(id, { choice: 'yes', note: 'x'.repeat(4000) })).status).toBe(200);
       expect((await answer(id, { choice: 'no' })).status).toBe(409);
       expect(runs.getDecision(id)?.answer?.choice).toBe('yes');
+    });
+
+    describe('final review', () => {
+      const openReview = () => {
+        runs.createRun(runInput(projectId, { stage: 'awaiting_review' }));
+        return runs.openDecision({
+          runId: RUN_A,
+          kind: 'final_review',
+          title: 'Ready',
+          body: 'b',
+          options: [
+            { id: 'approve', label: 'Approve' },
+            { id: 'send_back', label: 'Send back' },
+          ],
+        });
+      };
+      const withManager = () => {
+        const fake = fakeManager();
+        return { fake, app: makeApp(runs, fake.manager) };
+      };
+      const answerWith = (a: typeof app, id: number, body: unknown) =>
+        req(`/api/inbox/${id}/answer`, { method: 'POST', body: JSON.stringify(body) }, a);
+
+      it('starts an approve continuation once, however many times it is answered', async () => {
+        const id = openReview();
+        const { fake, app: a } = withManager();
+        expect((await answerWith(a, id, { choice: 'approve' })).status).toBe(200);
+        expect((await answerWith(a, id, { choice: 'approve' })).status).toBe(409);
+        expect(fake.continues).toEqual([{ runId: RUN_A, entry: { kind: 'approve' } }]);
+      });
+
+      it('starts a feedback continuation with the trimmed note', async () => {
+        const id = openReview();
+        const { fake, app: a } = withManager();
+        const res = await answerWith(a, id, { choice: 'send_back', note: '  rename x  ' });
+        expect(res.status).toBe(200);
+        expect(fake.continues).toEqual([
+          { runId: RUN_A, entry: { kind: 'feedback', text: 'rename x' } },
+        ]);
+      });
+
+      it('refuses to send back without a note and leaves the decision open', async () => {
+        const id = openReview();
+        const { fake, app: a } = withManager();
+        expect((await answerWith(a, id, { choice: 'send_back' })).status).toBe(400);
+        expect((await answerWith(a, id, { choice: 'send_back', note: '   ' })).status).toBe(400);
+        expect(runs.getDecision(id)?.status).toBe('open');
+        expect(fake.continues).toEqual([]);
+      });
+
+      it('answers 503 without a manager, leaving the decision open', async () => {
+        const id = openReview();
+        expect((await answerWith(makeApp(), id, { choice: 'approve' })).status).toBe(503);
+        expect(runs.getDecision(id)?.status).toBe('open');
+      });
+
+      it('does not continue for other decision kinds', async () => {
+        const id = open();
+        const { fake, app: a } = withManager();
+        expect((await answerWith(a, id, { choice: 'yes' })).status).toBe(200);
+        expect(fake.continues).toEqual([]);
+      });
     });
 
     it('lets an optioned decision be dismissed, but not answered, once its run ended', async () => {

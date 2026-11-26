@@ -1,10 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { dataDir } from '../core/paths.js';
-import { loadRunConfig, type RunFlagOverrides } from '../core/run/config.js';
+import { loadRunConfig, RunConfigSchema, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
-import { runPipeline, type RunInput, type RunOutcome } from '../core/run/pipeline.js';
+import { isResting } from '../core/run/machine.js';
+import {
+  continueRun,
+  runPipeline,
+  type ContinueEntry,
+  type RunInput,
+  type RunOutcome,
+} from '../core/run/pipeline.js';
 import { ShutdownError, throwIfAborted } from '../core/run/pipeline-helpers.js';
 import { parsePlan } from '../core/run/plan.js';
 import type { RunStore } from '../core/store/runs.js';
@@ -36,6 +43,11 @@ export class UnknownProjectError extends Error {
 export interface RunManager {
   /** Starts a run in this process; resolves with its id once the run row exists. */
   start(req: StartRunRequest): Promise<string>;
+  /**
+   * Continues a run resting for review (approve it, or send it back with feedback). False when
+   * this process already drives the run, or it is not resting; nothing is started then.
+   */
+  continue(runId: string, entry: ContinueEntry): boolean;
   /** Cancels a run this process drives; false for runs it does not own (or already cancelled). */
   cancel(runId: string): boolean;
   /** Interrupts every run this process drives and waits (bounded) for them to settle. */
@@ -46,6 +58,12 @@ export interface RunManagerOptions {
   runs: RunStore;
   /** Runs one pipeline to its end (default: runPipeline with createRunDeps). */
   startPipeline?: (input: RunInput) => Promise<RunOutcome>;
+  /** Continues one resting run to its next rest or end (default: continueRun with createRunDeps). */
+  continuePipeline?: (
+    runId: string,
+    entry: ContinueEntry,
+    signal: AbortSignal,
+  ) => Promise<RunOutcome>;
   /** Where submitted plan texts are written (default `<dataDir>/plans`). */
   plansDir?: string;
   /** How long `start` waits for the run row (default 30 s). */
@@ -69,6 +87,19 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       const deps = await createRunDeps({ store: runs, mode: input.config.implementer.mode });
       throwIfAborted(input.signal);
       return runPipeline(input, deps);
+    });
+  const continuePipeline =
+    opts.continuePipeline ??
+    (async (runId: string, entry: ContinueEntry, signal: AbortSignal) => {
+      // The adapter depends on how the run was started, which its saved config says.
+      const run = runs.getRun(runId);
+      if (!run) throw new Error(`Unknown run: ${runId}`);
+      const config = RunConfigSchema.parse(
+        JSON.parse(await readFile(join(run.runDir, 'inputs', 'config.json'), 'utf8')),
+      );
+      const deps = await createRunDeps({ store: runs, mode: config.implementer.mode });
+      throwIfAborted(signal);
+      return continueRun(runId, entry, deps, signal);
     });
   const plansDir = opts.plansDir ?? join(dataDir(), 'plans');
   const startTimeoutMs = opts.startTimeoutMs ?? 30_000;
@@ -166,6 +197,35 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
           }
         })();
       });
+    },
+
+    continue(runId, entry) {
+      if (stopping || byId.has(runId)) return false;
+      // Checked again here: the caller's view of the run may be stale.
+      let stage: string | undefined;
+      try {
+        stage = runs.getRun(runId)?.stage;
+      } catch {
+        return false;
+      }
+      if (stage === undefined || !isResting(stage as Parameters<typeof isResting>[0])) {
+        return false;
+      }
+      const ac = new AbortController();
+      const entryRec: Entry = { ac, done: Promise.resolve() };
+      live.add(entryRec);
+      byId.set(runId, entryRec);
+      entryRec.done = (async () => {
+        try {
+          await continuePipeline(runId, entry, ac.signal);
+        } catch (err) {
+          onError(runId, err);
+        } finally {
+          live.delete(entryRec);
+          if (byId.get(runId) === entryRec) byId.delete(runId);
+        }
+      })();
+      return true;
     },
 
     cancel(runId) {
