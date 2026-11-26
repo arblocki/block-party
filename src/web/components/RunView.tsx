@@ -14,7 +14,7 @@ import type {
 import { DecisionItem } from './DecisionItem';
 import { TopBar } from './Home';
 import { listClass } from './PickerShell';
-import { EvidenceSection, PlanSection, sectionHeading } from './RunEvidence';
+import { EvidenceSection, headingText, PlanSection, sectionHeading } from './RunEvidence';
 import { StageBadge } from './StageBadge';
 
 const EVENT_PAGE = 2000;
@@ -80,7 +80,7 @@ function Activity({ events }: { events: RunEvent[] }) {
   return (
     <section className="mb-8" aria-labelledby="activity">
       <div className="mb-2 flex items-baseline gap-3">
-        <h2 id="activity" className={sectionHeading.replace('mb-2 ', '')}>
+        <h2 id="activity" className={headingText}>
           Activity
         </h2>
         <span className="flex-1" />

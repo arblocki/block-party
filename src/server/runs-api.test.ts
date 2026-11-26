@@ -503,15 +503,29 @@ describe('run plan and findings', () => {
     const res = await req(`/api/runs/${RUN_A}/findings`);
     expect(res.status).toBe(403);
     expect(JSON.stringify(await res.json())).not.toContain('leak');
+  });
 
+  it('refuses findings reached through a symlinked directory inside the run directory', async () => {
+    addRun();
+    writeFileSync(
+      join(outside, 'findings.json'),
+      JSON.stringify({ reviewedSha: 'abcdef1234', summary: 'leak', findings: [] }),
+    );
     symlinkSync(outside, join(dir, 'reviews', 'linked'));
-    runs.updateRun(RUN_A, {});
-    const other = runs.startStage({ runId: RUN_A, kind: 'review', round: 2 });
-    runs.endStage(other, {
+    const review = runs.startStage({ runId: RUN_A, kind: 'review', round: 1 });
+    runs.endStage(review, {
       state: 'succeeded',
       output: { findingsPath: join(dir, 'reviews', 'linked', 'findings.json') },
     });
-    expect((await req(`/api/runs/${RUN_A}/findings`)).status).toBe(403);
+    const res = await req(`/api/runs/${RUN_A}/findings`);
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).not.toContain('leak');
+  });
+
+  it('allows a file whose name starts with two dots inside the run directory', async () => {
+    writeFileSync(join(dir, 'plans', '..notes.md'), PLAN);
+    addRun({ planPath: join(dir, 'plans', '..notes.md') });
+    expect((await req(`/api/runs/${RUN_A}/plan`)).status).toBe(200);
   });
 
   it('refuses a fix report outside the run directory', async () => {

@@ -1,5 +1,5 @@
 import { readFileSync, realpathSync } from 'node:fs';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { createGit, type Git } from '../core/git/index.js';
@@ -70,7 +70,7 @@ function readInsideRunDir(runDir: string, path: string): string {
   const root = realpathSync(runDir);
   const real = realpathSync(resolve(runDir, path));
   const rel = relative(root, real);
-  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+  if (rel === '' || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
     throw new OutsideRunDirError(`${path} is outside the run directory`);
   }
   return readFileSync(real, 'utf8');

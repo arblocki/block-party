@@ -10,7 +10,8 @@ const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
   P3: 'bg-surface-elevated text-muted',
 };
 
-export const sectionHeading = 'mb-2 text-sm font-semibold uppercase text-muted';
+export const headingText = 'text-sm font-semibold uppercase text-muted';
+export const sectionHeading = `mb-2 ${headingText}`;
 
 const short = (sha: string): string => sha.slice(0, 7);
 
