@@ -133,7 +133,20 @@ export function createApp(opts: AppOptions): Hono {
     }
     const url = new URL(c.req.url);
     url.pathname = url.pathname.replace(/^\/api\/repos\/[^/]+\/[^/]+\/pulls\/\d+/, '/api');
-    return prApp({ ...repo, number }).fetch(new Request(url, c.req.raw));
+    // Copy the fields rather than pass c.req.raw as the init: under @hono/node-server it's a
+    // lightweight Request subclass, and Node 26's undici brand-checks the init's `duplex`
+    // getter on it ("Illegal invocation"). A streamed body needs duplex: 'half'.
+    const req = c.req.raw;
+    const init: RequestInit & { duplex?: 'half' } = {
+      method: req.method,
+      headers: req.headers,
+      signal: req.signal,
+    };
+    if (req.body) {
+      init.body = req.body;
+      init.duplex = 'half';
+    }
+    return prApp({ ...repo, number }).fetch(new Request(url, init));
   });
   app.onError((err, c) => c.json(upstreamError(err), 502));
   app.all('/api/*', (c) => c.json({ error: 'not found' }, 404));
