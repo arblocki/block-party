@@ -164,15 +164,31 @@ async function awaitAnswers(env: LoopEnv, ctx: Ctx, ids: number[]): Promise<Deci
   return answers;
 }
 
-/** Opens an informational `cap_reached` item unless one with that title is already open. */
-function openInfoOnce(ctx: Ctx, title: string, body: string): void {
+/**
+ * Opens an informational `cap_reached` item for the entries no open item with that title
+ * already names; entries already covered are left out, and nothing opens if all are.
+ */
+function openInfoOnce(
+  ctx: Ctx,
+  title: string,
+  intro: string,
+  entries: { key: string; line: string }[],
+): void {
+  let fresh = entries;
   try {
     const open = ctx.deps.store?.listDecisions({ runId: ctx.st.id, status: 'open' }) ?? [];
-    if (open.some((d) => d.kind === 'cap_reached' && d.title === title)) return;
+    const same = open.filter((d) => d.kind === 'cap_reached' && d.title === title);
+    fresh = entries.filter((e) => !same.some((d) => d.body.includes(`${e.key} `)));
   } catch {
     // A failing store only risks a duplicate item.
   }
-  ctx.rec.openDecision('cap_reached', title, body, null);
+  if (fresh.length === 0) return;
+  ctx.rec.openDecision(
+    'cap_reached',
+    title,
+    `${intro}\n${fresh.map((e) => e.line).join('\n')}`,
+    null,
+  );
 }
 
 /**
@@ -272,9 +288,11 @@ export function reportNotAsked(ctx: Ctx, rec: ReviewRoundInput, skip: Set<string
   openInfoOnce(
     ctx,
     'Findings not triaged',
-    `The fix-round cap was reached, so these findings were not asked about:\n${left
-      .map((f) => `- ${keyOf(rec.round, f.id)} ${f.severity} ${f.title}`)
-      .join('\n')}`,
+    'The fix-round cap was reached, so these findings were not asked about:',
+    left.map((f) => ({
+      key: keyOf(rec.round, f.id),
+      line: `- ${keyOf(rec.round, f.id)} ${f.severity} ${f.title}`,
+    })),
   );
 }
 
@@ -292,7 +310,7 @@ export function pendingUpheld(ctx: Ctx): FixItem[] {
 /**
  * The fix set: pending upheld findings, then (below the cap) the round's auto-fix findings
  * and the ones the owner wants fixed. A finding that raises an upheld one again is folded
- * into it, so the same problem is not sent twice.
+ * into it, at the cap too, so the same problem is not sent twice and gets the same outcome.
  */
 export function buildFixSet(
   ctx: Ctx,
@@ -302,7 +320,6 @@ export function buildFixSet(
   capReached: boolean,
 ): FixItem[] {
   const upheld = pendingUpheld(ctx);
-  if (capReached) return upheld;
   const policy = ctx.input.config.policy;
   const byKey = new Map(upheld.map((u) => [u.key, u]));
   const fresh: FixItem[] = [];
@@ -311,7 +328,7 @@ export function buildFixSet(
     if (triageOf(policy, f.severity) !== 'auto_fix' && !answeredFix.has(f.id)) continue;
     const dup = f.repeatOf ? byKey.get(f.repeatOf) : undefined;
     if (dup) dup.also.push({ round: rec.round, id: f.id });
-    else fresh.push(fixItem(rec.round, f));
+    else if (!capReached) fresh.push(fixItem(rec.round, f));
   }
   return [...upheld, ...fresh];
 }
@@ -324,14 +341,14 @@ export function escalateUpheld(ctx: Ctx): void {
     return s === 'open' || s === 'disputed';
   });
   if (stuck.length === 0) return;
-  const lines = stuck.map((r) => {
-    const f = findingOfKey(ctx, r.key)?.finding;
-    return `- ${r.key}${f ? ` ${f.severity} ${f.title}` : ''}`;
-  });
   openInfoOnce(
     ctx,
     'Upheld findings still unresolved',
-    `You asked for these to be fixed anyway, but they are still not fixed after their extra fix turn:\n${lines.join('\n')}`,
+    'You asked for these to be fixed anyway, but they are still not fixed after their extra fix turn:',
+    stuck.map((r) => {
+      const f = findingOfKey(ctx, r.key)?.finding;
+      return { key: r.key, line: `- ${r.key}${f ? ` ${f.severity} ${f.title}` : ''}` };
+    }),
   );
 }
 

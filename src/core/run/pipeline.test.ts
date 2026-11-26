@@ -1203,6 +1203,64 @@ describe('triage, disputes and stop conditions', () => {
     expect(asked[0]!.body).toContain('touched 2 files outside');
   });
 
+  it("still reports round 3's untriaged P2s while round 2's item is open", async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      // Rounds 2 and 3 both end at the cap: the upheld finding's extra turn sits between them.
+      turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1') }],
+      reviews: [
+        review([two[0]!]),
+        review([finding('f_2_1', 'P2', 'Late nit')]),
+        review([finding('f_3_1', 'P2', 'Later nit')]),
+      ],
+    });
+    const out = await h.run();
+    const items = store
+      .listDecisions({ runId: out.runId })
+      .filter((d) => d.title === 'Findings not triaged');
+    expect(items).toHaveLength(2);
+    const r3 = items.find((d) => d.body.includes('r3:f_3_1'));
+    expect(r3).toBeDefined();
+    expect(r3!.body).not.toContain('r2:f_2_1');
+    expect(items.some((d) => d.body.includes('r2:f_2_1'))).toBe(true);
+  });
+
+  it('at the cap, a repeat of an upheld finding gets the upheld finding’s outcome', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1') }],
+      reviews: [
+        review([two[0]!]),
+        review([finding('f_2_1', 'P1', 'Null deref', 'r1:f_1_1')]),
+        review([]),
+      ],
+    });
+    const out = await h.run();
+    const sent = readJson(out, 'inputs/findings-round-2.json') as { id: string }[];
+    expect(sent.map((f) => f.id)).toEqual(['r1:f_1_1']);
+    expect(store.listFindings(out.runId).map((r) => [r.key, r.status])).toEqual([
+      ['r1:f_1_1', 'fixed'],
+      ['r2:f_2_1', 'fixed'],
+    ]);
+  });
+
+  it('a halted upheld turn is not marked spent', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      // The extra turn commits nothing and reports nothing fixed: judged invalid.
+      turns: [{}, disputeTurn(), { report: 'invalid' }],
+      reviews: [review([two[0]!]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(readJson(out, 'inputs/rulings.json')).toEqual([
+      { key: 'r1:f_1_1', ruling: 'uphold', note: '' },
+    ]);
+  });
+
   it('cancels a run aborted while it waits for an answer, dismissing the question', async () => {
     const ac = new AbortController();
     const real = openStore(':memory:').runs;

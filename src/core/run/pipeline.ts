@@ -50,7 +50,6 @@ import {
   haltOnRepeatOfFixed,
   inheritRulings,
   markSpent,
-  pendingUpheld,
   reportNotAsked,
   settleFix,
   writeRulings,
@@ -771,7 +770,7 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
       // Past the cap nothing new is fixed or asked. An upheld finding still gets its one
       // extra fix turn, so "fix it anyway" is never a no-op.
       reportNotAsked(ctx, rec, inherited);
-      const upheld = pendingUpheld(ctx);
+      const upheld = buildFixSet(ctx, rec, inherited, new Set(), true);
       if (upheld.length === 0) {
         escalateUpheld(ctx);
         return;
@@ -793,7 +792,6 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
 async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, items: FixItem[]): Promise<void> {
   const n = ctx.st.rounds.reviewFix + 1;
   await patchState(ctx, { rounds: { ...ctx.st.rounds, reviewFix: n } });
-  await markSpent(ctx, items);
   // Ids restart every round, so a finding from an earlier round goes by its key.
   const fileId = (i: FixItem) => (i.round === rec.round ? i.id : i.key);
   const findings = await writeArtifact(
@@ -812,6 +810,8 @@ async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, items: FixItem[]): Pro
     },
     requireCommit: () => items.some((i) => resolved.get(fileId(i))?.resolution === 'fixed'),
   });
+  // Spent only once the turn's report is accepted: a halted turn can be retried.
+  await markSpent(ctx, items);
   const said = new Map(report.findingResolutions.map((x) => [x.findingId, x]));
   await settleFix(env, ctx, items, said, fileId);
 }
