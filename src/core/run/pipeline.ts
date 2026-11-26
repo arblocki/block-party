@@ -25,8 +25,7 @@ import {
   interruptedBody,
   InterruptedError,
   isShutdown,
-  priorFindings,
-  priorFindingsFromRows,
+  mergedPriorFindings,
   renderCheckFailures,
   type ShutdownError,
   throwIfAborted,
@@ -696,10 +695,9 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
-    // Stored rows are the record of what earlier rounds found and how it ended; a run from
-    // before they existed has only the findings files, which ctx.rounds was built from.
-    const rows = ctx.rec.listFindings();
-    const prior = rows.length > 0 ? priorFindingsFromRows(rows) : priorFindings(ctx.rounds);
+    // Stored rows are the record of what a round found and how it ended; rounds from before
+    // they existed have only the findings files, which ctx.rounds was built from.
+    const prior = mergedPriorFindings(ctx.rounds, ctx.rec.listFindings());
     const { rec, blocking } = await inStage(
       ctx,
       'review',

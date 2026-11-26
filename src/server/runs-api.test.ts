@@ -734,6 +734,34 @@ describe('run plan and findings', () => {
     expect(body.rounds[2]!.findings[0]!.resolutionNote).toBeNull();
   });
 
+  it('merges per round: a file-only round 1 beside round 2 rows', async () => {
+    addRun();
+    writeFileSync(
+      join(dir, 'reviews', 'round-1', 'findings.json'),
+      JSON.stringify({ reviewedSha: 'abcdef1', summary: 'old', findings: [finding('f_1')] }),
+    );
+    const r1 = runs.startStage({ runId: RUN_A, kind: 'review', round: 1 });
+    runs.endStage(r1, {
+      state: 'succeeded',
+      output: { findingsPath: join(dir, 'reviews', 'round-1', 'findings.json') },
+    });
+    const r2 = runs.startStage({
+      runId: RUN_A,
+      kind: 'review',
+      round: 2,
+      input: { reviewedSha: 'abcdef2' },
+    });
+    runs.endStage(r2, { state: 'succeeded', output: { summary: 'new' } });
+    runs.insertFindings(RUN_A, 2, [finding('f_2_1') as never], () => 'auto_fix');
+    const body = (await json(`/api/runs/${RUN_A}/findings`)) as {
+      rounds: { round: number; summary: string; findings: { key: string }[] }[];
+    };
+    expect(body.rounds.map((r) => [r.round, r.summary, r.findings.map((f) => f.key)])).toEqual([
+      [1, 'old', ['r1:f_1']],
+      [2, 'new', ['r2:f_2_1']],
+    ]);
+  });
+
   it('returns stored rows, with rounds that found nothing, when the run has them', async () => {
     addRun();
     const stage = (round: number, sha: string, summary: string) => {

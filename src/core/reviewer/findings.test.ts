@@ -51,6 +51,14 @@ describe('repeatOf', () => {
   });
 });
 
+describe('duplicate finding ids', () => {
+  it('suffixes later duplicates so ids stay unique', () => {
+    const dup = { ...output, findings: [finding, { ...finding }, { ...finding }] };
+    const r = parseReviewerOutput(JSON.stringify(dup));
+    expect(r.ok && r.value.findings.map((f) => f.id)).toEqual(['f_1', 'f_1b', 'f_1b2']);
+  });
+});
+
 describe('parseReviewerOutput', () => {
   it('parses valid output', () => {
     const r = parseReviewerOutput(JSON.stringify(output), SHA);

@@ -110,3 +110,17 @@ export function priorFindingsFromRows(rows: FindingRow[]): PriorFinding[] {
     note: f.resolutionNote || '(no note)',
   }));
 }
+
+/**
+ * Prior findings per round: stored rows for the rounds that have them, the round's findings
+ * file for the rest (rounds recorded before findings were stored as rows).
+ */
+export function mergedPriorFindings(
+  rounds: ReviewRoundInput[],
+  rows: FindingRow[],
+): PriorFinding[] {
+  return rounds.flatMap((r) => {
+    const mine = rows.filter((row) => row.round === r.round);
+    return mine.length > 0 ? priorFindingsFromRows(mine) : priorFindings([r]);
+  });
+}

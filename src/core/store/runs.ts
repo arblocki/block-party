@@ -236,7 +236,10 @@ export interface RunStore {
   listDecisions(opts?: { status?: DecisionStatus; runId?: string }): Decision[];
   openDecisionCount(): number;
 
-  /** Stores a review round's findings (replacing any stored for that round), all `open`. */
+  /**
+   * Stores a review round's findings, all `open`. Storing a round again replaces its rows,
+   * which resets their statuses and notes. A repeated finding id within the round is skipped.
+   */
   insertFindings(
     runId: string,
     round: number,
@@ -736,7 +739,10 @@ export function createRunStore(db: Database.Database): RunStore {
       db.transaction(() => {
         deleteRoundFindings.run(runId, round);
         const at = now();
+        const seen = new Set<string>();
         for (const f of findings) {
+          if (seen.has(f.id)) continue;
+          seen.add(f.id);
           insertFinding.run({
             runId,
             round,

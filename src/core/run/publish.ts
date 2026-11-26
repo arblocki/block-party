@@ -6,7 +6,7 @@ import type { Finding } from '../reviewer/findings.js';
 import type { Plan } from './plan.js';
 import type { Report } from './report.js';
 
-export type ResolutionKind = 'fixed' | 'disputed' | 'deferred' | 'open';
+export type ResolutionKind = 'fixed' | 'disputed' | 'deferred' | 'wont_fix' | 'skipped' | 'open';
 
 export interface ReviewRoundInput {
   round: number;

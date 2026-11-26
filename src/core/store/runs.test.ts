@@ -428,6 +428,11 @@ describe('run store', () => {
       expect(rows[2]).toMatchObject({ triage: 'record', repeatOf: 'r1:f_1_1' });
     });
 
+    it('skips a repeated id within a round instead of failing the insert', () => {
+      runs.insertFindings('r1', 1, [f('f_1_1'), f('f_1_1')], () => 'auto_fix');
+      expect(runs.listFindings('r1')).toHaveLength(1);
+    });
+
     it('sets a status and note, and replaces a round that is stored again', () => {
       runs.insertFindings('r1', 1, [f('f_1_1')], () => 'auto_fix');
       expect(runs.setFindingStatus('r1', 'r1:f_1_1', 'disputed', 'no')).toBe(true);

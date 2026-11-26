@@ -165,6 +165,16 @@ function storedRounds(stages: StageRow[], rows: FindingRow[]): FindingsRound[] {
   return [...rounds.values()].sort((a, b) => a.round - b.round);
 }
 
+/** Stored rounds, with the file-based round standing in for one that has no rows. */
+function mergeRounds(stored: FindingsRound[], fromFiles: FindingsRound[]): FindingsRound[] {
+  const out = new Map(fromFiles.map((r) => [r.round, r]));
+  for (const r of stored) {
+    const file = out.get(r.round);
+    if (r.findings.length > 0 || !file) out.set(r.round, r);
+  }
+  return [...out.values()].sort((a, b) => a.round - b.round);
+}
+
 const projectSchema = z.strictObject({ path: z.string().trim().min(1) });
 
 const MAX_NOTE_CHARS = 4000;
@@ -300,7 +310,6 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (run instanceof Response) return run;
     const stages = runs.listStages(run.id);
     const stored = runs.listFindings(run.id);
-    if (stored.length > 0) return c.json({ rounds: storedRounds(stages, stored) });
     // What the implementer said about each finding, from its review-fix reports. Finding ids
     // repeat across rounds (f_1 ...), so each report belongs to the review it followed: the
     // closest earlier review stage (stages come in execution order).
@@ -356,7 +365,10 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
       throw e;
     }
-    return c.json({ rounds });
+    // Rounds with stored rows use them; rounds from before rows existed keep the file answer.
+    return c.json({
+      rounds: stored.length > 0 ? mergeRounds(storedRounds(stages, stored), rounds) : rounds,
+    });
   });
 
   app.get('/api/runs/:id/events', (c) => {

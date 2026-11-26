@@ -63,6 +63,7 @@ export function parseReviewerOutput(text: string, expectedSha?: string): ParseRe
     return { ok: false, error: error.join('; '), raw };
   }
   const value = parsed.data;
+  value.findings = uniqueIds(value.findings);
   if (expectedSha && !sameSha(value.reviewedSha, expectedSha)) {
     return {
       ok: false,
@@ -73,6 +74,22 @@ export function parseReviewerOutput(text: string, expectedSha?: string): ParseRe
   const stale = value.findings.find((f) => !sameSha(f.reviewedSha, value.reviewedSha));
   if (stale) return { ok: false, error: `finding ${stale.id} has mismatched reviewedSha`, raw };
   return { ok: true, value };
+}
+
+/** Gives a later finding that repeats an earlier id in the same output a suffix (f_1 -> f_1b). */
+function uniqueIds(findings: Finding[]): Finding[] {
+  const seen = new Set(findings.map((f) => f.id));
+  const used = new Set<string>();
+  return findings.map((f) => {
+    if (!used.has(f.id)) {
+      used.add(f.id);
+      return f;
+    }
+    let id = `${f.id}b`;
+    for (let n = 2; used.has(id) || seen.has(id); n++) id = `${f.id}b${n}`;
+    used.add(id);
+    return { ...f, id };
+  });
 }
 
 function sameSha(a: string, b: string): boolean {

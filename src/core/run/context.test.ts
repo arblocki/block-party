@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { resolveRunConfig } from './config.js';
 import { loadContext } from './context.js';
+import { openStore } from '../store/index.js';
 import { RunLog } from './events.js';
+import { RunRecorder } from './recorder.js';
 import type { RunStage } from './machine.js';
 import type { PipelineDeps } from './pipeline.js';
 import { saveRunState, type RunState } from './run-state.js';
@@ -109,6 +111,21 @@ function setup(stage: RunStage) {
 }
 
 describe('loadContext', () => {
+  it('takes statuses from stored rows for rounds that have them, files for the rest', async () => {
+    const { runDir, st, deps } = setup('awaiting_review');
+    await saveRunState(runDir, st);
+    const store = openStore(':memory:').runs;
+    new RunRecorder(new RunLog(runDir), store).state(st);
+    // Round 2 has rows (its finding was set aside); round 1 has none: the report files apply.
+    store.insertFindings('r1', 2, [finding('f_2_1') as never], () => 'auto_fix');
+    store.setFindingStatus('r1', 'r2:f_2_1', 'wont_fix', 'not worth it');
+    const ctx = await loadContext('r1', { ...deps, store } as PipelineDeps);
+    expect(ctx.rounds[0]!.resolutions.f_1_1).toEqual({ resolution: 'fixed', note: 'guarded' });
+    expect(ctx.rounds[1]!.resolutions).toEqual({
+      f_2_1: { resolution: 'wont_fix', note: 'not worth it' },
+    });
+  });
+
   it('rebuilds rounds, resolutions, reports, config and session from the run directory', async () => {
     const { runDir, st, deps } = setup('awaiting_review');
     await saveRunState(runDir, st);

@@ -208,8 +208,6 @@ async function loadRounds(runDir: string): Promise<ReviewRoundInput[]> {
   return rounds;
 }
 
-const RESOLUTIONS: readonly string[] = ['fixed', 'disputed', 'deferred'];
-
 /**
  * Where the run has stored its findings, their statuses replace what the report files say:
  * the rows are the record. A round without rows (a run from before they existed) keeps the
@@ -221,9 +219,9 @@ function applyStoredStatuses(rounds: ReviewRoundInput[], rows: FindingRow[]): vo
     if (mine.length === 0) continue;
     round.resolutions = {};
     for (const row of mine) {
-      if (!RESOLUTIONS.includes(row.status)) continue;
+      if (row.status === 'open') continue;
       round.resolutions[row.id] = {
-        resolution: row.status as ResolutionKind,
+        resolution: row.status,
         note: row.resolutionNote ?? '',
       };
     }
