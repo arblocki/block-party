@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { fakeGitHub } from '../core/testing/fakes.testutil.js';
 import { openStore } from '../core/store/index.js';
 import { createApp } from './app.js';
-import { TOKEN_HEADER } from './security.js';
+import { SESSION_COOKIE, TOKEN_HEADER } from './security.js';
 
 const TOKEN = 'test-token';
 const PORT = 4321;
@@ -41,6 +41,183 @@ describe('token check', () => {
 
   it('returns 404 JSON for unknown API routes', async () => {
     expect((await get('/api/nope')).status).toBe(404);
+  });
+});
+
+describe('allowed hosts', () => {
+  const HOST = 'bp.example';
+  const proxied = createApp({
+    token: TOKEN,
+    ...appTarget,
+    port: () => PORT,
+    allowedHosts: [HOST],
+    ...deps,
+  });
+  const call = (path: string, headers: Record<string, string>, init: RequestInit = {}) =>
+    proxied.request(path, { ...init, headers });
+  const SESSION = `${SESSION_COOKIE}=${TOKEN}`;
+
+  it('allows an extra host with a valid token', async () => {
+    expect((await call('/api/health', { host: HOST, [TOKEN_HEADER]: TOKEN })).status).toBe(200);
+  });
+
+  it('is case-insensitive about the Host header', async () => {
+    expect((await call('/api/health', { host: 'BP.Example', [TOKEN_HEADER]: TOKEN })).status).toBe(
+      200,
+    );
+  });
+
+  it('rejects an unknown host', async () => {
+    const res = await call('/api/health', { host: 'evil.example', [TOKEN_HEADER]: TOKEN });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'bad host' });
+  });
+
+  it('accepts the https origin of an allowed host', async () => {
+    const res = await call('/api/health', {
+      host: HOST,
+      origin: `https://${HOST}`,
+      [TOKEN_HEADER]: TOKEN,
+    });
+    expect(res.status).toBe(200);
+  });
+
+  it.each([`http://${HOST}`, 'https://chat.example'])('rejects origin %s', async (origin) => {
+    const res = await call('/api/health', { host: HOST, origin, [TOKEN_HEADER]: TOKEN });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'bad origin' });
+  });
+
+  it('still accepts local hosts and rejects the https origin of local hosts', async () => {
+    expect((await call('/api/health', auth)).status).toBe(200);
+    const res = await call('/api/health', { ...auth, origin: `https://127.0.0.1:${PORT}` });
+    expect(res.status).toBe(403);
+  });
+
+  it('rejects an extra host when the option is omitted', async () => {
+    const res = await app.request('/api/health', {
+      headers: { host: HOST, [TOKEN_HEADER]: TOKEN },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  describe('login', () => {
+    const login = (body: string | undefined, headers: Record<string, string> = {}) =>
+      call(
+        '/auth/login',
+        { host: HOST, origin: `https://${HOST}`, 'content-type': 'application/json', ...headers },
+        { method: 'POST', body },
+      );
+
+    it('sets a hardened session cookie for the right token', async () => {
+      const res = await login(JSON.stringify({ token: TOKEN }));
+      expect(res.status).toBe(204);
+      const cookie = res.headers.get('set-cookie') ?? '';
+      expect(cookie).toContain(`${SESSION_COOKIE}=${TOKEN}`);
+      expect(cookie).toContain('HttpOnly');
+      expect(cookie).toContain('Secure');
+      expect(cookie).toContain('SameSite=Strict');
+      expect(cookie).toContain('Path=/');
+      expect(cookie).not.toContain('Domain');
+    });
+
+    it('trims whitespace around a pasted token', async () => {
+      expect((await login(JSON.stringify({ token: `  ${TOKEN}\n` }))).status).toBe(204);
+    });
+
+    it.each([
+      ['wrong token', JSON.stringify({ token: 'x' })],
+      ['no body', undefined],
+      ['invalid JSON', '{nope'],
+      ['non-string token', JSON.stringify({ token: 123 })],
+      ['null body', 'null'],
+    ])('rejects %s without a cookie', async (_name, body) => {
+      const res = await login(body);
+      expect(res.status).toBe(401);
+      expect(res.headers.get('set-cookie')).toBeNull();
+    });
+
+    it('is behind the host check', async () => {
+      const res = await login(JSON.stringify({ token: TOKEN }), { host: 'evil.example' });
+      expect(res.status).toBe(403);
+    });
+
+    it('rejects a foreign origin', async () => {
+      const res = await login(JSON.stringify({ token: TOKEN }), { origin: 'https://chat.example' });
+      expect(res.status).toBe(403);
+    });
+
+    it('logout clears the cookie', async () => {
+      const res = await call(
+        '/auth/logout',
+        { host: HOST, origin: `https://${HOST}` },
+        {
+          method: 'POST',
+        },
+      );
+      expect(res.status).toBe(204);
+      const cookie = res.headers.get('set-cookie') ?? '';
+      expect(cookie).toContain(`${SESSION_COOKIE}=;`);
+      expect(cookie).toContain('Max-Age=0');
+    });
+  });
+
+  describe('session cookie', () => {
+    it('authenticates a GET without the header', async () => {
+      expect((await call('/api/health', { host: HOST, cookie: SESSION })).status).toBe(200);
+    });
+
+    it('rejects a wrong cookie', async () => {
+      const res = await call('/api/health', { host: HOST, cookie: `${SESSION_COOKIE}=nope` });
+      expect(res.status).toBe(401);
+    });
+
+    it('rejects a cookie-authenticated write with no Origin', async () => {
+      const res = await call(
+        '/api/runs',
+        { host: HOST, cookie: SESSION, 'content-type': 'application/json' },
+        { method: 'POST', body: '{}' },
+      );
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'origin required' });
+    });
+
+    it('lets a cookie-authenticated write through with the own origin', async () => {
+      const res = await call(
+        '/api/runs',
+        {
+          host: HOST,
+          cookie: SESSION,
+          origin: `https://${HOST}`,
+          'content-type': 'application/json',
+        },
+        { method: 'POST', body: '{}' },
+      );
+      expect([401, 403]).not.toContain(res.status);
+    });
+
+    it('does not require an Origin for header-authenticated writes', async () => {
+      const res = await call(
+        '/api/runs',
+        { host: HOST, [TOKEN_HEADER]: TOKEN, 'content-type': 'application/json' },
+        { method: 'POST', body: '{}' },
+      );
+      expect([401, 403]).not.toContain(res.status);
+    });
+
+    it('falls back to the cookie when the header is empty', async () => {
+      const res = await call('/api/health', { host: HOST, cookie: SESSION, [TOKEN_HEADER]: '' });
+      expect(res.status).toBe(200);
+    });
+
+    it('a wrong header wins over a valid cookie', async () => {
+      const res = await call('/api/health', {
+        host: HOST,
+        cookie: SESSION,
+        [TOKEN_HEADER]: 'wrong',
+      });
+      expect(res.status).toBe(401);
+    });
   });
 });
 

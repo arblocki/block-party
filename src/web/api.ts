@@ -71,7 +71,8 @@ export function prUrl(path: string): string {
 
 export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   const headers = new Headers(init.headers);
-  headers.set(TOKEN_HEADER, token);
+  // No token (e.g. a device logged in by cookie): send none, so the session cookie decides.
+  if (token) headers.set(TOKEN_HEADER, token);
   if (init.body !== undefined && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
@@ -109,11 +110,19 @@ function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
 export interface OpenStreamDeps {
   fetch?: typeof fetch;
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** Called once when the server answers 401; the stream then stops instead of retrying. */
+  onUnauthorized?: () => void;
+}
+
+/** Default for a 401 on a stream: reload, which lands on the login screen. */
+function reloadToLogin(): void {
+  if (typeof location !== 'undefined') location.reload();
 }
 
 /**
  * Follows a `text/event-stream` endpoint until `signal` aborts, reconnecting with
  * `Last-Event-ID` and 1s..10s exponential backoff when the connection drops or fails.
+ * A 401 means the session is gone: it stops (no retry) and calls `onUnauthorized`.
  */
 export async function openStream(
   path: string,
@@ -127,9 +136,15 @@ export async function openStream(
   let delay = BACKOFF_START_MS;
   while (!signal.aborted) {
     try {
-      const headers = new Headers({ [TOKEN_HEADER]: token, accept: 'text/event-stream' });
+      const headers = new Headers({ accept: 'text/event-stream' });
+      if (token) headers.set(TOKEN_HEADER, token);
       if (lastId !== undefined) headers.set('Last-Event-ID', lastId);
       const res = await doFetch(path, { headers, signal });
+      if (res.status === 401) {
+        await res.body?.cancel().catch(() => {});
+        (deps.onUnauthorized ?? reloadToLogin)();
+        return;
+      }
       if (res.ok && res.body) {
         delay = BACKOFF_START_MS;
         const reader = res.body.getReader();
@@ -168,6 +183,32 @@ export async function openStream(
     await sleep(delay, signal);
     delay = Math.min(delay * 2, BACKOFF_MAX_MS);
   }
+}
+
+/** Trades a pasted token for the session cookie. Throws ApiError (401 when wrong). */
+export async function login(pastedToken: string): Promise<void> {
+  const res = await fetch('/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ token: pastedToken }),
+  });
+  if (!res.ok) {
+    throw new ApiError(
+      res.status,
+      res.status === 401 ? 'Wrong token' : `${res.status} ${res.statusText}`,
+    );
+  }
+}
+
+/** Clears the session cookie and the stored token. */
+export async function logout(): Promise<void> {
+  await fetch('/auth/logout', { method: 'POST' });
+  try {
+    sessionStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // storage unavailable
+  }
+  token = '';
 }
 
 export function jsonBody(value: unknown): RequestInit {
