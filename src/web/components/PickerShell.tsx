@@ -1,8 +1,7 @@
 import type { KeyboardEvent, ReactNode } from 'react';
+import { HOME_HREF } from '../lib/route';
+import { linkButton } from './AppShell';
 import { LogoutButton } from './LogoutButton';
-
-const btn =
-  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
 
 /** Row styling shared by the pickers' list items. */
 export function rowClass(active: boolean): string {
@@ -35,7 +34,15 @@ export function PickerShell(props: {
         <h1 className="text-lg font-semibold">{props.title}</h1>
         {props.subtitle}
         <span className="flex-1" />
-        <button type="button" className={btn} disabled={props.loading} onClick={props.onRefresh}>
+        <a href={HOME_HREF} className={linkButton}>
+          Home
+        </a>
+        <button
+          type="button"
+          className={linkButton}
+          disabled={props.loading}
+          onClick={props.onRefresh}
+        >
           {props.loading ? 'Loading…' : 'Refresh'}
         </button>
         <LogoutButton />

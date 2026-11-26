@@ -1,6 +1,7 @@
 import type { ParsedFile, Side } from '../core/diff/types';
-import type { DecisionKind } from '../core/store/runs';
+import type { Decision } from '../core/store/runs';
 import type { RunStage } from '../core/run/machine';
+import type { StageRow } from '../core/store/runs';
 import type { PrMeta, ReviewEvent } from '../core/github/types';
 
 export type { Hunk, DiffLine, ParsedFile, Side, LineRange } from '../core/diff/types';
@@ -145,40 +146,16 @@ export interface RunSummary {
 }
 
 /** An inbox item (GET /api/inbox) with the run it belongs to. */
-export interface InboxDecision {
-  id: number;
-  runId: string;
-  kind: DecisionKind;
-  status: 'open' | 'resolved' | 'dismissed';
-  title: string;
-  body: string;
-  attach: string | null;
-  createdAt: string;
-  resolvedAt: string | null;
+export type InboxDecision = Decision & {
   runTitle: string | null;
   runStage: RunStage | null;
-}
+};
 
-/** An inbox decision without the run it was listed with (GET /api/runs/:id). */
-export type RunDecision = Omit<InboxDecision, 'runTitle' | 'runStage'>;
-
-export type StageKind =
-  'implement' | 'check-fix' | 'review-fix' | 'checks' | 'review' | 'publish' | 'wait-ci';
-
-export type StageState = 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
+/** A decision without the run it was listed with (GET /api/runs/:id). */
+export type RunDecision = Decision;
 
 /** One stage execution of a run (GET /api/runs/:id `stages`). */
-export interface StageRow {
-  id: number;
-  runId: string;
-  kind: StageKind;
-  round: number;
-  state: StageState;
-  input: unknown;
-  output: unknown;
-  startedAt: string;
-  endedAt: string | null;
-}
+export type { StageKind, StageState, StageRow } from '../core/store/runs';
 
 /** The run row plus its summary fields (GET /api/runs/:id `run`). */
 export interface RunDetail extends RunSummary {
@@ -238,15 +215,7 @@ export interface RunFindings {
 }
 
 /** A registered project (GET /api/projects, POST /api/projects). */
-export interface Project {
-  id: string;
-  owner: string;
-  repo: string;
-  localPath: string;
-  defaultBase: string;
-  createdAt: string;
-  updatedAt: string;
-}
+export type { Project } from '../core/store/runs';
 
 /** POST /api/plans/validate */
 export type ValidatePlanResponse =

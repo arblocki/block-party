@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isTerminal } from '../../core/run/machine';
 import { api, openStream } from '../api';
+import { runProject } from '../lib/home';
 import { prHref, relativeTime } from '../lib/route';
 import { isNoisyEvent, stageStrip, summarizeEvent, type StripState } from '../lib/runView';
 import type {
@@ -11,10 +12,10 @@ import type {
   RunPlan,
   StageRow,
 } from '../types';
+import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
 import { DecisionItem } from './DecisionItem';
-import { TopBar } from './Home';
 import { listClass } from './PickerShell';
-import { EvidenceSection, headingText, PlanSection, sectionHeading } from './RunEvidence';
+import { EvidenceSection, PlanSection } from './RunEvidence';
 import { StageBadge } from './StageBadge';
 
 const EVENT_PAGE = 2000;
@@ -140,20 +141,27 @@ export function RunView({ id }: { id: string }) {
     let signature: string | null = null;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
-    const loadFindings = () =>
-      api<RunFindings>(`/api/runs/${id}/findings`).then(
+    // A response older than the newest request must not overwrite a newer one.
+    let findingsSeq = 0;
+    let detailSeq = 0;
+
+    const loadFindings = () => {
+      const seq = ++findingsSeq;
+      return api<RunFindings>(`/api/runs/${id}/findings`).then(
         (f) => {
-          if (!alive()) return;
+          if (!alive() || seq !== findingsSeq) return;
           setRounds(f.rounds);
           setFindingsError(null);
         },
-        (e: Error) => alive() && setFindingsError(e.message),
+        (e: Error) => alive() && seq === findingsSeq && setFindingsError(e.message),
       );
+    };
 
-    const loadDetail = () =>
-      api<RunDetailResponse>(`/api/runs/${id}`).then(
+    const loadDetail = () => {
+      const seq = ++detailSeq;
+      return api<RunDetailResponse>(`/api/runs/${id}`).then(
         (d) => {
-          if (!alive()) return;
+          if (!alive() || seq !== detailSeq) return;
           setDetail(d);
           setError(null);
           const sig = reviewSignature(d.stages);
@@ -162,8 +170,9 @@ export function RunView({ id }: { id: string }) {
             void loadFindings();
           }
         },
-        (e: Error) => alive() && setError(e.message),
+        (e: Error) => alive() && seq === detailSeq && setError(e.message),
       );
+    };
 
     // Several triggers close together (a stage frame and a run frame) cost one fetch.
     refetchRef.current = () => {
@@ -174,13 +183,18 @@ export function RunView({ id }: { id: string }) {
     const start = async () => {
       setError(null);
       try {
+        const seq = ++detailSeq;
         const first = await api<RunDetailResponse>(`/api/runs/${id}`);
         if (!alive()) return;
-        setDetail(first);
+        if (seq === detailSeq) setDetail(first);
         signature = reviewSignature(first.stages);
         void loadFindings();
         api<RunPlan>(`/api/runs/${id}/plan`).then(
-          (p) => alive() && setPlan(p),
+          (p) => {
+            if (!alive()) return;
+            setPlan(p);
+            setPlanError(null);
+          },
           (e: Error) => alive() && setPlanError(e.message),
         );
         const all: RunEvent[] = [];
@@ -276,7 +290,7 @@ export function RunView({ id }: { id: string }) {
     );
   }
 
-  const project = run.owner && run.repo ? { owner: run.owner, repo: run.repo } : null;
+  const project = runProject(run);
   const open = detail.decisions.filter((d) => d.status === 'open');
 
   return (
@@ -285,7 +299,7 @@ export function RunView({ id }: { id: string }) {
       {error && (
         <p role="alert" className="mb-3 rounded-md bg-error-soft px-3 py-2 text-sm text-error">
           {error}{' '}
-          <button type="button" className="underline" onClick={() => refetchRef.current()}>
+          <button type="button" className="underline" onClick={() => setReloadKey((k) => k + 1)}>
             Retry
           </button>
         </p>
@@ -296,12 +310,7 @@ export function RunView({ id }: { id: string }) {
           <StageBadge stage={run.stage} />
           <span className="flex-1" />
           {!isTerminal(run.stage) && (
-            <button
-              type="button"
-              className="rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50"
-              disabled={cancelling}
-              onClick={cancel}
-            >
+            <button type="button" className={linkButton} disabled={cancelling} onClick={cancel}>
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>
           )}

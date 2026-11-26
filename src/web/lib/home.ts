@@ -44,3 +44,11 @@ const DECISION_LABELS: Record<DecisionKind, string> = {
 export function decisionLabel(kind: DecisionKind): string {
   return DECISION_LABELS[kind] ?? kind;
 }
+
+/** The repository a run belongs to, when its project is known. */
+export function runProject(run: Pick<RunSummary, 'owner' | 'repo'>): {
+  owner: string;
+  repo: string;
+} | null {
+  return run.owner && run.repo ? { owner: run.owner, repo: run.repo } : null;
+}

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { RUN_STAGES } from '../../core/run/machine';
 import type { DecisionKind } from '../../core/store/runs';
 import type { RunSummary } from '../types';
-import { decisionLabel, orderRuns, stageTone, type StageTone } from './home';
+import { decisionLabel, orderRuns, runProject, stageTone, type StageTone } from './home';
 
 const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSummary => ({
   id,
@@ -88,5 +88,15 @@ describe('decisionLabel', () => {
     ['failed', 'Failed'],
   ])('%s -> %s', (kind, label) => {
     expect(decisionLabel(kind)).toBe(label);
+  });
+});
+
+describe('runProject', () => {
+  it('returns owner and repo, or null when either is missing', () => {
+    const r = run('a', 'setup', '2026-01-01');
+    expect(runProject(r)).toEqual({ owner: 'o', repo: 'r' });
+    expect(runProject({ ...r, owner: null })).toBeNull();
+    expect(runProject({ ...r, repo: null })).toBeNull();
+    expect(runProject({ ...r, repo: '' })).toBeNull();
   });
 });

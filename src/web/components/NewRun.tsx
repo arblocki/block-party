@@ -3,15 +3,12 @@ import { api, ApiError, jsonBody } from '../api';
 import { canStart, projectLabel, toRunRequest, type NewRunState } from '../lib/newRun';
 import { HOME_HREF, runHref } from '../lib/route';
 import type { Project, ValidatePlanResponse } from '../types';
-import { TopBar } from './Home';
-import { headingText, sectionHeading } from './RunEvidence';
+import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
 
 const ADD = '__add__';
 const DEBOUNCE_MS = 400;
 const field =
   'w-full rounded-md border border-line bg-surface px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-accent';
-const btn =
-  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover disabled:opacity-50';
 
 function errorList(err: unknown): string[] {
   if (err instanceof ApiError && Array.isArray(err.body.errors)) {
@@ -51,7 +48,11 @@ export function NewRun() {
         setProjects(r.projects);
         if (r.projects.length === 0) setChoice(ADD);
       },
-      (e: Error) => setLoadError(e.message),
+      (e: Error) => {
+        // Treated as an empty list, so "Add a project…" stays reachable.
+        setProjects([]);
+        setLoadError(e.message);
+      },
     );
   }, []);
 
@@ -202,7 +203,7 @@ export function NewRun() {
                 />
                 <button
                   type="button"
-                  className={btn}
+                  className={linkButton}
                   disabled={adding || addPath.trim() === ''}
                   onClick={() => void addProject()}
                 >

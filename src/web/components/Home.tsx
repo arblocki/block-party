@@ -1,37 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, openStream } from '../api';
-import { orderRuns } from '../lib/home';
-import { HOME_HREF, NEW_RUN_HREF, prHref, relativeTime, REPOS_HREF, runHref } from '../lib/route';
+import { orderRuns, runProject } from '../lib/home';
+import { NEW_RUN_HREF, prHref, relativeTime, runHref } from '../lib/route';
 import type { InboxDecision, RunSummary } from '../types';
+import { sectionHeading, TopBar } from './AppShell';
 import { DecisionItem } from './DecisionItem';
-import { LogoutButton } from './LogoutButton';
 import { listClass } from './PickerShell';
 import { StageBadge } from './StageBadge';
 
-const linkBtn =
-  'rounded-md border border-line bg-surface-elevated px-2.5 py-1 text-sm hover:bg-surface-hover';
-
-/** Top bar shared by the home page and the run-view placeholders. */
-export function TopBar() {
-  return (
-    <div className="mb-5 flex flex-wrap items-baseline gap-x-3 gap-y-1">
-      <a href={HOME_HREF} className="text-lg font-semibold">
-        block-party
-      </a>
-      <span className="flex-1" />
-      <a href={NEW_RUN_HREF} className={linkBtn}>
-        New run
-      </a>
-      <a href={REPOS_HREF} className={linkBtn}>
-        Repositories
-      </a>
-      <LogoutButton />
-    </div>
-  );
-}
-
 function RunRow({ run }: { run: RunSummary }) {
-  const project = run.owner && run.repo ? { owner: run.owner, repo: run.repo } : null;
+  const project = runProject(run);
   const repoLabel = project ? `${project.owner}/${project.repo}` : null;
   return (
     <li className="relative px-3 py-2.5 hover:bg-surface-hover">
@@ -111,9 +89,10 @@ export function Home() {
           setInbox(data.decisions);
           setOpenCount(data.openCount);
           setError(null);
+          // Any frame supersedes a full fetch still in flight.
+          const seq = ++fullFetch.current;
           // The frame carries only the newest decisions; fetch the rest.
           if (data.openCount > data.decisions.length) {
-            const seq = ++fullFetch.current;
             api<{ decisions: InboxDecision[] }>('/api/inbox').then(
               (r) => {
                 if (seq === fullFetch.current) setInbox(r.decisions);
@@ -163,7 +142,7 @@ export function Home() {
         </p>
       )}
       <section className="mb-8" aria-labelledby="needs-you">
-        <h2 id="needs-you" className="mb-2 text-sm font-semibold uppercase text-muted">
+        <h2 id="needs-you" className={sectionHeading}>
           Needs you
         </h2>
         {inbox === null ? (
@@ -181,7 +160,7 @@ export function Home() {
         )}
       </section>
       <section aria-labelledby="runs">
-        <h2 id="runs" className="mb-2 text-sm font-semibold uppercase text-muted">
+        <h2 id="runs" className={sectionHeading}>
           Runs
         </h2>
         {runs === null ? (

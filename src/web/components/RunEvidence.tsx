@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { checksBySha } from '../lib/runView';
 import type { ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
+import { sectionHeading } from './AppShell';
 import { listClass } from './PickerShell';
 
 const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
@@ -9,9 +10,6 @@ const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
   P2: 'bg-warning-soft text-warning',
   P3: 'bg-surface-elevated text-muted',
 };
-
-export const headingText = 'text-sm font-semibold uppercase text-muted';
-export const sectionHeading = `mb-2 ${headingText}`;
 
 const short = (sha: string): string => sha.slice(0, 7);
 
