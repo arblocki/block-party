@@ -1,10 +1,12 @@
-import { resolve } from 'node:path';
+import { readFileSync, realpathSync } from 'node:fs';
+import { isAbsolute, relative, resolve } from 'node:path';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { createGit, type Git } from '../core/git/index.js';
 import type { RunFlagOverrides } from '../core/run/config.js';
 import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
+import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
 import type { Decision, Project, RunRow, RunStore } from '../core/store/runs.js';
 import { PlanValidationError, UnknownProjectError, type RunManager } from './run-manager.js';
 import { parseBody } from './state.js';
@@ -56,6 +58,31 @@ function intParam(raw: string | undefined): number | undefined | null {
   const n = Number(raw);
   return Number.isSafeInteger(n) ? n : null;
 }
+
+/** A file the run's rows point at lies outside that run's directory. */
+class OutsideRunDirError extends Error {}
+
+/**
+ * Reads `path` as UTF-8 text, but only if its real path (symlinks resolved) is inside the real
+ * `runDir`. Throws OutsideRunDirError otherwise; other failures (missing file) pass through.
+ */
+function readInsideRunDir(runDir: string, path: string): string {
+  const root = realpathSync(runDir);
+  const real = realpathSync(resolve(runDir, path));
+  const rel = relative(root, real);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new OutsideRunDirError(`${path} is outside the run directory`);
+  }
+  return readFileSync(real, 'utf8');
+}
+
+const readJsonInside = (runDir: string, path: string): unknown =>
+  JSON.parse(readInsideRunDir(runDir, path));
+
+const stringField = (value: unknown, key: string): string | null => {
+  const v = value && typeof value === 'object' ? (value as Record<string, unknown>)[key] : null;
+  return typeof v === 'string' ? v : null;
+};
 
 const badRequest = (c: Context, error: string) => c.json({ error }, 400);
 
@@ -164,6 +191,88 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       stages: runs.listStages(run.id),
       decisions: runs.listDecisions({ runId: run.id }),
     });
+  });
+
+  app.get('/api/runs/:id/plan', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    let text: string;
+    try {
+      text = readInsideRunDir(run.runDir, run.planPath);
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
+      return c.json({ error: 'plan not found' }, 404);
+    }
+    const parsed = parsePlan(text);
+    return c.json({
+      text,
+      title: parsed.ok ? parsed.plan.title : run.title,
+      acceptanceCriteria: parsed.ok ? parsed.plan.acceptanceCriteria : [],
+    });
+  });
+
+  app.get('/api/runs/:id/findings', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    const stages = runs.listStages(run.id);
+    // What the implementer said about each finding, from its review-fix reports.
+    const resolutions: Record<string, { resolution: string; note: string }> = {};
+    const rounds: {
+      round: number;
+      reviewedSha: string;
+      summary: string;
+      findings: (z.infer<typeof ReviewerOutputSchema>['findings'][number] & {
+        resolution: string | null;
+        resolutionNote: string | null;
+      })[];
+    }[] = [];
+    try {
+      for (const st of stages) {
+        const reportPath = st.kind === 'review-fix' ? stringField(st.output, 'report') : null;
+        if (!reportPath) continue;
+        let report: unknown;
+        try {
+          report = readJsonInside(run.runDir, reportPath);
+        } catch (e) {
+          if (e instanceof OutsideRunDirError) throw e;
+          continue;
+        }
+        const list = (report as { findingResolutions?: unknown } | null)?.findingResolutions;
+        for (const r of Array.isArray(list) ? list : []) {
+          const id = stringField(r, 'findingId');
+          const resolution = stringField(r, 'resolution');
+          if (id && resolution)
+            resolutions[id] = { resolution, note: stringField(r, 'note') ?? '' };
+        }
+      }
+      for (const st of stages) {
+        const path = st.kind === 'review' ? stringField(st.output, 'findingsPath') : null;
+        if (!path) continue;
+        let raw: unknown;
+        try {
+          raw = readJsonInside(run.runDir, path);
+        } catch (e) {
+          if (e instanceof OutsideRunDirError) throw e;
+          continue;
+        }
+        const out = ReviewerOutputSchema.safeParse(raw);
+        if (!out.success) continue;
+        rounds.push({
+          round: st.round,
+          reviewedSha: out.data.reviewedSha,
+          summary: out.data.summary,
+          findings: out.data.findings.map((f) => ({
+            ...f,
+            resolution: resolutions[f.id]?.resolution ?? null,
+            resolutionNote: resolutions[f.id]?.note ?? null,
+          })),
+        });
+      }
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
+      throw e;
+    }
+    return c.json({ rounds });
   });
 
   app.get('/api/runs/:id/events', (c) => {

@@ -30,6 +30,7 @@ import { groupNeighbors, orderGroups, pickGroup, resolveView, type ViewMode } fr
 import { mainPaneState } from './lib/mainPane';
 import { fileThreadOwners } from './lib/sections';
 import { ComingSoon, Home } from './components/Home';
+import { RunView } from './components/RunView';
 import { PrPicker } from './components/PrPicker';
 import { RepoPicker } from './components/RepoPicker';
 import { routeFromSearch } from './lib/route';
@@ -263,7 +264,7 @@ export function App() {
 
   const route = routeFromSearch(location.search, session);
   if (route.kind === 'home') return <Home />;
-  if (route.kind === 'run') return <ComingSoon what="The run view" />;
+  if (route.kind === 'run') return <RunView key={route.id} id={route.id} />;
   if (route.kind === 'new-run') return <ComingSoon what="The new-run form" />;
   if (route.kind === 'repos') return <RepoPicker />;
   if (route.kind === 'pulls') return <PrPicker repo={route.repo} />;

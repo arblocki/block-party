@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { fakeGitHub } from '../core/testing/fakes.testutil.js';
 import { openStore, type Store } from '../core/store/index.js';
@@ -197,6 +197,8 @@ const ENDPOINTS: [string, string][] = [
   ['GET', '/api/runs'],
   ['GET', `/api/runs/${RUN_A}`],
   ['GET', `/api/runs/${RUN_A}/events`],
+  ['GET', `/api/runs/${RUN_A}/plan`],
+  ['GET', `/api/runs/${RUN_A}/findings`],
   ['GET', `/api/runs/${RUN_A}/stream`],
   ['GET', '/api/stream'],
   ['GET', '/api/inbox'],
@@ -365,6 +367,159 @@ describe('JSON endpoints', () => {
     expect(await json('/api/projects')).toEqual({
       projects: [expect.objectContaining({ id: projectId, owner: 'octocat', repo: 'hello-world' })],
     });
+  });
+});
+
+describe('run plan and findings', () => {
+  const finding = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    reviewedSha: 'abcdef1234',
+    severity: 'P1',
+    category: 'correctness',
+    title: `Finding ${id}`,
+    body: 'body',
+    location: { path: 'src/a.ts', startLine: 3, endLine: 4 },
+    confidence: 'high',
+    suggestedFix: null,
+    ...over,
+  });
+  let dir: string;
+  let outside: string;
+
+  beforeEach(() => {
+    dir = realpathSync(mkdtempSync(join(tmpdir(), 'bp-run-')));
+    outside = realpathSync(mkdtempSync(join(tmpdir(), 'bp-out-')));
+    mkdirSync(join(dir, 'plans'));
+    mkdirSync(join(dir, 'reviews', 'round-1'), { recursive: true });
+    mkdirSync(join(dir, 'reports'));
+    writeFileSync(join(dir, 'plans', 'v1.md'), PLAN);
+  });
+
+  const addRun = (over: Partial<RunInput> = {}) =>
+    runs.createRun(
+      runInput(projectId, { runDir: dir, planPath: join(dir, 'plans', 'v1.md'), ...over }),
+    );
+
+  it('returns the plan text, title and criteria', async () => {
+    addRun();
+    const body = await json(`/api/runs/${RUN_A}/plan`);
+    expect(body).toEqual({
+      text: PLAN,
+      title: 'Add widgets',
+      acceptanceCriteria: ['Widgets exist', 'Widgets are blue'],
+    });
+  });
+
+  it('falls back to the run title when the plan does not parse', async () => {
+    writeFileSync(join(dir, 'plans', 'v1.md'), 'just text');
+    addRun();
+    expect(await json(`/api/runs/${RUN_A}/plan`)).toEqual({
+      text: 'just text',
+      title: 'Add a thing',
+      acceptanceCriteria: [],
+    });
+  });
+
+  it('answers 404 when the plan file is missing', async () => {
+    addRun({ planPath: join(dir, 'plans', 'nope.md') });
+    expect((await req(`/api/runs/${RUN_A}/plan`)).status).toBe(404);
+  });
+
+  it('refuses a plan path outside the run directory, also through a symlink', async () => {
+    writeFileSync(join(outside, 'secret.md'), 'secret');
+    addRun({ planPath: join(outside, 'secret.md') });
+    const res = await req(`/api/runs/${RUN_A}/plan`);
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).not.toContain('secret"');
+
+    symlinkSync(join(outside, 'secret.md'), join(dir, 'plans', 'link.md'));
+    runs.updateRun(RUN_A, { planPath: join(dir, 'plans', 'link.md') });
+    expect((await req(`/api/runs/${RUN_A}/plan`)).status).toBe(403);
+    runs.updateRun(RUN_A, { planPath: relative(dir, join(outside, 'secret.md')) });
+    expect((await req(`/api/runs/${RUN_A}/plan`)).status).toBe(403);
+  });
+
+  it('returns review rounds with the resolutions the fix reports record', async () => {
+    addRun();
+    writeFileSync(
+      join(dir, 'reviews', 'round-1', 'findings.json'),
+      JSON.stringify({
+        reviewedSha: 'abcdef1234',
+        summary: 'Two problems',
+        findings: [finding('f1'), finding('f2', { severity: 'P3', location: null })],
+      }),
+    );
+    writeFileSync(
+      join(dir, 'reports', 'review-fix-1.json'),
+      JSON.stringify({
+        findingResolutions: [{ findingId: 'f1', resolution: 'fixed', note: 'done' }],
+      }),
+    );
+    const review = runs.startStage({ runId: RUN_A, kind: 'review', round: 1 });
+    runs.endStage(review, {
+      state: 'succeeded',
+      output: { findingsPath: join(dir, 'reviews', 'round-1', 'findings.json') },
+    });
+    const fix = runs.startStage({ runId: RUN_A, kind: 'review-fix', round: 1 });
+    runs.endStage(fix, {
+      state: 'succeeded',
+      output: { report: join(dir, 'reports', 'review-fix-1.json') },
+    });
+
+    const body = (await json(`/api/runs/${RUN_A}/findings`)) as {
+      rounds: { round: number; reviewedSha: string; summary: string; findings: unknown[] }[];
+    };
+    expect(body.rounds).toHaveLength(1);
+    expect(body.rounds[0]).toMatchObject({
+      round: 1,
+      reviewedSha: 'abcdef1234',
+      summary: 'Two problems',
+    });
+    expect(body.rounds[0]!.findings).toEqual([
+      expect.objectContaining({ id: 'f1', resolution: 'fixed', resolutionNote: 'done' }),
+      expect.objectContaining({ id: 'f2', resolution: null }),
+    ]);
+  });
+
+  it('returns no rounds before any review, and skips unreadable findings files', async () => {
+    addRun();
+    expect(await json(`/api/runs/${RUN_A}/findings`)).toEqual({ rounds: [] });
+    const review = runs.startStage({ runId: RUN_A, kind: 'review', round: 1 });
+    runs.endStage(review, { state: 'succeeded', output: { findingsPath: join(dir, 'gone.json') } });
+    expect(await json(`/api/runs/${RUN_A}/findings`)).toEqual({ rounds: [] });
+  });
+
+  it('refuses findings and reports outside the run directory, also through a symlink', async () => {
+    addRun();
+    writeFileSync(
+      join(outside, 'findings.json'),
+      JSON.stringify({ reviewedSha: 'abcdef1234', summary: 'leak', findings: [] }),
+    );
+    const review = runs.startStage({ runId: RUN_A, kind: 'review', round: 1 });
+    runs.endStage(review, {
+      state: 'succeeded',
+      output: { findingsPath: join(outside, 'findings.json') },
+    });
+    const res = await req(`/api/runs/${RUN_A}/findings`);
+    expect(res.status).toBe(403);
+    expect(JSON.stringify(await res.json())).not.toContain('leak');
+
+    symlinkSync(outside, join(dir, 'reviews', 'linked'));
+    runs.updateRun(RUN_A, {});
+    const other = runs.startStage({ runId: RUN_A, kind: 'review', round: 2 });
+    runs.endStage(other, {
+      state: 'succeeded',
+      output: { findingsPath: join(dir, 'reviews', 'linked', 'findings.json') },
+    });
+    expect((await req(`/api/runs/${RUN_A}/findings`)).status).toBe(403);
+  });
+
+  it('refuses a fix report outside the run directory', async () => {
+    addRun();
+    writeFileSync(join(outside, 'r.json'), '{"findingResolutions":[]}');
+    const fix = runs.startStage({ runId: RUN_A, kind: 'review-fix', round: 1 });
+    runs.endStage(fix, { state: 'succeeded', output: { report: join(outside, 'r.json') } });
+    expect((await req(`/api/runs/${RUN_A}/findings`)).status).toBe(403);
   });
 });
 

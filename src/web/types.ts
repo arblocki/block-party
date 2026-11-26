@@ -158,3 +158,81 @@ export interface InboxDecision {
   runTitle: string | null;
   runStage: RunStage | null;
 }
+
+/** An inbox decision without the run it was listed with (GET /api/runs/:id). */
+export type RunDecision = Omit<InboxDecision, 'runTitle' | 'runStage'>;
+
+export type StageKind =
+  'implement' | 'check-fix' | 'review-fix' | 'checks' | 'review' | 'publish' | 'wait-ci';
+
+export type StageState = 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
+
+/** One stage execution of a run (GET /api/runs/:id `stages`). */
+export interface StageRow {
+  id: number;
+  runId: string;
+  kind: StageKind;
+  round: number;
+  state: StageState;
+  input: unknown;
+  output: unknown;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+/** The run row plus its summary fields (GET /api/runs/:id `run`). */
+export interface RunDetail extends RunSummary {
+  baseRef: string;
+  baseSha: string;
+  headSha: string | null;
+}
+
+export interface RunDetailResponse {
+  run: RunDetail;
+  stages: StageRow[];
+  decisions: RunDecision[];
+}
+
+/** One line of a run's event log (GET /api/runs/:id/events and the stream's `run-event`). */
+export interface RunEvent {
+  id: number;
+  runId: string;
+  stageId: number | null;
+  ts: string;
+  type: string;
+  payload: unknown;
+}
+
+/** GET /api/runs/:id/plan */
+export interface RunPlan {
+  text: string;
+  title: string;
+  acceptanceCriteria: string[];
+}
+
+export interface ReviewFinding {
+  id: string;
+  reviewedSha: string;
+  severity: 'P0' | 'P1' | 'P2' | 'P3';
+  category: string;
+  title: string;
+  body: string;
+  location: { path: string; startLine: number; endLine: number } | null;
+  confidence: 'high' | 'medium' | 'low';
+  suggestedFix: string | null;
+  /** What the implementer answered ('fixed', 'disputed', 'deferred'), when known. */
+  resolution: string | null;
+  resolutionNote: string | null;
+}
+
+export interface ReviewRound {
+  round: number;
+  reviewedSha: string;
+  summary: string;
+  findings: ReviewFinding[];
+}
+
+/** GET /api/runs/:id/findings */
+export interface RunFindings {
+  rounds: ReviewRound[];
+}
