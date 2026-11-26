@@ -956,10 +956,10 @@ describe('triage, disputes and stop conditions', () => {
     expect(out.note).toContain('dismissed');
   });
 
-  const disputeTurn = (): Turn => ({
+  const disputeTurn = (id = 'f_1_1'): Turn => ({
     commit: false,
     report: report({
-      findingResolutions: [{ findingId: 'f_1_1', resolution: 'disputed', note: 'Works as is' }],
+      findingResolutions: [{ findingId: id, resolution: 'disputed', note: 'Works as is' }],
     }),
   });
 
@@ -994,7 +994,6 @@ describe('triage, disputes and stop conditions', () => {
     const { store } = scripted({ dispute: ['uphold'] });
     const h = harness({
       store,
-      section: { policy: { maxReviewFixRounds: 2 } },
       turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1') }],
       reviews: [review([two[0]!]), review([]), review([])],
     });
@@ -1002,7 +1001,7 @@ describe('triage, disputes and stop conditions', () => {
     expect(out.stage).toBe('awaiting_review');
     expect(h.calls.sends).toHaveLength(2);
     expect(readJson(out, 'inputs/rulings.json')).toEqual([
-      { key: 'r1:f_1_1', ruling: 'uphold', note: '' },
+      { key: 'r1:f_1_1', ruling: 'uphold', note: '', spent: true },
     ]);
     // Round 2 sent it again, by key, because ids restart every round.
     const again = readJson(out, 'inputs/findings-round-2.json') as { id: string }[];
@@ -1062,7 +1061,7 @@ describe('triage, disputes and stop conditions', () => {
       turns: [{}, { report: fixed('f_1_1') }],
       reviews: [review([two[0]!])],
     }).run();
-    expect(asked[0]!.body).toContain('deleted 1 file');
+    expect(asked[0]!.body).toContain('deleted or renamed 1 file');
   });
 
   it('a normal fix does not ask', async () => {
@@ -1074,6 +1073,157 @@ describe('triage, disputes and stop conditions', () => {
     }).run();
     expect(out.stage).toBe('awaiting_review');
     expect(asked).toHaveLength(0);
+  });
+  it('an upheld dispute is disputed again: no second question, escalated, then a continuation leaves it alone', async () => {
+    const { store, asked } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      turns: [{}, disputeTurn(), disputeTurn('r1:f_1_1'), {}],
+      reviews: [review([two[0]!]), review([]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked.filter((a) => a.kind === 'dispute')).toHaveLength(1);
+    expect(h.calls.sends).toHaveLength(2);
+    const stuck = store
+      .listDecisions({ runId: out.runId })
+      .find((d) => d.title === 'Upheld findings still unresolved');
+    expect(stuck).toMatchObject({ kind: 'cap_reached' });
+    expect(stuck!.body).toContain('r1:f_1_1');
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'disputed' });
+    // A continuation rebuilds the rulings from disk: the spent upheld finding gets no third turn.
+    const review1 = store
+      .listDecisions({ runId: out.runId, status: 'open' })
+      .find((d) => d.kind === 'final_review')!;
+    store.answerDecision(review1.id, { choice: 'send_back', note: 'x' });
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'x' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(3);
+    expect(h.calls.reviews.at(-1)!.priorFindings[0]).toMatchObject({ ruling: 'uphold' });
+  });
+
+  it('uphold of a P2 still gets its fix turn at the default cap', async () => {
+    const { store } = scripted({ finding_triage: ['fix'], dispute: ['uphold'] });
+    const h = harness({
+      store,
+      turns: [{}, disputeTurn('f_1_2'), { report: fixed('r1:f_1_2') }],
+      reviews: [review([two[1]!]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'fixed' });
+  });
+
+  it('folds a finding that raises an upheld one again into it', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      section: { policy: { maxReviewFixRounds: 2 } },
+      turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1') }],
+      reviews: [
+        review([two[0]!]),
+        review([finding('f_2_1', 'P1', 'Null deref', 'r1:f_1_1')]),
+        review([]),
+      ],
+    });
+    const out = await h.run();
+    const sent = readJson(out, 'inputs/findings-round-2.json') as { id: string }[];
+    expect(sent.map((f) => f.id)).toEqual(['r1:f_1_1']);
+    expect(store.listFindings(out.runId).map((r) => [r.key, r.status])).toEqual([
+      ['r1:f_1_1', 'fixed'],
+      ['r2:f_2_1', 'fixed'],
+    ]);
+  });
+
+  it('a P0 that points at a skipped P2 is still fixed', async () => {
+    const { store, asked } = scripted({ finding_triage: ['skip'] });
+    const h = harness({
+      store,
+      section: { policy: { maxReviewFixRounds: 2 } },
+      turns: [{}, { report: fixed('f_1_1') }, { report: fixed('f_2_1') }],
+      reviews: [
+        review(two),
+        review([finding('f_2_1', 'P0', 'Worse than it looked', 'r1:f_1_2')]),
+        review([]),
+      ],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(1);
+    expect(store.listFindings(out.runId).map((r) => [r.key, r.status])).toEqual([
+      ['r1:f_1_1', 'fixed'],
+      ['r1:f_1_2', 'skipped'],
+      ['r2:f_2_1', 'fixed'],
+    ]);
+  });
+
+  it('a P3 that repeats a fixed finding is recorded, not a halt', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([finding('f_2_1', 'P3', 'Nit again', 'r1:f_1_1')])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('repeat.recorded');
+  });
+
+  it('says which P2s were not asked about once the cap is reached', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([finding('f_2_1', 'P2', 'Late nit')])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    const ev = store.listEvents(out.runId).find((e) => e.type === 'triage.not_asked');
+    expect(ev?.payload).toMatchObject({ findings: ['r2:f_2_1'] });
+    const d = store
+      .listDecisions({ runId: out.runId })
+      .find((x) => x.title === 'Findings not triaged');
+    expect(d).toMatchObject({ kind: 'cap_reached' });
+    expect(d!.body).toContain('r2:f_2_1');
+  });
+
+  it('counts files outside the findings paths, ignoring a leading ./', async () => {
+    const { store, asked } = scripted({ broad_fix: ['accept'] });
+    await harness({
+      store,
+      section: { policy: { broadFixFiles: 1 } },
+      diffFiles: [
+        { path: './a.ts', added: 1, deleted: 0, status: 'M' },
+        { path: 'b.ts', added: 1, deleted: 0, status: 'M' },
+        { path: 'c.ts', added: 1, deleted: 0, status: 'M' },
+      ],
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([])],
+    }).run();
+    expect(asked[0]!.body).toContain('touched 2 files outside');
+  });
+
+  it('cancels a run aborted while it waits for an answer, dismissing the question', async () => {
+    const ac = new AbortController();
+    const real = openStore(':memory:').runs;
+    const store: RunStore = new Proxy(real, {
+      get(target, prop, recv) {
+        if (prop === 'openDecision') {
+          return (input: Parameters<RunStore['openDecision']>[0]) => {
+            const id = target.openDecision(input);
+            if (input.kind === 'finding_triage') ac.abort();
+            return id;
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    const out = await harness({ store, turns: [{}], reviews: [review([two[1]!])] }).run(ac.signal);
+    expect(out.stage).toBe('cancelled');
+    const [d] = store
+      .listDecisions({ runId: out.runId })
+      .filter((x) => x.kind === 'finding_triage');
+    expect(d!.status).toBe('dismissed');
   });
 });
 

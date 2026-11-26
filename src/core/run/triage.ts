@@ -13,6 +13,8 @@ export const RulingSchema = z.object({
   key: z.string().min(1),
   ruling: z.enum(RULING_KINDS),
   note: z.string(),
+  /** An `uphold` ruling whose extra fix turn has been used: it is not fixed again. */
+  spent: z.boolean().optional(),
 });
 export type Ruling = z.infer<typeof RulingSchema>;
 
@@ -64,9 +66,36 @@ export function withRuling(rulings: Ruling[], next: Ruling): Ruling[] {
   return [...rulings.filter((r) => r.key !== next.key), next];
 }
 
-export function parseRulings(raw: unknown): Ruling[] {
-  const parsed = z.array(RulingSchema).safeParse(raw);
-  return parsed.success ? parsed.data : [];
+/** Valid entries of a rulings file; invalid ones are skipped one by one and counted. */
+export function parseRulings(raw: unknown): { rulings: Ruling[]; invalid: number } {
+  if (!Array.isArray(raw)) return { rulings: [], invalid: raw === undefined ? 0 : 1 };
+  const rulings: Ruling[] = [];
+  let invalid = 0;
+  for (const entry of raw as unknown[]) {
+    const parsed = RulingSchema.safeParse(entry);
+    if (parsed.success) rulings.push(parsed.data);
+    else invalid++;
+  }
+  return { rulings, invalid };
+}
+
+const SEVERITY_RANK: Record<Finding['severity'], number> = { P0: 0, P1: 1, P2: 2, P3: 3 };
+const TRIAGE_RANK: Record<FindingTriage, number> = { auto_fix: 3, ask: 2, record: 1 };
+
+/**
+ * Whether a finding that raises a ruled one again may take its ruling: only if it is no more
+ * severe and its triage class no stricter. The reviewer's `repeatOf` must not be able to
+ * suppress something worse than what the owner looked at.
+ */
+export function mayInherit(
+  policy: RunConfig['policy'],
+  ruled: Finding['severity'],
+  next: Finding['severity'],
+): boolean {
+  return (
+    SEVERITY_RANK[next] >= SEVERITY_RANK[ruled] &&
+    TRIAGE_RANK[triageOf(policy, next)] <= TRIAGE_RANK[triageOf(policy, ruled)]
+  );
 }
 
 function where(f: Finding): string {
@@ -85,17 +114,18 @@ function findingLines(f: Finding): string[] {
   ];
 }
 
-export function triageBody(f: Finding): string {
-  return findingLines(f).join('\n');
+export function triageBody(f: Finding, earlier?: string): string {
+  return [...findingLines(f), ...(earlier ? ['', earlier] : [])].join('\n');
 }
 
-export function disputeBody(key: string, f: Finding, note: string): string {
+export function disputeBody(key: string, f: Finding, note: string, earlier?: string): string {
   return [
     `The implementer disputes ${key}.`,
     '',
     ...findingLines(f),
     '',
     `Implementer's note: ${note || '(no note)'}`,
+    ...(earlier ? ['', earlier] : []),
   ].join('\n');
 }
 
@@ -119,14 +149,15 @@ export function assessFix(
   fixSet: Finding[],
   policy: RunConfig['policy'],
 ): FixAssessment {
-  const paths = new Set(fixSet.flatMap((f) => (f.location ? [f.location.path] : [])));
+  const norm = (p: string) => p.replace(/^(\.\/)+/, '');
+  const paths = new Set(fixSet.flatMap((f) => (f.location ? [norm(f.location.path)] : [])));
   const lines = files.reduce((n, f) => n + f.added + f.deleted, 0);
   const lineBudget = policy.maxFixLinesPerFinding * fixSet.length;
   const deletedFiles = files.filter((f) => f.status === 'D').map((f) => f.path);
-  const outsideFiles = files.filter((f) => !paths.has(f.path)).map((f) => f.path);
+  const outsideFiles = files.filter((f) => !paths.has(norm(f.path))).map((f) => f.path);
   const reasons: string[] = [];
   if (lines > lineBudget) reasons.push(`${lines} lines changed, over the budget of ${lineBudget}`);
-  if (deletedFiles.length > 0) reasons.push(`deleted ${deletedFiles.length} file(s)`);
+  if (deletedFiles.length > 0) reasons.push(`deleted or renamed ${deletedFiles.length} file(s)`);
   if (outsideFiles.length > policy.broadFixFiles) {
     reasons.push(
       `touched ${outsideFiles.length} files outside the findings' paths (limit ${policy.broadFixFiles})`,

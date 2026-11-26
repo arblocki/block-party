@@ -318,7 +318,9 @@ export async function loadContext(
   ctx.reports = await loadReports(runDir, runId, deps.store);
   ctx.lastReport = ctx.reports.at(-1)?.report;
   ctx.rulingsWritten = (await listDir(join(runDir, 'inputs'))).includes('rulings.json');
-  ctx.rulings = parseRulings(await readJson(join(runDir, 'inputs', 'rulings.json')));
+  const rulings = parseRulings(await readJson(join(runDir, 'inputs', 'rulings.json')));
+  ctx.rulings = rulings.rulings;
+  if (rulings.invalid > 0) rec.event('rulings.invalid', { skipped: rulings.invalid });
   if (st.implementer) {
     ctx.session = {
       mode: st.implementer.mode,
