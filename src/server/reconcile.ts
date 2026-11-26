@@ -50,6 +50,7 @@ export function reconcileRuns(opts: ReconcileOptions): string[] {
     const current = runs.getRun(run.id);
     if (!current || current.stage !== run.stage) continue;
     runs.updateRun(run.id, { stage: 'interrupted', stageNote: note });
+    runs.closeOpenQuestions(run.id);
     runs.appendEvent({
       runId: run.id,
       ts: now().toISOString(),

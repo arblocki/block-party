@@ -28,7 +28,7 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
-import { assertTransition } from './machine.js';
+import { assertTransition, isTerminal } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
@@ -181,6 +181,8 @@ async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null 
   ctx.st = next;
   ctx.rec.state(next);
   ctx.rec.event('stage', { stage, note: note ?? undefined });
+  // A run that ended can't act on an unanswered question.
+  if (isTerminal(stage)) ctx.rec.closeOpenQuestions();
 }
 
 async function patchState(ctx: Ctx, patch: Partial<RunState>) {

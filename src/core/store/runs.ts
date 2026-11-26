@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { ACTIVE_STAGES, RESTING_STAGES, type RunStage } from '../run/machine.js';
+import { ACTIVE_STAGES, isTerminal, RESTING_STAGES, type RunStage } from '../run/machine.js';
 import type { RunState } from '../run/run-state.js';
 
 /** A local checkout block-party runs against. Keyed by `localPath`. */
@@ -99,7 +99,7 @@ export interface DecisionAnswer {
   note: string | null;
 }
 
-export type AnswerResult = 'answered' | 'not_open' | 'bad_choice';
+export type AnswerResult = 'answered' | 'not_open' | 'bad_choice' | 'run_ended';
 
 /** An inbox item: something a run needs a human for. */
 export interface Decision {
@@ -176,6 +176,11 @@ export interface RunStore {
    * a second answer gets `not_open`.
    */
   answerDecision(id: number, answer: DecisionAnswer): AnswerResult;
+  /**
+   * Dismisses the run's open decisions that have options (nobody is left to act on an
+   * answer once the run ended); returns how many it closed.
+   */
+  closeOpenQuestions(runId: string): number;
   /** Marks an open (or answered) decision resolved; returns whether a row changed. */
   resolveDecision(id: number): boolean;
   /** Marks an open decision dismissed; returns whether a row changed. */
@@ -445,6 +450,9 @@ export function createRunStore(db: Database.Database): RunStore {
   const resolveStmt = db.prepare(`
     UPDATE decisions SET status = 'resolved', resolved_at = ?
     WHERE id = ? AND status IN ('open', 'answered')`);
+  const closeQuestions = db.prepare(`
+    UPDATE decisions SET status = 'dismissed', resolved_at = ?
+    WHERE run_id = ? AND status = 'open' AND options_json IS NOT NULL`);
   const decisionById = db.prepare<[number], DecisionDb>('SELECT * FROM decisions WHERE id = ?');
   const answerStmt = db.prepare(`
     UPDATE decisions SET status = 'answered', answer_json = ?, answered_at = ?
@@ -572,6 +580,8 @@ export function createRunStore(db: Database.Database): RunStore {
         .transaction((): AnswerResult => {
           const row = decisionById.get(id);
           if (!row || row.status !== 'open') return 'not_open';
+          const stage = runById.get(row.run_id)?.stage as RunStage | undefined;
+          if (stage && isTerminal(stage)) return 'run_ended';
           const options = fromJson(row.options_json) as DecisionOption[] | null;
           if (!options?.some((o) => o.id === answer.choice)) return 'bad_choice';
           const stored: DecisionAnswer = { choice: answer.choice, note: answer.note ?? null };
@@ -580,6 +590,9 @@ export function createRunStore(db: Database.Database): RunStore {
             : 'not_open';
         })
         .immediate();
+    },
+    closeOpenQuestions(runId) {
+      return closeQuestions.run(now(), runId).changes;
     },
     resolveDecision(id) {
       return resolveStmt.run(now(), id).changes > 0;

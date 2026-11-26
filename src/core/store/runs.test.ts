@@ -309,6 +309,45 @@ describe('run store', () => {
       expect(runs.getDecision(id)?.status).toBe('resolved');
     });
 
+    it('closeOpenQuestions dismisses only open optioned decisions of that run', () => {
+      runs.createRun(runInput(projectId, { id: 'a' }));
+      runs.createRun(runInput(projectId, { id: 'b' }));
+      const q = runs.openDecision({ runId: 'a', kind: 'dispute', title: 'Q', body: 'b', options });
+      const answered = runs.openDecision({
+        runId: 'a',
+        kind: 'dispute',
+        title: 'A',
+        body: 'b',
+        options,
+      });
+      runs.answerDecision(answered, { choice: 'yes', note: null });
+      const plain = runs.openDecision({ runId: 'a', kind: 'blocked', title: 'P', body: 'b' });
+      const other = runs.openDecision({
+        runId: 'b',
+        kind: 'dispute',
+        title: 'O',
+        body: 'b',
+        options,
+      });
+      expect(runs.closeOpenQuestions('a')).toBe(1);
+      expect(runs.getDecision(q)).toMatchObject({
+        status: 'dismissed',
+        resolvedAt: expect.any(String),
+      });
+      expect(runs.getDecision(answered)?.status).toBe('answered');
+      expect(runs.getDecision(plain)?.status).toBe('open');
+      expect(runs.getDecision(other)?.status).toBe('open');
+      expect(runs.closeOpenQuestions('a')).toBe(0);
+    });
+
+    it('answerDecision returns run_ended when the run is terminal', () => {
+      runs.createRun(runInput(projectId, { id: 'a', stage: 'awaiting_decision' }));
+      const id = runs.openDecision({ runId: 'a', kind: 'dispute', title: 'Q', body: 'b', options });
+      runs.updateRun('a', { stage: 'failed' });
+      expect(runs.answerDecision(id, { choice: 'yes', note: null })).toBe('run_ended');
+      expect(runs.getDecision(id)?.status).toBe('open');
+    });
+
     it('does not answer unknown, dismissed or option-less decisions', () => {
       runs.createRun(runInput(projectId, { id: 'a' }));
       const plain = runs.openDecision({ runId: 'a', kind: 'blocked', title: 'Q', body: 'b' });

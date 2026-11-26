@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isTerminal } from '../../core/run/machine';
+import { isResting, isTerminal } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { prHref, relativeTime } from '../lib/route';
@@ -291,9 +291,8 @@ export function RunView({ id }: { id: string }) {
   }
 
   const project = runProject(run);
-  const open = detail.decisions.filter(
-    (d) => d.status === 'open' || (d.status === 'answered' && d.options !== null),
-  );
+  const open = detail.decisions.filter((d) => d.status === 'open');
+  const answered = detail.decisions.filter((d) => d.status === 'answered' && d.options !== null);
 
   return (
     <div className="mx-auto max-w-4xl px-4 py-6">
@@ -311,7 +310,7 @@ export function RunView({ id }: { id: string }) {
           <h1 className="text-xl font-semibold">{run.title}</h1>
           <StageBadge stage={run.stage} />
           <span className="flex-1" />
-          {!isTerminal(run.stage) && (
+          {!isTerminal(run.stage) && !isResting(run.stage) && (
             <button type="button" className={linkButton} disabled={cancelling} onClick={cancel}>
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>
@@ -350,6 +349,18 @@ export function RunView({ id }: { id: string }) {
                 onDismiss={() => dismiss(d.id)}
                 onAnswered={() => refetchRef.current()}
               />
+            ))}
+          </ul>
+        </section>
+      )}
+      {answered.length > 0 && (
+        <section className="mb-8" aria-labelledby="answered">
+          <h2 id="answered" className={sectionHeading}>
+            Answered
+          </h2>
+          <ul className={listClass}>
+            {answered.map((d) => (
+              <DecisionItem key={d.id} d={d} hideRunLink onDismiss={() => dismiss(d.id)} />
             ))}
           </ul>
         </section>

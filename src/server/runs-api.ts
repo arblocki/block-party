@@ -4,6 +4,7 @@ import type { Context, Hono } from 'hono';
 import { z } from 'zod';
 import { createGit, type Git } from '../core/git/index.js';
 import type { RunFlagOverrides } from '../core/run/config.js';
+import { isTerminal } from '../core/run/machine.js';
 import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
@@ -365,9 +366,13 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   app.post('/api/inbox/:id/dismiss', (c) => {
     const id = intParam(c.req.param('id'));
     if (id === null || id === undefined || id === 0) return badRequest(c, 'invalid decision id');
-    // An unanswered question would strand the run that waits on it.
-    if (runs.getDecision(id)?.options?.length) {
-      return c.json({ error: 'this decision has options: answer it instead' }, 409);
+    // An unanswered question would strand the run that waits on it, unless the run ended.
+    const existing = runs.getDecision(id);
+    if (existing?.options?.length) {
+      const run = runs.getRun(existing.runId);
+      if (!run || !isTerminal(run.stage)) {
+        return c.json({ error: 'this decision has options: answer it instead' }, 409);
+      }
     }
     return c.json({ changed: runs.dismissDecision(id) });
   });
@@ -383,6 +388,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       note: body.data.note?.trim() || null,
     });
     if (result === 'not_open') return c.json({ error: 'decision is not open' }, 409);
+    if (result === 'run_ended') return c.json({ error: 'the run has ended' }, 409);
     if (result === 'bad_choice') return badRequest(c, 'choice is not one of the options');
     return c.json({ decision: runs.getDecision(id) });
   });

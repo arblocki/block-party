@@ -741,6 +741,37 @@ function brokenStore(): RunStore {
 }
 
 describe('runPipeline with a store', () => {
+  it('dismisses open optioned decisions when the run ends, leaving plain ones', async () => {
+    const real = openStore(':memory:').runs;
+    const store: RunStore = new Proxy(real, {
+      get(target, prop, recv) {
+        if (prop === 'startStage') {
+          return (input: Parameters<RunStore['startStage']>[0]) => {
+            if (target.listDecisions({ runId: input.runId }).length === 0) {
+              target.openDecision({
+                runId: input.runId,
+                kind: 'dispute',
+                title: 'Q',
+                body: 'b',
+                options: [{ id: 'a', label: 'A' }],
+              });
+              target.openDecision({ runId: input.runId, kind: 'blocked', title: 'P', body: 'b' });
+            }
+            return target.startStage(input);
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    const h = harness({ store, turns: [{}], reviews: [review([])] });
+    const out = await h.run();
+    expect(out.stage).toBe('complete');
+    expect(store.listDecisions({ runId: out.runId }).map((d) => [d.title, d.status])).toEqual([
+      ['P', 'open'],
+      ['Q', 'dismissed'],
+    ]);
+  });
+
   it('records a full run: run row, every event, stage rows, no open decisions', async () => {
     const store = openStore(':memory:').runs;
     const f = finding('f_1_1', 'P1', 'Null deref in widget');

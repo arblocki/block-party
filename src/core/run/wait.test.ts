@@ -114,6 +114,14 @@ describe('waitForAnswer', () => {
     expect(err).toMatchObject({ decisionId: id });
   });
 
+  it('rejects when the decision was resolved without an answer', async () => {
+    const p = waitForAnswer(store.runs, id, { intervalMs: 100 });
+    const caught = p.catch((e: unknown) => e);
+    store.runs.resolveDecision(id);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await caught).toBeInstanceOf(DecisionDismissedError);
+  });
+
   it('keeps polling through a failed read', async () => {
     let fail = true;
     const getDecision = vi.fn((n: number) => {

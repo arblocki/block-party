@@ -99,6 +99,17 @@ describe('RunRecorder', () => {
     });
   });
 
+  it('closeOpenQuestions dismisses optioned decisions of the run and never throws', () => {
+    const store = openStore(':memory:').runs;
+    const { rec } = setup(store);
+    rec.state(runState());
+    const id = rec.openDecision('dispute', 't', 'b', null, [{ id: 'a', label: 'A' }]) as number;
+    rec.closeOpenQuestions();
+    expect(store.getDecision(id)?.status).toBe('dismissed');
+    expect(() => setup(brokenStore()).rec.closeOpenQuestions()).not.toThrow();
+    expect(() => setup().rec.closeOpenQuestions()).not.toThrow();
+  });
+
   it('returns null from openDecision when the database fails, and without a store', () => {
     const { rec } = setup();
     expect(rec.openDecision('blocked', 't', 'b', null)).toBeNull();

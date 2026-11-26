@@ -17,7 +17,7 @@ export interface WaitOptions {
 /**
  * Waits until another writer (the server) answers decision `id`, by polling the store. Read errors are retried. Rejects
  * with the signal's reason when aborted and with `DecisionDismissedError` when the decision
- * is dismissed or missing. A decision already resolved with an answer still yields it.
+ * is dismissed, resolved without an answer, or missing. A decision already resolved with an answer still yields it.
  */
 export function waitForAnswer(
   store: Pick<RunStore, 'getDecision'>,
@@ -49,7 +49,7 @@ export function waitForAnswer(
       if (d?.answer) {
         const answer = d.answer;
         finish(() => resolve(answer));
-      } else if (!d || d.status === 'dismissed') {
+      } else if (!d || d.status === 'dismissed' || d.status === 'resolved') {
         finish(() => reject(new DecisionDismissedError(id)));
       } else {
         timer = setTimeout(check, intervalMs);

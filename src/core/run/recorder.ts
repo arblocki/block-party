@@ -118,6 +118,11 @@ export class RunRecorder {
     return this.openDecisionId(kind, title, body, attach, options) ?? null;
   }
 
+  /** Dismisses the run's open optioned decisions; call when the run has ended. */
+  closeOpenQuestions(): void {
+    this.withRun('closeOpenQuestions', (s, runId) => s.closeOpenQuestions(runId));
+  }
+
   /** Waits for decision `id` to be answered and records `decision.answered`. */
   async awaitDecision(id: number, signal?: AbortSignal): Promise<DecisionAnswer> {
     const store = this.store;

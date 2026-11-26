@@ -133,6 +133,23 @@ describe('reconcileRuns', () => {
     });
   });
 
+  it('dismisses the open optioned decisions of an interrupted run', () => {
+    addRun('r20260101-aaaaaa', { stage: 'awaiting_decision' });
+    const q = store.runs.openDecision({
+      runId: 'r20260101-aaaaaa',
+      kind: 'dispute',
+      title: 'Q',
+      body: 'b',
+      options: [{ id: 'a', label: 'A' }],
+    });
+    reconcile();
+    expect(store.runs.getDecision(q)?.status).toBe('dismissed');
+    // Only the interrupted decision is left open.
+    expect(store.runs.listDecisions({ status: 'open' }).map((d) => d.kind)).toEqual([
+      'interrupted',
+    ]);
+  });
+
   it('changes a run only once', () => {
     addRun('r20260101-aaaaaa');
     expect(reconcile()).toHaveLength(1);

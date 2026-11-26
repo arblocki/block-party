@@ -431,6 +431,22 @@ describe('JSON endpoints', () => {
       expect(runs.getDecision(id)?.answer?.choice).toBe('yes');
     });
 
+    it('lets an optioned decision be dismissed, but not answered, once its run ended', async () => {
+      const id = open();
+      runs.updateRun(RUN_A, { stage: 'failed' });
+      expect((await answer(id, { choice: 'yes' })).status).toBe(409);
+      expect(runs.getDecision(id)?.status).toBe('open');
+      const res = await req(`/api/inbox/${id}/dismiss`, { method: 'POST' });
+      expect(res.status).toBe(200);
+      expect(runs.getDecision(id)?.status).toBe('dismissed');
+    });
+
+    it('still refuses to dismiss while the run is resting', async () => {
+      const id = open();
+      runs.updateRun(RUN_A, { stage: 'awaiting_review' });
+      expect((await req(`/api/inbox/${id}/dismiss`, { method: 'POST' })).status).toBe(409);
+    });
+
     it('refuses to dismiss a decision that has options', async () => {
       const id = open();
       const res = await req(`/api/inbox/${id}/dismiss`, { method: 'POST' });
