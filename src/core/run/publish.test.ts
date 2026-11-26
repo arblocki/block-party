@@ -366,6 +366,7 @@ describe('renderPrBody', () => {
     location: { path: 'src/a.ts', startLine: 3, endLine: 5 },
     confidence: 'high',
     suggestedFix: null,
+    repeatOf: null,
     ...extra,
   });
   const body = (reviewRounds: ReviewRoundInput[]) =>

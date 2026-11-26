@@ -8,7 +8,15 @@ import { isTerminal } from '../core/run/machine.js';
 import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
-import type { Decision, Project, RunRow, RunStore } from '../core/store/runs.js';
+import type {
+  Decision,
+  FindingRow,
+  FindingStatus,
+  Project,
+  RunRow,
+  RunStore,
+  StageRow,
+} from '../core/store/runs.js';
 import { reopenFinalReview } from '../core/run/final-review.js';
 import { PlanValidationError, UnknownProjectError, type RunManager } from './run-manager.js';
 import { parseBody } from './state.js';
@@ -89,6 +97,73 @@ const stringField = (value: unknown, key: string): string | null => {
 const badRequest = (c: Context, error: string) => c.json({ error }, 400);
 
 const errorMessage = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
+/** One review round of GET /api/runs/:id/findings. */
+interface FindingsRound {
+  round: number;
+  reviewedSha: string;
+  summary: string;
+  findings: FindingRow[];
+}
+
+const RESOLVED_STATUS: Record<string, FindingStatus> = {
+  fixed: 'fixed',
+  disputed: 'disputed',
+  deferred: 'deferred',
+};
+
+/** A finding from a findings file, in the shape of a stored row (for runs without rows). */
+function fileRow(
+  runId: string,
+  round: number,
+  f: z.infer<typeof ReviewerOutputSchema>['findings'][number],
+  said: { resolution: string; note: string } | undefined,
+): FindingRow {
+  return {
+    runId,
+    round,
+    id: f.id,
+    key: `r${round}:${f.id}`,
+    reviewedSha: f.reviewedSha,
+    severity: f.severity,
+    category: f.category,
+    title: f.title,
+    body: f.body,
+    location: f.location,
+    confidence: f.confidence,
+    suggestedFix: f.suggestedFix,
+    repeatOf: f.repeatOf,
+    triage: f.severity === 'P0' || f.severity === 'P1' ? 'auto_fix' : 'record',
+    status: (said && RESOLVED_STATUS[said.resolution]) || 'open',
+    resolutionNote: said?.note ?? null,
+    updatedAt: '',
+  };
+}
+
+/** Rounds from stored rows; a round that found nothing has no rows, so its stage lists it. */
+function storedRounds(stages: StageRow[], rows: FindingRow[]): FindingsRound[] {
+  const rounds = new Map<number, FindingsRound>();
+  for (const st of stages) {
+    if (st.kind !== 'review' || st.state !== 'succeeded') continue;
+    rounds.set(st.round, {
+      round: st.round,
+      reviewedSha: stringField(st.input, 'reviewedSha') ?? '',
+      summary: stringField(st.output, 'summary') ?? '',
+      findings: [],
+    });
+  }
+  for (const row of rows) {
+    const r = rounds.get(row.round) ?? {
+      round: row.round,
+      reviewedSha: row.reviewedSha,
+      summary: '',
+      findings: [],
+    };
+    rounds.set(row.round, r);
+    r.findings.push(row);
+  }
+  return [...rounds.values()].sort((a, b) => a.round - b.round);
+}
 
 const projectSchema = z.strictObject({ path: z.string().trim().min(1) });
 
@@ -224,20 +299,14 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const run = runOf(c);
     if (run instanceof Response) return run;
     const stages = runs.listStages(run.id);
+    const stored = runs.listFindings(run.id);
+    if (stored.length > 0) return c.json({ rounds: storedRounds(stages, stored) });
     // What the implementer said about each finding, from its review-fix reports. Finding ids
     // repeat across rounds (f_1 ...), so each report belongs to the review it followed: the
     // closest earlier review stage (stages come in execution order).
     type Resolutions = Record<string, { resolution: string; note: string }>;
     const resolutionsByReview = new Map<number, Resolutions>();
-    const rounds: {
-      round: number;
-      reviewedSha: string;
-      summary: string;
-      findings: (z.infer<typeof ReviewerOutputSchema>['findings'][number] & {
-        resolution: string | null;
-        resolutionNote: string | null;
-      })[];
-    }[] = [];
+    const rounds: FindingsRound[] = [];
     try {
       let lastReviewId: number | null = null;
       for (const st of stages) {
@@ -280,11 +349,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
           round: st.round,
           reviewedSha: out.data.reviewedSha,
           summary: out.data.summary,
-          findings: out.data.findings.map((f) => ({
-            ...f,
-            resolution: resolutions[f.id]?.resolution ?? null,
-            resolutionNote: resolutions[f.id]?.note ?? null,
-          })),
+          findings: out.data.findings.map((f) => fileRow(run.id, st.round, f, resolutions[f.id])),
         });
       }
     } catch (e) {

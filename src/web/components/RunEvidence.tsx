@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { findingHistory } from '../lib/findings';
 import { checksBySha } from '../lib/runView';
 import type { ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
 import { sectionHeading } from './AppShell';
@@ -54,7 +55,71 @@ export function PlanSection({ plan, error }: { plan: RunPlan | null; error: stri
   );
 }
 
-function FindingsTable({ findings }: { findings: ReviewFinding[] }) {
+const TRIAGE_LABEL: Record<ReviewFinding['triage'], string> = {
+  auto_fix: 'auto-fix',
+  ask: 'ask',
+  record: 'record',
+};
+
+const locationText = (f: ReviewFinding): string =>
+  f.location
+    ? `${f.location.path}:${f.location.startLine}${f.location.endLine !== f.location.startLine ? `-${f.location.endLine}` : ''}`
+    : '';
+
+/** One finding's row, with a toggle for its history when it repeats or was repeated. */
+function FindingItem({ f, all }: { f: ReviewFinding; all: ReviewFinding[] }) {
+  const [open, setOpen] = useState(false);
+  const history = findingHistory(all, f.key);
+  return (
+    <>
+      <tr className="align-top">
+        <td className="py-1.5 pr-3">
+          <span
+            className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${SEVERITY_CLASS[f.severity]}`}
+          >
+            {f.severity}
+          </span>
+        </td>
+        <td className="py-1.5 pr-3">
+          {f.title}
+          <span className="ml-2 text-xs text-muted">{f.category}</span>
+          {history.length > 1 && (
+            <button
+              type="button"
+              className="ml-2 text-xs text-accent hover:underline"
+              aria-expanded={open}
+              onClick={() => setOpen((o) => !o)}
+            >
+              history ({history.length})
+            </button>
+          )}
+        </td>
+        <td className="py-1.5 pr-3 font-mono text-xs">{locationText(f)}</td>
+        <td className="py-1.5 pr-3 text-xs text-muted">{TRIAGE_LABEL[f.triage]}</td>
+        <td className="py-1.5 text-xs" title={f.resolutionNote ?? undefined}>
+          {f.status}
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td />
+          <td colSpan={4} className="pb-2 pr-3">
+            <ol className="space-y-0.5 border-l border-line pl-3 text-xs">
+              {history.map((h) => (
+                <li key={h.key} className={h.key === f.key ? 'font-medium' : undefined}>
+                  <span className="font-mono">{h.key}</span> {h.severity} {h.status}
+                  {h.resolutionNote ? ` — ${h.resolutionNote}` : ''}
+                </li>
+              ))}
+            </ol>
+          </td>
+        </tr>
+      )}
+    </>
+  );
+}
+
+function FindingsTable({ findings, all }: { findings: ReviewFinding[]; all: ReviewFinding[] }) {
   if (findings.length === 0) return <p className="mt-1 text-sm text-muted">No findings.</p>;
   return (
     <div className="mt-2 overflow-x-auto">
@@ -64,32 +129,13 @@ function FindingsTable({ findings }: { findings: ReviewFinding[] }) {
             <th className="py-1 pr-3 font-medium">Severity</th>
             <th className="py-1 pr-3 font-medium">Finding</th>
             <th className="py-1 pr-3 font-medium">Location</th>
-            <th className="py-1 font-medium">Resolution</th>
+            <th className="py-1 pr-3 font-medium">Triage</th>
+            <th className="py-1 font-medium">Status</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-line">
           {findings.map((f) => (
-            <tr key={f.id} className="align-top">
-              <td className="py-1.5 pr-3">
-                <span
-                  className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${SEVERITY_CLASS[f.severity]}`}
-                >
-                  {f.severity}
-                </span>
-              </td>
-              <td className="py-1.5 pr-3">
-                {f.title}
-                <span className="ml-2 text-xs text-muted">{f.category}</span>
-              </td>
-              <td className="py-1.5 pr-3 font-mono text-xs">
-                {f.location
-                  ? `${f.location.path}:${f.location.startLine}${f.location.endLine !== f.location.startLine ? `-${f.location.endLine}` : ''}`
-                  : ''}
-              </td>
-              <td className="py-1.5 text-xs" title={f.resolutionNote ?? undefined}>
-                {f.resolution ?? <span className="text-muted">open</span>}
-              </td>
-            </tr>
+            <FindingItem key={f.key} f={f} all={all} />
           ))}
         </tbody>
       </table>
@@ -108,6 +154,7 @@ export function EvidenceSection({
   findingsError: string | null;
 }) {
   const shas = checksBySha(stages);
+  const allFindings = (rounds ?? []).flatMap((r) => r.findings);
   return (
     <section className="mb-8" aria-labelledby="evidence">
       <h2 id="evidence" className={sectionHeading}>
@@ -171,7 +218,7 @@ export function EvidenceSection({
                 </span>
               </div>
               {r.summary && <p className="mt-1 text-sm text-muted">{r.summary}</p>}
-              <FindingsTable findings={r.findings} />
+              <FindingsTable findings={r.findings} all={allFindings} />
             </li>
           ))}
         </ul>

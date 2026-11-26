@@ -2,6 +2,7 @@ import type { CheckResult } from '../checks/run.js';
 import { tailLog } from '../checks/run.js';
 import type { PriorFinding } from '../reviewer/prompt.js';
 import type { Finding } from '../reviewer/findings.js';
+import type { FindingRow } from '../store/runs.js';
 import type { ResolutionKind, ReviewRoundInput } from './publish.js';
 
 export class InterruptedError extends Error {
@@ -85,13 +86,27 @@ export function priorFindings(rounds: ReviewRoundInput[]): PriorFinding[] {
     r.findings.map((f) => {
       const res = r.resolutions[f.id];
       return {
-        id: f.id,
+        key: `r${r.round}:${f.id}`,
         severity: f.severity,
         title: f.title,
         location: locationText(f),
-        resolution: (res?.resolution ?? 'open') as ResolutionKind,
+        status: (res?.resolution ?? 'open') as ResolutionKind,
         note: res?.note || '(no note)',
       };
     }),
   );
+}
+
+/** The same list from stored rows, which also carry statuses set after the round. */
+export function priorFindingsFromRows(rows: FindingRow[]): PriorFinding[] {
+  return rows.map((f) => ({
+    key: f.key,
+    severity: f.severity,
+    title: f.title,
+    location: f.location
+      ? `${f.location.path}:${f.location.startLine}-${f.location.endLine}`
+      : 'n/a',
+    status: f.status,
+    note: f.resolutionNote || '(no note)',
+  }));
 }

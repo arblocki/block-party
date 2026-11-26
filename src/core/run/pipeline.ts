@@ -26,6 +26,7 @@ import {
   InterruptedError,
   isShutdown,
   priorFindings,
+  priorFindingsFromRows,
   renderCheckFailures,
   type ShutdownError,
   throwIfAborted,
@@ -695,6 +696,10 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
+    // Stored rows are the record of what earlier rounds found and how it ended; a run from
+    // before they existed has only the findings files, which ctx.rounds was built from.
+    const rows = ctx.rec.listFindings();
+    const prior = rows.length > 0 ? priorFindingsFromRows(rows) : priorFindings(ctx.rounds);
     const { rec, blocking } = await inStage(
       ctx,
       'review',
@@ -707,7 +712,7 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
             baseSha: ctx.st.baseSha,
             headSha: head,
             planPath: ctx.planPath,
-            priorFindings: priorFindings(ctx.rounds),
+            priorFindings: prior,
             outDir,
             round,
             ...(input.config.reviewer.model ? { model: input.config.reviewer.model } : {}),
@@ -725,6 +730,9 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
         };
         ctx.rounds.push(rec);
         const blocking = rec.findings.filter((f) => policy.autoFix.includes(f.severity));
+        ctx.rec.recordFindings(round, rec.findings, (f) =>
+          policy.autoFix.includes(f.severity) ? 'auto_fix' : 'record',
+        );
         ctx.rec.event('review.result', {
           round,
           findings: rec.findings.length,
@@ -739,6 +747,7 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
           output: {
             findings: r.rec.findings.length,
             blocking: r.blocking.length,
+            summary: r.rec.summary,
             bySeverity,
             findingsPath: join(outDir, 'findings.json'),
           },
@@ -777,6 +786,7 @@ async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, blocking: Finding[]): 
   for (const x of report.findingResolutions) {
     if (rec.findings.some((f) => f.id === x.findingId)) {
       rec.resolutions[x.findingId] = { resolution: x.resolution, note: x.note };
+      ctx.rec.setFindingStatus(rec.round, x.findingId, x.resolution, x.note);
     }
   }
 }

@@ -400,6 +400,47 @@ describe('run store', () => {
       expect(runs.listDecisions({ runId: 'a', status: 'open' })).toEqual([]);
     });
   });
+
+  describe('findings', () => {
+    const f = (id: string, over: Record<string, unknown> = {}) => ({
+      id,
+      reviewedSha: 'abcdef1',
+      severity: 'P1' as const,
+      category: 'correctness',
+      title: `t ${id}`,
+      body: 'b',
+      location: { path: 'a.ts', startLine: 1, endLine: 2 },
+      confidence: 'high' as const,
+      suggestedFix: null,
+      ...over,
+    });
+    beforeEach(() => {
+      runs.createRun(runInput(projectId));
+    });
+
+    it('stores rows with run-unique keys, triage and repeatOf, ordered by round', () => {
+      runs.insertFindings('r1', 2, [f('f_2_1', { repeatOf: 'r1:f_1_1' })], () => 'record');
+      runs.insertFindings('r1', 1, [f('f_1_1'), f('f_1_10', { location: null })], () => 'auto_fix');
+      const rows = runs.listFindings('r1');
+      expect(rows.map((r) => r.key)).toEqual(['r1:f_1_1', 'r1:f_1_10', 'r2:f_2_1']);
+      expect(rows[0]).toMatchObject({ triage: 'auto_fix', status: 'open', repeatOf: null });
+      expect(rows[1]!.location).toBeNull();
+      expect(rows[2]).toMatchObject({ triage: 'record', repeatOf: 'r1:f_1_1' });
+    });
+
+    it('sets a status and note, and replaces a round that is stored again', () => {
+      runs.insertFindings('r1', 1, [f('f_1_1')], () => 'auto_fix');
+      expect(runs.setFindingStatus('r1', 'r1:f_1_1', 'disputed', 'no')).toBe(true);
+      expect(runs.setFindingStatus('r1', 'r1:nope', 'fixed', null)).toBe(false);
+      expect(runs.listFindings('r1')[0]).toMatchObject({
+        status: 'disputed',
+        resolutionNote: 'no',
+      });
+      runs.insertFindings('r1', 1, [f('f_1_1')], () => 'auto_fix');
+      expect(runs.listFindings('r1')).toHaveLength(1);
+      expect(runs.listFindings('r1')[0]!.status).toBe('open');
+    });
+  });
 });
 
 describe('run store on a file', () => {

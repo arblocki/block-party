@@ -30,6 +30,8 @@ export const FindingSchema = z.object({
   location: LocationSchema.nullable(),
   confidence: z.enum(['high', 'medium', 'low']),
   suggestedFix: z.string().nullable(),
+  /** Key (`r<round>:<id>`) of a prior finding this one raises again; null when it is new. */
+  repeatOf: z.string().nullable().default(null),
 });
 
 export const ReviewerOutputSchema = z.object({

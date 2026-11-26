@@ -11,6 +11,7 @@ import { runDir as defaultRunDir } from './paths.js';
 import { isResting } from './machine.js';
 import type { PipelineDeps, RunInput } from './pipeline.js';
 import { parsePlan, type Plan } from './plan.js';
+import type { FindingRow } from '../store/runs.js';
 import type { ResolutionKind, ReviewRoundInput, TurnReport } from './publish.js';
 import { RunRecorder } from './recorder.js';
 import { ReportSchema, type Report } from './report.js';
@@ -207,6 +208,28 @@ async function loadRounds(runDir: string): Promise<ReviewRoundInput[]> {
   return rounds;
 }
 
+const RESOLUTIONS: readonly string[] = ['fixed', 'disputed', 'deferred'];
+
+/**
+ * Where the run has stored its findings, their statuses replace what the report files say:
+ * the rows are the record. A round without rows (a run from before they existed) keeps the
+ * file-based resolutions.
+ */
+function applyStoredStatuses(rounds: ReviewRoundInput[], rows: FindingRow[]): void {
+  for (const round of rounds) {
+    const mine = rows.filter((r) => r.round === round.round);
+    if (mine.length === 0) continue;
+    round.resolutions = {};
+    for (const row of mine) {
+      if (!RESOLUTIONS.includes(row.status)) continue;
+      round.resolutions[row.id] = {
+        resolution: row.status as ResolutionKind,
+        note: row.resolutionNote ?? '',
+      };
+    }
+  }
+}
+
 const TURN_KINDS = ['implement', 'check-fix', 'review-fix', 'feedback'];
 
 /**
@@ -286,6 +309,8 @@ export async function loadContext(
   };
   const ctx = buildCtx({ input, deps, rec, st, runDir, plan: plan.plan, checks: loaded.config });
   ctx.rounds = await loadRounds(runDir);
+  rec.attach(runId);
+  applyStoredStatuses(ctx.rounds, rec.listFindings());
   ctx.reports = await loadReports(runDir, runId, deps.store);
   ctx.lastReport = ctx.reports.at(-1)?.report;
   ctx.rulingsWritten = (await listDir(join(runDir, 'inputs'))).includes('rulings.json');

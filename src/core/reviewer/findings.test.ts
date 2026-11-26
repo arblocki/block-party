@@ -29,6 +29,28 @@ const finding = {
 };
 const output = { reviewedSha: SHA, summary: 'one issue', findings: [finding] };
 
+describe('repeatOf', () => {
+  it('defaults to null when the field is absent and keeps it when present', () => {
+    const r = parseReviewerOutput(JSON.stringify(output));
+    expect(r.ok && r.value.findings[0]!.repeatOf).toBeNull();
+    const again = {
+      ...output,
+      findings: [{ ...finding, repeatOf: 'r1:f_1_1' }],
+    };
+    const r2 = parseReviewerOutput(JSON.stringify(again));
+    expect(r2.ok && r2.value.findings[0]!.repeatOf).toBe('r1:f_1_1');
+  });
+
+  it('is required and nullable in the JSON schema', () => {
+    const item = FINDINGS_JSON_SCHEMA.properties.findings.items as unknown as {
+      required: string[];
+      properties: Record<string, { type: unknown }>;
+    };
+    expect(item.required).toContain('repeatOf');
+    expect(item.properties.repeatOf!.type).toEqual(['string', 'null']);
+  });
+});
+
 describe('parseReviewerOutput', () => {
   it('parses valid output', () => {
     const r = parseReviewerOutput(JSON.stringify(output), SHA);
@@ -169,25 +191,25 @@ describe('renderReviewPrompt', () => {
       ...base,
       priorFindings: [
         {
-          id: 'f_1_2',
+          key: 'r1:f_1_2',
           severity: 'P1',
           title: 'title',
           location: 'src/a.ts:10-14',
-          resolution: 'fixed',
+          status: 'fixed',
           note: 'done',
         },
         {
-          id: 'f_1_3',
+          key: 'r1:f_1_3',
           severity: 'P2',
           title: 't2',
           location: 'b.ts:1-1',
-          resolution: 'skip',
+          status: 'skipped',
           note: 'n',
         },
       ],
     });
-    expect(p).toContain('- [P1] f_1_2 "title" at src/a.ts:10-14 — resolution: fixed — done');
-    expect(p).toContain('- [P2] f_1_3 "t2" at b.ts:1-1 — resolution: skip — n');
+    expect(p).toContain('- [P1] r1:f_1_2 "title" at src/a.ts:10-14 — status: fixed — done');
+    expect(p).toContain('- [P2] r1:f_1_3 "t2" at b.ts:1-1 — status: skipped — n');
     expect(p).not.toContain('(none: first round)');
   });
 
@@ -202,11 +224,11 @@ describe('renderReviewPrompt', () => {
       ...base,
       priorFindings: [
         {
-          id: 'f',
+          key: 'f',
           severity: 'P3',
           title: '{{BASE_SHA}}',
           location: 'l',
-          resolution: 'r',
+          status: 'r',
           note: 'n',
         },
       ],

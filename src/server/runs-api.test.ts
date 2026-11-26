@@ -677,8 +677,15 @@ describe('run plan and findings', () => {
       summary: 'Two problems',
     });
     expect(body.rounds[0]!.findings).toEqual([
-      expect.objectContaining({ id: 'f1', resolution: 'fixed', resolutionNote: 'done' }),
-      expect.objectContaining({ id: 'f2', resolution: null }),
+      expect.objectContaining({
+        id: 'f1',
+        key: 'r1:f1',
+        status: 'fixed',
+        resolutionNote: 'done',
+        triage: 'auto_fix',
+        repeatOf: null,
+      }),
+      expect.objectContaining({ id: 'f2', status: 'open', triage: 'record' }),
     ]);
   });
 
@@ -721,10 +728,49 @@ describe('run plan and findings', () => {
     review(3);
 
     const body = (await json(`/api/runs/${RUN_A}/findings`)) as {
-      rounds: { findings: { resolution: string | null; resolutionNote: string | null }[] }[];
+      rounds: { findings: { status: string; resolutionNote: string | null }[] }[];
     };
-    expect(body.rounds.map((r) => r.findings[0]!.resolution)).toEqual(['fixed', 'disputed', null]);
+    expect(body.rounds.map((r) => r.findings[0]!.status)).toEqual(['fixed', 'disputed', 'open']);
     expect(body.rounds[2]!.findings[0]!.resolutionNote).toBeNull();
+  });
+
+  it('returns stored rows, with rounds that found nothing, when the run has them', async () => {
+    addRun();
+    const stage = (round: number, sha: string, summary: string) => {
+      const id = runs.startStage({
+        runId: RUN_A,
+        kind: 'review',
+        round,
+        input: { reviewedSha: sha },
+      });
+      runs.endStage(id, { state: 'succeeded', output: { summary } });
+    };
+    stage(1, 'abcdef1', 'first');
+    stage(2, 'abcdef2', 'second');
+    stage(3, 'abcdef3', 'clean');
+    runs.insertFindings(RUN_A, 1, [finding('f_1_1') as never], () => 'auto_fix');
+    runs.insertFindings(
+      RUN_A,
+      2,
+      [{ ...finding('f_2_1'), repeatOf: 'r1:f_1_1' } as never],
+      () => 'record',
+    );
+    runs.setFindingStatus(RUN_A, 'r1:f_1_1', 'fixed', 'done');
+    const body = (await json(`/api/runs/${RUN_A}/findings`)) as {
+      rounds: { round: number; reviewedSha: string; summary: string; findings: unknown[] }[];
+    };
+    expect(body.rounds.map((r) => [r.round, r.reviewedSha, r.summary, r.findings.length])).toEqual([
+      [1, 'abcdef1', 'first', 1],
+      [2, 'abcdef2', 'second', 1],
+      [3, 'abcdef3', 'clean', 0],
+    ]);
+    expect(body.rounds[0]!.findings[0]).toMatchObject({
+      key: 'r1:f_1_1',
+      status: 'fixed',
+      resolutionNote: 'done',
+      triage: 'auto_fix',
+    });
+    expect(body.rounds[1]!.findings[0]).toMatchObject({ repeatOf: 'r1:f_1_1', triage: 'record' });
   });
 
   it('returns no rounds before any review, and skips unreadable findings files', async () => {

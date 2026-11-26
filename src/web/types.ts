@@ -1,7 +1,7 @@
 import type { ParsedFile, Side } from '../core/diff/types';
 import type { Decision } from '../core/store/runs';
 import type { RunStage } from '../core/run/machine';
-import type { StageRow } from '../core/store/runs';
+import type { FindingRow, StageRow } from '../core/store/runs';
 import type { PrMeta, ReviewEvent } from '../core/github/types';
 
 export type { Hunk, DiffLine, ParsedFile, Side, LineRange } from '../core/diff/types';
@@ -193,20 +193,9 @@ export interface RunPlan {
   acceptanceCriteria: string[];
 }
 
-export interface ReviewFinding {
-  id: string;
-  reviewedSha: string;
-  severity: 'P0' | 'P1' | 'P2' | 'P3';
-  category: string;
-  title: string;
-  body: string;
-  location: { path: string; startLine: number; endLine: number } | null;
-  confidence: 'high' | 'medium' | 'low';
-  suggestedFix: string | null;
-  /** What the implementer answered ('fixed', 'disputed', 'deferred'), when known. */
-  resolution: string | null;
-  resolutionNote: string | null;
-}
+/** A Codex finding with its triage class, status and the finding it repeats. */
+export type { FindingRow, FindingStatus, FindingTriage } from '../core/store/runs';
+export type ReviewFinding = FindingRow;
 
 export interface ReviewRound {
   round: number;

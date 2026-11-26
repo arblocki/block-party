@@ -196,4 +196,32 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE decisions_new RENAME TO decisions;
   CREATE INDEX decisions_by_status ON decisions (status, created_at);
   `,
+  `
+  -- Codex findings as rows: one per finding per review round, with its triage class, a status
+  -- that follows the run, and the key of the earlier finding it repeats.
+  CREATE TABLE review_findings (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id          TEXT NOT NULL REFERENCES runs (id),
+    round           INTEGER NOT NULL,
+    finding_id      TEXT NOT NULL,
+    key             TEXT NOT NULL UNIQUE,
+    reviewed_sha    TEXT NOT NULL,
+    severity        TEXT NOT NULL,
+    category        TEXT NOT NULL,
+    title           TEXT NOT NULL,
+    body            TEXT NOT NULL,
+    path            TEXT,
+    start_line      INTEGER,
+    end_line        INTEGER,
+    confidence      TEXT NOT NULL,
+    suggested_fix   TEXT,
+    repeat_of       TEXT,
+    triage          TEXT NOT NULL CHECK (triage IN ('auto_fix', 'ask', 'record')),
+    status          TEXT NOT NULL
+                    CHECK (status IN ('open', 'fixed', 'disputed', 'deferred', 'wont_fix', 'skipped')),
+    resolution_note TEXT,
+    updated_at      TEXT NOT NULL
+  );
+  CREATE INDEX review_findings_by_run ON review_findings (run_id, round);
+  `,
 ];

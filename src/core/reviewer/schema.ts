@@ -30,6 +30,7 @@ export const FINDINGS_JSON_SCHEMA = {
           'location',
           'confidence',
           'suggestedFix',
+          'repeatOf',
         ],
         properties: {
           id: {
@@ -90,6 +91,9 @@ export const FINDINGS_JSON_SCHEMA = {
             enum: ['high', 'medium', 'low'],
           },
           suggestedFix: {
+            type: ['string', 'null'],
+          },
+          repeatOf: {
             type: ['string', 'null'],
           },
         },

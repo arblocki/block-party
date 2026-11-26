@@ -13,10 +13,12 @@ below. Your job is to find real problems before it merges, not to praise it.
 
 ## Prior findings and rulings
 
-Earlier review rounds produced the findings below, with the resolution recorded for each.
+Earlier review rounds produced the findings below. Each is listed by its key
+(\`r<round>:<id>\`) with its current status and the note recorded for it.
 Do not re-raise a finding that was fixed correctly or that the owner ruled "skip"/"defer".
-If a prior fix is incomplete or wrong, raise it as a new finding. If the list is empty,
-this is the first round.
+If a prior fix is incomplete or wrong, or a prior finding is still a problem, raise it again
+as a new finding and set its \`repeatOf\` to the key of the prior finding. If the list is
+empty, this is the first round.
 
 {{PRIOR_FINDINGS}}
 
@@ -44,15 +46,18 @@ Respond with ONLY a JSON object, no prose and no code fences, matching the provi
 \`{ "reviewedSha": "{{HEAD_SHA}}", "summary": "...", "findings": [ ... ] }\`.
 Each finding: \`id\` (f_1, f_2, ...), \`reviewedSha\` (the head SHA), \`severity\`, \`category\`,
 \`title\`, \`body\` (what is wrong, why, how it triggers), \`location\` ({path, startLine,
-endLine} in the head revision, or null), \`confidence\`, \`suggestedFix\` (string or null).
+endLine} in the head revision, or null), \`confidence\`, \`suggestedFix\` (string or null),
+\`repeatOf\` (the key of the prior finding this raises again, such as \`r1:f_1_2\`, or null).
 `;
 
 export interface PriorFinding {
-  id: string;
+  /** `r<round>:<id>`: what the reviewer puts in `repeatOf` to raise the finding again. */
+  key: string;
   severity: string;
   title: string;
   location: string;
-  resolution: string;
+  /** Where the finding stands: open, fixed, disputed, deferred, ... */
+  status: string;
   note: string;
 }
 
@@ -74,7 +79,7 @@ export function renderReviewPrompt(input: ReviewPromptInput): string {
       : input.priorFindings
           .map(
             (f) =>
-              `- [${f.severity}] ${f.id} "${f.title}" at ${f.location} — resolution: ${f.resolution} — ${f.note}`,
+              `- [${f.severity}] ${f.key} "${f.title}" at ${f.location} — status: ${f.status} — ${f.note}`,
           )
           .join('\n');
   const values: Record<string, string> = {

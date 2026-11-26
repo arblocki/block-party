@@ -17,6 +17,7 @@ function finding(
     location: { path, startLine: start, endLine: end },
     confidence: 'high',
     suggestedFix: null,
+    repeatOf: null,
     ...rest,
   };
 }

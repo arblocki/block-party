@@ -126,6 +126,46 @@ export interface Decision {
   answeredAt: string | null;
 }
 
+export type FindingTriage = 'auto_fix' | 'ask' | 'record';
+export type FindingStatus = 'open' | 'fixed' | 'disputed' | 'deferred' | 'wont_fix' | 'skipped';
+
+/** One Codex finding of a run. `key` is `r<round>:<id>`, unique within the run. */
+export interface FindingRow {
+  runId: string;
+  round: number;
+  /** The reviewer's id for it, which restarts every round. */
+  id: string;
+  key: string;
+  reviewedSha: string;
+  severity: 'P0' | 'P1' | 'P2' | 'P3';
+  category: string;
+  title: string;
+  body: string;
+  location: { path: string; startLine: number; endLine: number } | null;
+  confidence: 'high' | 'medium' | 'low';
+  suggestedFix: string | null;
+  /** Key of the earlier finding this one raises again. */
+  repeatOf: string | null;
+  triage: FindingTriage;
+  status: FindingStatus;
+  resolutionNote: string | null;
+  updatedAt: string;
+}
+
+/** What the store needs of a reviewer finding (a structural subset of `Finding`). */
+export interface FindingInput {
+  id: string;
+  reviewedSha: string;
+  severity: FindingRow['severity'];
+  category: string;
+  title: string;
+  body: string;
+  location: FindingRow['location'];
+  confidence: FindingRow['confidence'];
+  suggestedFix: string | null;
+  repeatOf?: string | null;
+}
+
 export interface RunStore {
   /** Inserts the project for `localPath`, or updates owner, repo and default base if it exists. */
   upsertProject(input: {
@@ -195,6 +235,18 @@ export interface RunStore {
   /** Newest first. */
   listDecisions(opts?: { status?: DecisionStatus; runId?: string }): Decision[];
   openDecisionCount(): number;
+
+  /** Stores a review round's findings (replacing any stored for that round), all `open`. */
+  insertFindings(
+    runId: string,
+    round: number,
+    findings: FindingInput[],
+    triage: (f: FindingInput) => FindingTriage,
+  ): void;
+  /** `key` is `r<round>:<id>`; returns whether a row changed. */
+  setFindingStatus(runId: string, key: string, status: FindingStatus, note: string | null): boolean;
+  /** By round, then in the reviewer's order. */
+  listFindings(runId: string): FindingRow[];
 }
 
 interface ProjectDb {
@@ -249,6 +301,28 @@ interface EventDb {
   ts: string;
   type: string;
   payload_json: string | null;
+}
+
+interface FindingDb {
+  run_id: string;
+  round: number;
+  finding_id: string;
+  key: string;
+  reviewed_sha: string;
+  severity: string;
+  category: string;
+  title: string;
+  body: string;
+  path: string | null;
+  start_line: number | null;
+  end_line: number | null;
+  confidence: string;
+  suggested_fix: string | null;
+  repeat_of: string | null;
+  triage: string;
+  status: string;
+  resolution_note: string | null;
+  updated_at: string;
 }
 
 interface DecisionDb {
@@ -382,6 +456,31 @@ function toDecision(r: DecisionDb): Decision {
   };
 }
 
+function toFinding(r: FindingDb): FindingRow {
+  return {
+    runId: r.run_id,
+    round: r.round,
+    id: r.finding_id,
+    key: `r${r.round}:${r.finding_id}`,
+    reviewedSha: r.reviewed_sha,
+    severity: r.severity as FindingRow['severity'],
+    category: r.category,
+    title: r.title,
+    body: r.body,
+    location:
+      r.path !== null && r.start_line !== null && r.end_line !== null
+        ? { path: r.path, startLine: r.start_line, endLine: r.end_line }
+        : null,
+    confidence: r.confidence as FindingRow['confidence'],
+    suggestedFix: r.suggested_fix,
+    repeatOf: r.repeat_of,
+    triage: r.triage as FindingTriage,
+    status: r.status as FindingStatus,
+    resolutionNote: r.resolution_note,
+    updatedAt: r.updated_at,
+  };
+}
+
 const now = (): string => new Date().toISOString();
 
 /**
@@ -448,6 +547,23 @@ export function createRunStore(db: Database.Database): RunStore {
     'SELECT * FROM run_events WHERE run_id = ? AND id > ? ORDER BY id LIMIT ?',
   );
   const maxEventId = db.prepare<[], { id: number | null }>('SELECT max(id) AS id FROM run_events');
+
+  const deleteRoundFindings = db.prepare(
+    'DELETE FROM review_findings WHERE run_id = ? AND round = ?',
+  );
+  const insertFinding = db.prepare(`
+    INSERT INTO review_findings
+      (run_id, round, finding_id, key, reviewed_sha, severity, category, title, body, path,
+       start_line, end_line, confidence, suggested_fix, repeat_of, triage, status, updated_at)
+    VALUES
+      (@runId, @round, @findingId, @key, @reviewedSha, @severity, @category, @title, @body, @path,
+       @startLine, @endLine, @confidence, @suggestedFix, @repeatOf, @triage, 'open', @at)`);
+  const setStatusStmt = db.prepare(
+    'UPDATE review_findings SET status = ?, resolution_note = ?, updated_at = ? WHERE key = ?',
+  );
+  const findingsByRun = db.prepare<[string], FindingDb>(
+    'SELECT * FROM review_findings WHERE run_id = ? ORDER BY round, id',
+  );
 
   const insertDecision = db.prepare(`
     INSERT INTO decisions (run_id, kind, status, title, body, attach, created_at, options_json)
@@ -614,6 +730,40 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     openDecisionCount() {
       return openCount.get()?.n ?? 0;
+    },
+
+    insertFindings(runId, round, findings, triage) {
+      db.transaction(() => {
+        deleteRoundFindings.run(runId, round);
+        const at = now();
+        for (const f of findings) {
+          insertFinding.run({
+            runId,
+            round,
+            findingId: f.id,
+            key: `${runId}:r${round}:${f.id}`,
+            reviewedSha: f.reviewedSha,
+            severity: f.severity,
+            category: f.category,
+            title: f.title,
+            body: f.body,
+            path: f.location?.path ?? null,
+            startLine: f.location?.startLine ?? null,
+            endLine: f.location?.endLine ?? null,
+            confidence: f.confidence,
+            suggestedFix: f.suggestedFix,
+            repeatOf: f.repeatOf ?? null,
+            triage: triage(f),
+            at,
+          });
+        }
+      })();
+    },
+    setFindingStatus(runId, key, status, note) {
+      return setStatusStmt.run(status, note, now(), `${runId}:${key}`).changes > 0;
+    },
+    listFindings(runId) {
+      return findingsByRun.all(runId).map(toFinding);
     },
   };
 }

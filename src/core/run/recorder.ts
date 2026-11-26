@@ -3,6 +3,10 @@ import type {
   DecisionAnswer,
   DecisionKind,
   DecisionOption,
+  FindingInput,
+  FindingRow,
+  FindingStatus,
+  FindingTriage,
   RunStore,
   StageKind,
   StageState,
@@ -157,6 +161,27 @@ export class RunRecorder {
     options?: DecisionOption[],
   ): number | null {
     return this.openDecisionId(kind, title, body, attach, options) ?? null;
+  }
+
+  /** Stores a review round's findings as rows. */
+  recordFindings(
+    round: number,
+    findings: FindingInput[],
+    triage: (f: FindingInput) => FindingTriage,
+  ): void {
+    this.withRun('insertFindings', (s, runId) => s.insertFindings(runId, round, findings, triage));
+  }
+
+  /** Sets the status of finding `id` of review round `round`. */
+  setFindingStatus(round: number, id: string, status: FindingStatus, note: string | null): void {
+    this.withRun('setFindingStatus', (s, runId) =>
+      s.setFindingStatus(runId, `r${round}:${id}`, status, note),
+    );
+  }
+
+  /** The run's finding rows; empty without a store (or when it fails). */
+  listFindings(): FindingRow[] {
+    return this.withRun('listFindings', (s, runId) => s.listFindings(runId)) ?? [];
   }
 
   /** Dismisses the run's open optioned decisions; call when the run has ended. */

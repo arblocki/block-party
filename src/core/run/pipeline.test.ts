@@ -28,6 +28,7 @@ import { ShutdownError } from './pipeline-helpers.js';
 import { PublishError, publishRun, type CiWaitState, type PublishOptions } from './publish.js';
 import type { Report } from './report.js';
 import type { RunStage } from './machine.js';
+import type { PriorFinding } from '../reviewer/prompt.js';
 import { openStore } from '../store/index.js';
 import type { RunStore } from '../store/runs.js';
 
@@ -75,7 +76,12 @@ function report(over: Partial<Report> = {}): Report {
   };
 }
 
-function finding(id: string, severity: Finding['severity'], title: string): Finding {
+function finding(
+  id: string,
+  severity: Finding['severity'],
+  title: string,
+  repeatOf: string | null = null,
+): Finding {
   return {
     id,
     reviewedSha: 'x'.repeat(7),
@@ -86,6 +92,7 @@ function finding(id: string, severity: Finding['severity'], title: string): Find
     location: { path: 'a.ts', startLine: 1, endLine: 2 },
     confidence: 'high',
     suggestedFix: null,
+    repeatOf,
   };
 }
 
@@ -138,7 +145,12 @@ function harness(o: Opts) {
     sendSessions: [] as string[],
     starts: [] as string[],
     stops: 0,
-    reviews: [] as { round: number; prior: number; headSha: string }[],
+    reviews: [] as {
+      round: number;
+      prior: number;
+      priorFindings: PriorFinding[];
+      headSha: string;
+    }[],
     published: [] as PublishOptions[],
     checks: 0,
     setup: 0,
@@ -243,6 +255,7 @@ function harness(o: Opts) {
       calls.reviews.push({
         round: opts.round,
         prior: opts.priorFindings.length,
+        priorFindings: opts.priorFindings,
         headSha: opts.headSha,
       });
       o.onReview?.(git);
@@ -465,6 +478,37 @@ describe('runPipeline', () => {
     expect(ds[1]!.title).toBe('Unresolved blocking findings');
     expect(ds[1]!.body).toContain('PR #7');
     expect(ds[1]!.body).toContain('P1 Still lossy');
+  });
+
+  it("stores each round's findings as rows with statuses from the fix report and repeatOf", async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'tried' }],
+          }),
+        },
+      ],
+      reviews: [
+        review([finding('f_1_1', 'P0', 'Data loss'), finding('f_1_2', 'P2', 'Minor')]),
+        review([finding('f_2_1', 'P1', 'Still lossy', 'r1:f_1_1')]),
+      ],
+    });
+    const out = await h.run();
+    const rows = store.listFindings(out.runId);
+    expect(rows.map((r) => [r.key, r.triage, r.status, r.resolutionNote, r.repeatOf])).toEqual([
+      ['r1:f_1_1', 'auto_fix', 'fixed', 'tried', null],
+      ['r1:f_1_2', 'record', 'open', null, null],
+      ['r2:f_2_1', 'auto_fix', 'open', null, 'r1:f_1_1'],
+    ]);
+    // Round 2's reviewer saw round 1's findings by key, with their statuses.
+    expect(h.calls.reviews[1]!.priorFindings.map((p) => [p.key, p.status])).toEqual([
+      ['r1:f_1_1', 'fixed'],
+      ['r1:f_1_2', 'open'],
+    ]);
   });
 
   it('accepts a fix round with only disputed findings and no new commit', async () => {
