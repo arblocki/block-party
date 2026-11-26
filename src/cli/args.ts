@@ -3,7 +3,7 @@ import { isProviderId, PROVIDER_IDS, type ProviderId } from '../core/llm/types.j
 import { parsePrRef, parseRepoRef, type RepoRef } from '../core/pr-ref.js';
 
 export interface CliOptions {
-  /** Omitted when started with no argument (the UI lists the viewer's repositories). */
+  /** Omitted when started with no argument (the UI opens the home page). */
   repo?: RepoRef;
   /** PR to open first; omitted when started with just a repo (the UI lists open PRs). */
   pr?: number;
@@ -22,7 +22,8 @@ export const USAGE = `Usage: block-party [owner/repo#123 | https://github.com/ow
        block-party checks run [--repo <dir>]
 
 With only a repository, the UI lists its open pull requests to choose from. With no
-argument, it starts on a list of your repositories.
+argument, it opens the home page (runs and what needs you), with the list of your
+repositories one click away.
 
 Options:
   --provider <name>  LLM provider: codex-cli (default) | claude-cli | openrouter

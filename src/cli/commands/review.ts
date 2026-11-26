@@ -49,7 +49,7 @@ export async function reviewMain(argv: string[]): Promise<void> {
   const url = `http://127.0.0.1:${server.port}/#token=${server.token}`;
   console.log(
     !opts.repo
-      ? 'Listing your repositories'
+      ? 'Opening the home page'
       : opts.pr === undefined
         ? `Listing open pull requests in ${formatRepoRef(opts.repo)}`
         : `Reviewing ${formatPrRef({ ...opts.repo, number: opts.pr })}`,

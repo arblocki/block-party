@@ -22,12 +22,14 @@ pnpm build
 pnpm start owner/repo#123
 pnpm start https://github.com/owner/repo/pull/123 --port 8080 --no-open
 pnpm start owner/repo          # or https://github.com/owner/repo
-pnpm start                     # pick a repository first
+pnpm start                     # open the home page
 ```
 
-The UI has three levels, and the argument picks which one it opens on:
+With no argument the UI opens **Home**: your runs and the decision inbox (what needs you).
+From there, the **Repositories** link (or `?repos`) opens the repository list. The UI has
+three levels below Home, and a repo or PR argument opens directly on that level:
 
-- **Repositories** (no argument): repos you own, collaborate on, or see through an org, most
+- **Repositories** (the Repositories link or `?repos`): repos you own, collaborate on, or see through an org, most
   recently pushed first (up to 500), with the ones you opened recently in this browser on top.
   Type any `owner/repo` or GitHub URL to open a repo that isn't listed, such as a public one.
 - **Open pull requests** (`owner/repo`): most recently updated first (up to 500). Filter by
