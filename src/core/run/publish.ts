@@ -1,7 +1,7 @@
 import type { RepoRef } from '../pr-ref.js';
 import type { ChecksRunResult } from '../checks/run.js';
 import type { Git } from '../git/index.js';
-import type { CiCheck, GitHubClient } from '../github/types.js';
+import type { CiCheck, GitHubClient, PublishedPr } from '../github/types.js';
 import type { Finding } from '../reviewer/findings.js';
 import type { Plan } from './plan.js';
 import type { Report } from './report.js';
@@ -174,6 +174,8 @@ export type PublishErrorCode =
   | 'push_failed'
   | 'remote_mismatch'
   | 'head_mismatch'
+  /** The run's PR was closed or merged; publishing will not open a second one. */
+  | 'pr_closed'
   | 'interrupted'
   /** A plain error (network, git) after the push; `done` still records what happened. */
   | 'unexpected';
@@ -193,13 +195,15 @@ export class PublishError extends Error {
 
 export interface PublishOptions {
   git: Pick<Git, 'pushBranch' | 'remoteBranchSha' | 'headSha'>;
-  github: Pick<GitHubClient, 'findOpenPrForBranch' | 'createPr' | 'getPr'>;
+  github: Pick<GitHubClient, 'findOpenPrForBranch' | 'createPr' | 'updatePr' | 'getPr'>;
   repo: RepoRef;
   worktree: string;
   branch: string;
   base: string;
   title: string;
   body: string;
+  /** The run's PR, when it already has one: preferred over looking one up by branch. */
+  prNumber?: number | null;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
   /** How long to wait for GitHub to show the pushed head on the PR. Default 30 s. */
@@ -249,16 +253,34 @@ export async function publishRun(opts: PublishOptions): Promise<PublishResult> {
     }
 
     checkAbort();
-    let pr = await github.findOpenPrForBranch(repo, branch);
+    let pr: PublishedPr | undefined;
+    if (opts.prNumber != null) {
+      pr = await github.getPr(repo, opts.prNumber);
+      done.prNumber = pr.number;
+      if (pr.state !== undefined && pr.state !== 'open') {
+        throw new PublishError(
+          'pr_closed',
+          `PR #${pr.number} is ${pr.state}; not opening a second one for ${branch}`,
+          { ...done },
+        );
+      }
+    } else {
+      pr = await github.findOpenPrForBranch(repo, branch);
+    }
     const created = pr === undefined;
     checkAbort();
-    pr ??= await github.createPr(repo, {
-      head: branch,
-      base: opts.base,
-      title: opts.title,
-      body: opts.body,
-      draft: true,
-    });
+    if (pr) {
+      // A republish brings the description up to date with what was just pushed.
+      pr = await github.updatePr(repo, pr.number, { title: opts.title, body: opts.body });
+    } else {
+      pr = await github.createPr(repo, {
+        head: branch,
+        base: opts.base,
+        title: opts.title,
+        body: opts.body,
+        draft: true,
+      });
+    }
 
     done.prNumber = pr.number;
     const deadline = now() + (opts.headTimeoutMs ?? 30_000);

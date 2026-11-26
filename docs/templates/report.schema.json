@@ -27,6 +27,10 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "feedbackOutcome": {
+      "description": "Only for a turn that answers send-back feedback: whether any code was changed.",
+      "enum": ["changed", "no_changes"]
+    },
     "findingResolutions": {
       "description": "Only populated in fix rounds.",
       "type": "array",

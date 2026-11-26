@@ -34,7 +34,7 @@ function runInput(projectId: string, over: Partial<RunInput> = {}): RunInput {
     planPath: '/runs/a/plans/v1.md',
     planHash: 'hash1',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
     ownerPid: null,
     ownerHost: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -489,6 +489,21 @@ describe('JSON endpoints', () => {
         const id = openReview();
         expect((await answerWith(makeApp(), id, { choice: 'approve' })).status).toBe(503);
         expect(runs.getDecision(id)?.status).toBe('open');
+      });
+
+      it('reopens the review and answers 409 when the continuation cannot start', async () => {
+        const id = openReview();
+        const fake = fakeManager();
+        fake.manager.continue = () => false;
+        const res = await answerWith(makeApp(runs, fake.manager), id, { choice: 'approve' });
+        expect(res.status).toBe(409);
+        expect(runs.getDecision(id)?.status).toBe('answered');
+        const open = runs
+          .listDecisions({ runId: RUN_A, status: 'open' })
+          .filter((d) => d.kind === 'final_review');
+        expect(open).toHaveLength(1);
+        expect(open[0]!.options).toHaveLength(2);
+        expect(open[0]!.body).toContain('could not be carried out');
       });
 
       it('does not continue for other decision kinds', async () => {

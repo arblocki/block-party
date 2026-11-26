@@ -1,4 +1,4 @@
-import { readdir, readFile, stat } from 'node:fs/promises';
+import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { implementerPermissions, shellRules } from '../agents/claude-config.js';
 import type { renderBrief } from '../agents/brief.js';
@@ -39,8 +39,6 @@ export interface Ctx {
   /** Every accepted implementer report, in turn order. */
   reports: TurnReport[];
   lastChecks?: ChecksRunResult;
-  /** Local CI runs so far (the `checks` stage round). */
-  checkRuns: number;
   /** Fix rounds already used when this pass began: the caps count from here. */
   fixBase: { checkFix: number; reviewFix: number };
   rulingsWritten: boolean;
@@ -129,7 +127,6 @@ export function buildCtx(b: BuildCtxInput): Ctx {
     },
     rounds: [],
     reports: [],
-    checkRuns: 0,
     fixBase: { checkFix: st.rounds.checkFix, reviewFix: st.rounds.reviewFix },
     rulingsWritten: false,
     pending: Promise.resolve(),
@@ -153,62 +150,99 @@ async function listDir(path: string): Promise<string[]> {
   }
 }
 
+const numeric = (a: number, b: number) => a - b;
+
+/** The numbers n in the names `<prefix>n<suffix>` found in `names`, ascending. */
+function numbered(names: string[], prefix: string, suffix: string): number[] {
+  const re = new RegExp(`^${prefix}(\\d+)${suffix.replace('.', '\\.')}$`);
+  return names
+    .flatMap((n) => {
+      const m = re.exec(n);
+      return m ? [Number(m[1])] : [];
+    })
+    .sort(numeric);
+}
+
 /**
  * Review rounds from `reviews/round-<n>/findings.json`, with what the implementer said about
- * each finding from `reports/review-fix-<n>.json`. Finding ids carry their round, so a
- * resolution belongs to the one finding it names.
+ * each finding. Same rule as `GET /api/runs/:id/findings`: a `review-fix-<n>` report belongs
+ * to the closest earlier review, which is the review that started that fix. Each fix wrote
+ * `inputs/findings-round-<r>.json` for its review round r, in order, so the n-th such file
+ * names the round the n-th review-fix answered.
  */
 async function loadRounds(runDir: string): Promise<ReviewRoundInput[]> {
-  const resolutions: ReviewRoundInput['resolutions'] = {};
-  for (const name of await listDir(join(runDir, 'reports'))) {
-    if (!/^review-fix-\d+\.json$/.test(name)) continue;
-    const parsed = ReportSchema.safeParse(await readJson(join(runDir, 'reports', name)));
+  const fixedRounds = numbered(await listDir(join(runDir, 'inputs')), 'findings-round-', '.json');
+  const fixReports = numbered(await listDir(join(runDir, 'reports')), 'review-fix-', '.json');
+  const byRound = new Map<number, ReviewRoundInput['resolutions']>();
+  for (const n of fixReports) {
+    const round = fixedRounds[n - 1];
+    if (round === undefined) continue;
+    const parsed = ReportSchema.safeParse(
+      await readJson(join(runDir, 'reports', `review-fix-${n}.json`)),
+    );
     if (!parsed.success) continue;
+    const mine = byRound.get(round) ?? {};
+    byRound.set(round, mine);
     for (const r of parsed.data.findingResolutions) {
-      resolutions[r.findingId] = { resolution: r.resolution as ResolutionKind, note: r.note };
+      mine[r.findingId] = { resolution: r.resolution as ResolutionKind, note: r.note };
     }
   }
   const rounds: ReviewRoundInput[] = [];
-  for (const name of await listDir(join(runDir, 'reviews'))) {
-    const m = /^round-(\d+)$/.exec(name);
-    if (!m) continue;
+  for (const round of numbered(await listDir(join(runDir, 'reviews')), 'round-', '')) {
     const out = ReviewerOutputSchema.safeParse(
-      await readJson(join(runDir, 'reviews', name, 'findings.json')),
+      await readJson(join(runDir, 'reviews', `round-${round}`, 'findings.json')),
     );
     if (!out.success) continue;
-    const mine: ReviewRoundInput['resolutions'] = {};
-    for (const f of out.data.findings) {
-      if (resolutions[f.id]) mine[f.id] = resolutions[f.id]!;
-    }
+    const said = byRound.get(round) ?? {};
+    const resolutions: ReviewRoundInput['resolutions'] = {};
+    for (const f of out.data.findings) if (said[f.id]) resolutions[f.id] = said[f.id]!;
     rounds.push({
-      round: Number(m[1]),
+      round,
       reviewedSha: out.data.reviewedSha,
       summary: out.data.summary,
       findings: out.data.findings,
-      resolutions: mine,
+      resolutions,
     });
   }
-  return rounds.sort((a, b) => a.round - b.round);
+  return rounds;
 }
 
-/** Accepted implementer reports in turn order: the first turn, then the rest by write time. */
-async function loadReports(runDir: string): Promise<TurnReport[]> {
-  const found: { turn: TurnReport; at: number }[] = [];
+const TURN_KINDS = ['implement', 'check-fix', 'review-fix', 'feedback'];
+
+/**
+ * Accepted implementer reports in turn order. With a store, that is the order of the run's
+ * stage rows; reports it does not list (or without a store) follow by kind, then round.
+ */
+async function loadReports(
+  runDir: string,
+  runId: string,
+  store?: PipelineDeps['store'],
+): Promise<TurnReport[]> {
+  const found = new Map<string, TurnReport>();
   for (const name of await listDir(join(runDir, 'reports'))) {
     const m = /^(.+)-(\d+)\.json$/.exec(name);
-    if (!m) continue;
-    const path = join(runDir, 'reports', name);
-    const parsed = ReportSchema.safeParse(await readJson(path));
+    if (!m || !TURN_KINDS.includes(m[1]!)) continue;
+    const parsed = ReportSchema.safeParse(await readJson(join(runDir, 'reports', name)));
     if (!parsed.success) continue;
-    const at = await stat(path).then(
-      (s) => s.mtimeMs,
-      () => 0,
-    );
-    found.push({ turn: { kind: m[1]!, round: Number(m[2]), report: parsed.data }, at });
+    found.set(`${m[1]}-${m[2]}`, { kind: m[1]!, round: Number(m[2]), report: parsed.data });
   }
-  const rank = (t: TurnReport) => (t.kind === 'implement' ? 0 : 1);
-  found.sort((a, b) => rank(a.turn) - rank(b.turn) || a.at - b.at);
-  return found.map((f) => f.turn);
+  const ordered: TurnReport[] = [];
+  try {
+    for (const st of store?.listStages(runId) ?? []) {
+      const key = `${st.kind}-${st.round}`;
+      const turn = found.get(key);
+      if (turn) {
+        ordered.push(turn);
+        found.delete(key);
+      }
+    }
+  } catch {
+    // Without stage rows the fallback order below applies.
+  }
+  const rest = [...found.values()].sort(
+    (a, b) => TURN_KINDS.indexOf(a.kind) - TURN_KINDS.indexOf(b.kind) || a.round - b.round,
+  );
+  return [...ordered, ...rest];
 }
 
 /**
@@ -252,10 +286,9 @@ export async function loadContext(
   };
   const ctx = buildCtx({ input, deps, rec, st, runDir, plan: plan.plan, checks: loaded.config });
   ctx.rounds = await loadRounds(runDir);
-  ctx.reports = await loadReports(runDir);
+  ctx.reports = await loadReports(runDir, runId, deps.store);
   ctx.lastReport = ctx.reports.at(-1)?.report;
   ctx.rulingsWritten = (await listDir(join(runDir, 'inputs'))).includes('rulings.json');
-  ctx.checkRuns = (await listDir(join(runDir, 'checks'))).length;
   if (st.implementer) {
     ctx.session = {
       mode: st.implementer.mode,

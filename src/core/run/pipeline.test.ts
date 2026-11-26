@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -644,6 +645,9 @@ describe('runPipeline', () => {
               url: 'https://x/pr/11',
               draft: true,
             }),
+            updatePr: async () => {
+              throw new Error('unused');
+            },
             getPr: async () => {
               throw new Error('ECONNRESET');
             },
@@ -678,6 +682,9 @@ describe('runPipeline', () => {
               url: 'https://x/pr/12',
               draft: true,
             }),
+            updatePr: async () => {
+              throw new Error('unused');
+            },
             getPr: async () => ({
               number: 12,
               headSha: 'stale',
@@ -1076,6 +1083,13 @@ describe('runPipeline with a store', () => {
 });
 
 describe('final review and continuations', () => {
+  /** Answers the run's open final review through the store, as the API does before continuing. */
+  const answerReview = (store: RunStore, runId: string, choice: string, note: string | null) => {
+    const d = store
+      .listDecisions({ runId, status: 'open' })
+      .find((x) => x.kind === 'final_review')!;
+    expect(store.answerDecision(d.id, { choice, note })).toBe('answered');
+  };
   const finalReviews = (store: RunStore, runId: string) =>
     store.listDecisions({ runId }).filter((d) => d.kind === 'final_review');
 
@@ -1119,6 +1133,7 @@ describe('final review and continuations', () => {
     const store = openStore(':memory:').runs;
     const h = harness({ store, turns: [{}] });
     const out = await h.run();
+    answerReview(store, out.runId, 'approve', null);
     const next = await continueRun(out.runId, { kind: 'approve' }, h.deps);
     expect(next.stage).toBe('complete');
     expect(store.getRun(out.runId)!.stage).toBe('complete');
@@ -1131,6 +1146,9 @@ describe('final review and continuations', () => {
     const out = await h.run();
     expect(out.stage).toBe('blocked');
     await expect(continueRun(out.runId, { kind: 'approve' }, h.deps)).rejects.toThrow(
+      /not waiting for review/,
+    );
+    await expect(continueRun(out.runId, { kind: 'feedback', text: 'x' }, h.deps)).rejects.toThrow(
       /not resting/,
     );
   });
@@ -1149,6 +1167,7 @@ describe('final review and continuations', () => {
       owners.push(store.getRun(out.runId)?.ownerPid);
       return startedWith(o);
     };
+    answerReview(store, out.runId, 'send_back', 'Rename x to y');
     const next = await continueRun(out.runId, { kind: 'feedback', text: 'Rename x to y' }, h.deps);
     expect(next.stage).toBe('awaiting_review');
     expect(h.calls.sends).toHaveLength(1);
@@ -1167,7 +1186,7 @@ describe('final review and continuations', () => {
     expect(state(out)).toMatchObject({ stage: 'awaiting_review', rounds: { feedback: 1 } });
     expect(h.calls.stops).toBe(2);
     const reviews = finalReviews(store, out.runId);
-    expect(reviews.map((d) => d.status)).toEqual(['open', 'open']);
+    expect(reviews.map((d) => d.status)).toEqual(['open', 'answered']);
     expect(stagesOf(store, out).map((s) => s[0])).toContain('feedback');
     const publishRounds = store
       .listStages(out.runId)
@@ -1180,9 +1199,16 @@ describe('final review and continuations', () => {
     const store = openStore(':memory:').runs;
     const h = harness({
       store,
-      turns: [{}, { commit: false, report: report({ summary: 'No changes: it is intended' }) }],
+      turns: [
+        {},
+        {
+          commit: false,
+          report: report({ summary: 'It is intended', feedbackOutcome: 'no_changes' }),
+        },
+      ],
     });
     const out = await h.run();
+    answerReview(store, out.runId, 'send_back', 'Why x?');
     const next = await continueRun(out.runId, { kind: 'feedback', text: 'Why x?' }, h.deps);
     expect(next.stage).toBe('awaiting_review');
   });
@@ -1191,6 +1217,7 @@ describe('final review and continuations', () => {
     const store = openStore(':memory:').runs;
     const h = harness({ store, turns: [{}, { commit: false }] });
     const out = await h.run();
+    answerReview(store, out.runId, 'send_back', 'Fix it');
     const next = await continueRun(out.runId, { kind: 'feedback', text: 'Fix it' }, h.deps);
     expect(next.stage).toBe('blocked');
     expect(next.note).toContain('No new commits after feedback-1');
@@ -1219,11 +1246,150 @@ describe('final review and continuations', () => {
     });
     const out = await h.run();
     expect(out.stage).toBe('awaiting_review');
+    answerReview(store, out.runId, 'send_back', 'More');
     const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
     expect(next.stage).toBe('awaiting_review');
     expect(h.calls.reviews.map((r) => r.round)).toEqual([1, 2, 3, 4]);
     // The first round's resolution was rebuilt from disk, so it is not prior-unresolved.
     expect(h.calls.reviews[2]!.prior).toBe(1);
-    expect(state(out).rounds).toEqual({ checkFix: 0, reviewFix: 2, feedback: 1 });
+    expect(state(out).rounds).toEqual({
+      checkFix: 0,
+      reviewFix: 2,
+      feedback: 1,
+      checkRuns: 4,
+    });
+  });
+
+  it('approves from run.json alone, with no config, plan or checks', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    rmSync(join(out.runDir, 'inputs', 'config.json'));
+    h.deps.loadProjectChecks = () => {
+      throw new Error('checks must not be read');
+    };
+    answerReview(store, out.runId, 'approve', null);
+    expect((await continueRun(out.runId, { kind: 'approve' }, h.deps)).stage).toBe('complete');
+    expect(store.getRun(out.runId)!.stage).toBe('complete');
+  });
+
+  it('reopens the final review when a continuation cannot load its context', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    rmSync(join(out.runDir, 'inputs', 'config.json'));
+    answerReview(store, out.runId, 'send_back', 'More');
+    await expect(
+      continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps),
+    ).rejects.toThrow(/no saved config/);
+    expect(store.getRun(out.runId)).toMatchObject({
+      stage: 'awaiting_review',
+      ownerPid: null,
+    });
+    const open = finalReviews(store, out.runId).filter((d) => d.status === 'open');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.body).toContain('could not be carried out: Run ');
+    expect(open[0]!.options).toHaveLength(2);
+    expect(store.listEvents(out.runId).some((e) => e.type === 'continuation.failed')).toBe(true);
+    expect(state(out).stage).toBe('awaiting_review');
+  });
+
+  it('reopens the final review, not an illegal move, when the first stage move fails', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    answerReview(store, out.runId, 'send_back', 'More');
+    forced.illegal = ['awaiting_review', 'fixing'];
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(store.getRun(out.runId)).toMatchObject({ stage: 'awaiting_review', ownerPid: null });
+    const open = finalReviews(store, out.runId).filter((d) => d.status === 'open');
+    expect(open).toHaveLength(1);
+    expect(open[0]!.body).toContain('Illegal run stage transition');
+  });
+
+  it('does not open a second unresolved-findings item on a continuation', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      section: { policy: { maxReviewFixRounds: 0 } },
+      turns: [{}, {}],
+      reviews: [review([finding('f_1_1', 'P1', 'Bad')]), review([finding('f_2_1', 'P1', 'Bad')])],
+    });
+    const out = await h.run();
+    answerReview(store, out.runId, 'send_back', 'More');
+    await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
+    const caps = store
+      .listDecisions({ runId: out.runId, status: 'open' })
+      .filter((d) => d.kind === 'cap_reached');
+    expect(caps).toHaveLength(1);
+  });
+
+  describe('with a fake GitHub client', () => {
+    function github(state: 'open' | 'closed' | 'merged') {
+      const calls: string[] = [];
+      let body = '';
+      const client = {
+        findOpenPrForBranch: async () => undefined,
+        createPr: async (_r: unknown, i: { body: string }) => {
+          calls.push('create');
+          body = i.body;
+          return { number: 7, headSha: head(), url: 'https://x/pr/7', draft: true };
+        },
+        updatePr: async (_r: unknown, n: number, i: { title: string; body: string }) => {
+          calls.push(`update:${n}`);
+          body = i.body;
+          return { number: n, headSha: head(), url: 'https://x/pr/7', draft: true };
+        },
+        getPr: async (_r: unknown, n: number) => {
+          calls.push(`get:${n}`);
+          return { number: n, headSha: head(), url: 'https://x/pr/7', draft: true, state };
+        },
+      };
+      let head = () => '';
+      return { client, calls, body: () => body, setHead: (f: () => string) => (head = f) };
+    }
+
+    it('updates the same PR title and body when a continuation publishes again', async () => {
+      const store = openStore(':memory:').runs;
+      const gh = github('open');
+      const h = harness({
+        store,
+        turns: [{}, { report: report({ summary: 'Renamed x' }) }],
+        publishWith: async (p) => {
+          const head = await p.git.headSha(p.worktree);
+          gh.setHead(() => head);
+          return publishRun({ ...p, github: gh.client });
+        },
+      });
+      const out = await h.run();
+      expect(gh.calls).toEqual(['create']);
+      answerReview(store, out.runId, 'send_back', 'Rename x');
+      const next = await continueRun(out.runId, { kind: 'feedback', text: 'Rename x' }, h.deps);
+      expect(next).toMatchObject({ stage: 'awaiting_review', prNumber: 7 });
+      expect(gh.calls).toEqual(['create', 'get:7', 'update:7']);
+      expect(gh.body()).toContain('Renamed x');
+      expect(h.calls.published[1]!.prNumber).toBe(7);
+    });
+
+    it('blocks instead of opening a second PR when the PR was closed', async () => {
+      const store = openStore(':memory:').runs;
+      const gh = github('closed');
+      const h = harness({
+        store,
+        turns: [{}, {}],
+        publishWith: async (p) => {
+          const head = await p.git.headSha(p.worktree);
+          gh.setHead(() => head);
+          return publishRun({ ...p, github: gh.client });
+        },
+      });
+      const out = await h.run();
+      answerReview(store, out.runId, 'send_back', 'More');
+      const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
+      expect(next.stage).toBe('blocked');
+      expect(next.note).toContain('PR #7 is closed');
+      expect(gh.calls).toEqual(['create', 'get:7']);
+    });
   });
 });

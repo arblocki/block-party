@@ -41,10 +41,11 @@ import {
   unresolvedBlocking,
   type WaitForCiOptions,
 } from './publish.js';
+import { FINAL_REVIEW_OPTIONS, FINAL_REVIEW_TITLE } from './final-review.js';
 import { attachCommand, buildCtx, loadContext, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
-import { saveRunState, type RunState } from './run-state.js';
+import { loadRunState, saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
 import type { RunStore, StageKind, StageState } from '../store/runs.js';
 
@@ -118,7 +119,10 @@ const PROMPT_IMPLEMENT = (p: string) => `Read the task brief at ${p} and follow 
 const PROMPT_FIX = (p: string) => `Read the fix brief at ${p} and follow it.`;
 
 /** Moves the run to `stage`; throws IllegalTransitionError (before writing) for an illegal move. */
-async function setStage(ctx: Ctx, stage: RunState['stage'], note: string | null = null) {
+/** The parts of a run that moving between stages needs. */
+type StageCtx = Pick<Ctx, 'st' | 'runDir' | 'rec' | 'deps'>;
+
+async function setStage(ctx: StageCtx, stage: RunState['stage'], note: string | null = null) {
   assertTransition(ctx.st.stage, stage);
   const next: RunState = {
     ...ctx.st,
@@ -207,14 +211,23 @@ function openEndDecision(ctx: Ctx, e: unknown): void {
  * The review-fix cap publishes rather than blocks (Phase 1 rule), so blocking findings it
  * left unresolved would otherwise live only in the PR body: put them in the inbox too.
  */
+const UNRESOLVED_TITLE = 'Unresolved blocking findings';
+
 function openUnresolvedDecision(ctx: Ctx): void {
   const unresolved = unresolvedBlocking(ctx.rounds);
   if (unresolved.length === 0) return;
+  try {
+    // One open item per run: a continuation that still has them must not add another.
+    const open = ctx.deps.store?.listDecisions({ runId: ctx.st.id, status: 'open' }) ?? [];
+    if (open.some((d) => d.kind === 'cap_reached' && d.title === UNRESOLVED_TITLE)) return;
+  } catch {
+    // The store failing here only risks a duplicate item.
+  }
   const where = ctx.st.prNumber !== null ? `PR #${ctx.st.prNumber}` : 'The run';
   const list = unresolved.map((f) => `- ${f.severity} ${f.title}`).join('\n');
   ctx.rec.openDecision(
     'cap_reached',
-    'Unresolved blocking findings',
+    UNRESOLVED_TITLE,
     `${where} still has blocking findings after the review-fix cap:\n${list}`,
     null,
   );
@@ -251,6 +264,12 @@ function outcomeOf(ctx: Ctx): RunOutcome {
 async function endRun(ctx: Ctx, e: unknown): Promise<void> {
   const { input } = ctx;
   await ctx.pending.catch(() => undefined);
+  if (isResting(ctx.st.stage)) {
+    // A continuation that failed before leaving rest: the run has not moved, so it cannot end
+    // (a resting run only leaves by its own moves). Offer the review again instead.
+    ctx.rec.reopenFinalReview(ctx.st.title, (e as Error).message);
+    return;
+  }
   if (isShutdown(input.signal)) {
     // The process driving the run is stopping: the run did not choose to end here.
     const reason = (input.signal!.reason as ShutdownError).message;
@@ -332,7 +351,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     stageNote: null,
     implementer: null,
     sessionEnded: false,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
     prNumber: null,
     createdAt: ts,
     updatedAt: ts,
@@ -600,10 +619,12 @@ async function checksGreen(ctx: Ctx): Promise<void> {
   for (;;) {
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'checking', head.slice(0, 7));
+    const checkRun = ctx.st.rounds.checkRuns + 1;
+    await patchState(ctx, { rounds: { ...ctx.st.rounds, checkRuns: checkRun } });
     const res = await inStage(
       ctx,
       'checks',
-      ++ctx.checkRuns,
+      checkRun,
       { headSha: head },
       async () => {
         const r = await abortable(
@@ -664,7 +685,7 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
   const { deps, input } = ctx;
   const policy = input.config.policy;
   // A continuation numbers its reviews after the ones already done.
-  for (let round = ctx.rounds.length + 1; ; round++) {
+  for (let round = Math.max(0, ...ctx.rounds.map((r) => r.round)) + 1; ; round++) {
     await checksGreen(ctx);
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
@@ -781,13 +802,10 @@ async function restForReview(ctx: Ctx, note: string | null): Promise<void> {
       : null;
   ctx.rec.openDecision(
     'final_review',
-    'Ready for your review',
+    FINAL_REVIEW_TITLE,
     pr ? `${ctx.st.title} is ready for review: ${pr}` : `${ctx.st.title} is ready for review.`,
     null,
-    [
-      { id: 'approve', label: 'Approve' },
-      { id: 'send_back', label: 'Send back' },
-    ],
+    FINAL_REVIEW_OPTIONS,
   );
 }
 
@@ -835,6 +853,7 @@ async function publish(ctx: Ctx): Promise<void> {
           base: st.baseRef,
           title: st.title,
           body,
+          prNumber: st.prNumber,
           signal: input.signal,
         });
       } catch (e) {
@@ -893,8 +912,11 @@ const FEEDBACK_HEADER = `# Feedback from your human reviewer
 
 The pull request is ready, and your human sent it back with the feedback below. Address every
 item: change the code (and tests) where the feedback is right, and explain where you
-disagree. If you answer every item without changing any code, start the \`summary\` of your
-report with "No changes:" and say why; otherwise commit your changes.
+disagree.
+
+In report.json set \`feedbackOutcome\` to \`"changed"\` when you committed changes, or to
+\`"no_changes"\` when you answered every item without changing anything (no commit is needed
+then; say why in \`summary\`). Findings do not apply here: leave \`findingResolutions\` empty.
 
 ---
 
@@ -903,7 +925,8 @@ report with "No changes:" and say why; otherwise commit your changes.
 /**
  * Continues a run that is resting in `awaiting_review`: approval completes it; feedback goes
  * to the same implementer session, then local CI, review, a push to the same PR and CI again,
- * and the run rests for review once more. Errors end the run as in `runPipeline`.
+ * and the run rests for review once more. A failure after the run leaves rest ends it as in
+ * `runPipeline`; a failure before that reopens the final review, so the answer can be retried.
  */
 export async function continueRun(
   runId: string,
@@ -911,16 +934,31 @@ export async function continueRun(
   deps: PipelineDeps,
   signal?: AbortSignal,
 ): Promise<RunOutcome> {
-  const ctx = await loadContext(runId, deps, signal);
-  if (ctx.st.stage !== 'awaiting_review') {
-    throw new Error(`Run ${runId} is not waiting for review (stage: ${ctx.st.stage})`);
-  }
-  ctx.rec.resume(ctx.st);
+  const runDir = (deps.paths?.runDir ?? ((id: string) => defaultRunDir(id)))(runId);
+  let ctx: Ctx | undefined;
   try {
     if (entry.kind === 'approve') {
-      await setStage(ctx, 'complete', 'Approved');
-      return outcomeOf(ctx);
+      // Approving needs only the run's state: no plan, config or checks.
+      const st = await loadRunState(runDir);
+      if (st.stage !== 'awaiting_review') {
+        throw new Error(`Run ${runId} is not waiting for review (stage: ${st.stage})`);
+      }
+      const rec = new RunRecorder(deps.createLog(runDir), deps.store);
+      rec.resume(st);
+      const light = { st, runDir, rec, deps };
+      try {
+        await setStage(light, 'complete', 'Approved');
+      } catch (e) {
+        rec.reopenFinalReview(st.title, (e as Error).message);
+        throw e;
+      }
+      return outcomeFromState(light.st, runDir);
     }
+    ctx = await loadContext(runId, deps, signal);
+    if (ctx.st.stage !== 'awaiting_review') {
+      throw new Error(`Run ${runId} is not waiting for review (stage: ${ctx.st.stage})`);
+    }
+    ctx.rec.resume(ctx.st);
     const n = ctx.st.rounds.feedback + 1;
     await setStage(ctx, 'fixing', `feedback ${n}`);
     await patchState(ctx, { rounds: { ...ctx.st.rounds, feedback: n }, sessionEnded: false });
@@ -931,7 +969,7 @@ export async function continueRun(
     );
     await fixTurn(ctx, 'feedback', n, file.path, {
       // Answering without changing anything is allowed when the report says so.
-      requireCommit: (r) => !/^no changes\b/i.test(r.summary.trim()),
+      requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
     });
     await verifyLoop(ctx);
     if (!ctx.input.config.publish) {
@@ -940,7 +978,42 @@ export async function continueRun(
       await publish(ctx);
     }
   } catch (e) {
-    await endRun(ctx, e);
+    if (ctx) {
+      await endRun(ctx, e);
+      return outcomeOf(ctx);
+    }
+    // No context yet (nothing was loaded or moved): if the run is still resting, offer the
+    // review again, then tell the caller.
+    await reopenIfResting(runId, runDir, deps, e);
+    throw e;
   }
   return outcomeOf(ctx);
+}
+
+function outcomeFromState(st: RunState, runDir: string): RunOutcome {
+  return {
+    runId: st.id,
+    runDir,
+    stage: st.stage as RunOutcome['stage'],
+    note: st.stageNote,
+    prNumber: st.prNumber,
+  };
+}
+
+/** A continuation failed before it had a context: reopen the final review if the run rests. */
+async function reopenIfResting(
+  runId: string,
+  runDir: string,
+  deps: PipelineDeps,
+  e: unknown,
+): Promise<void> {
+  try {
+    const st = await loadRunState(runDir);
+    if (!isResting(st.stage)) return;
+    const rec = new RunRecorder(deps.createLog(runDir), deps.store);
+    rec.attach(runId);
+    rec.reopenFinalReview(st.title, (e as Error).message);
+  } catch {
+    // run.json is unreadable too: nothing here can say what the run needs.
+  }
 }

@@ -30,7 +30,10 @@ describe('ReportSchema', () => {
       readFileSync(new URL('../../../docs/templates/report.schema.json', import.meta.url), 'utf8'),
     );
     const shape = ReportObjectSchema.shape;
-    expect(Object.keys(shape).sort()).toEqual([...json.required].sort());
+    expect(Object.keys(shape).sort()).toEqual([...json.required, 'feedbackOutcome'].sort());
+    expect([...shape.feedbackOutcome.unwrap().options]).toEqual(
+      json.properties.feedbackOutcome.enum,
+    );
     expect(Object.keys(json.properties).sort()).toEqual(Object.keys(shape).sort());
     expect([...shape.status.options]).toEqual(json.properties.status.enum);
     const acc = shape.acceptance.element.shape;

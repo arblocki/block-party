@@ -65,7 +65,7 @@ function createRow() {
     planPath: '/p',
     planHash: 'h',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
     ownerPid: process.pid,
     ownerHost: 'h',
   });
@@ -358,6 +358,25 @@ describe('RunManager.continue', () => {
     await new Promise((r) => setTimeout(r, 0));
     expect((errors[0] as Error).message).toBe('boom');
     expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    await m.shutdown();
+  });
+
+  it('reopens the final review when a continuation fails before it could run', async () => {
+    rest();
+    store.runs.openDecision({
+      runId: RUN_ID,
+      kind: 'final_review',
+      title: 'Ready',
+      body: 'b',
+      options: [{ id: 'approve', label: 'Approve' }],
+    });
+    store.runs.answerDecision(1, { choice: 'approve', note: null });
+    const m = manager({ continuePipeline: () => Promise.reject(new Error('no saved config')) });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    const open = store.runs.listDecisions({ runId: RUN_ID, status: 'open' });
+    expect(open.map((d) => d.kind)).toEqual(['final_review']);
+    expect(open[0]!.body).toContain('no saved config');
     await m.shutdown();
   });
 });

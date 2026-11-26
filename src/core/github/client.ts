@@ -79,6 +79,7 @@ function toPublishedPr(d: Json): PublishedPr {
     headSha: d.head?.sha ?? '',
     url: d.html_url ?? '',
     draft: !!d.draft,
+    state: d.merged || d.merged_at ? 'merged' : d.state === 'closed' ? 'closed' : 'open',
   };
 }
 
@@ -410,6 +411,17 @@ export function createGitHubClient(deps: { rest: RestLike; gql: GraphqlLike }): 
         title: input.title,
         body: input.body,
         draft: input.draft,
+      });
+      return toPublishedPr(data as Json);
+    },
+
+    async updatePr(repo, number, input) {
+      const { data } = await rest.request('PATCH /repos/{owner}/{repo}/pulls/{pull_number}', {
+        owner: repo.owner,
+        repo: repo.repo,
+        pull_number: number,
+        title: input.title,
+        body: input.body,
       });
       return toPublishedPr(data as Json);
     },

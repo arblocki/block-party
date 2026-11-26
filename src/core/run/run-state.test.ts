@@ -23,7 +23,7 @@ const state: RunState = {
   stage: 'setup',
   stageNote: null,
   implementer: null,
-  rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
+  rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
   prNumber: null,
   createdAt: '2026-11-08T00:00:00Z',
   updatedAt: '2026-11-08T00:00:00Z',
@@ -68,7 +68,7 @@ describe('run state', () => {
     expect(back).toMatchObject({
       planVersion: 1,
       sessionEnded: false,
-      rounds: { checkFix: 1, reviewFix: 2, feedback: 0 },
+      rounds: { checkFix: 1, reviewFix: 2, feedback: 0, checkRuns: 0 },
     });
   });
   it('round-trips the new fields', async () => {
@@ -77,7 +77,7 @@ describe('run state', () => {
       ...state,
       planVersion: 3,
       sessionEnded: true,
-      rounds: { checkFix: 0, reviewFix: 0, feedback: 2 },
+      rounds: { checkFix: 0, reviewFix: 0, feedback: 2, checkRuns: 0 },
     });
     expect(await loadRunState(dir)).toMatchObject({
       planVersion: 3,

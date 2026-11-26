@@ -35,6 +35,8 @@ export const RunStateSchema = z.strictObject({
     reviewFix: z.number().int(),
     /** Fix turns that answered the human's send-back feedback. */
     feedback: z.number().int().default(0),
+    /** Local CI runs so far (the round of the next `checks` stage). */
+    checkRuns: z.number().int().default(0),
   }),
   prNumber: z.number().int().nullable(),
   createdAt: z.string(),

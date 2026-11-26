@@ -9,6 +9,7 @@ import type {
 } from '../store/runs.js';
 import type { RunLog } from './events.js';
 import type { RunState } from './run-state.js';
+import { FINAL_REVIEW_OPTIONS, FINAL_REVIEW_TITLE, reopenedBody } from './final-review.js';
 import { waitForAnswer } from './wait.js';
 
 export interface RecorderOptions {
@@ -88,9 +89,30 @@ export class RunRecorder {
 
   /** Adopts an existing run row (a continuation after rest): this process becomes its owner. */
   resume(st: RunState): void {
-    this.runId = st.id;
-    this.created = true;
+    this.attach(st.id);
     this.db('claimRun', (s) => s.updateRun(st.id, { ownerPid: this.pid, ownerHost: this.host }));
+  }
+
+  /** Records into an existing run row without taking ownership of it. */
+  attach(runId: string): void {
+    this.runId = runId;
+    this.created = true;
+  }
+
+  /**
+   * An answer to the final review could not be carried out and the run is still resting:
+   * release it and open a fresh final_review item saying why, so the person can try again.
+   */
+  reopenFinalReview(title: string, reason: string): void {
+    this.event('continuation.failed', { reason });
+    this.release();
+    this.openDecision(
+      'final_review',
+      FINAL_REVIEW_TITLE,
+      reopenedBody(title, reason),
+      null,
+      FINAL_REVIEW_OPTIONS,
+    );
   }
 
   /** Clears the run's owner: nothing drives a run that is resting, so reconciliation skips it. */

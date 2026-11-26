@@ -9,6 +9,7 @@ import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
 import type { Decision, Project, RunRow, RunStore } from '../core/store/runs.js';
+import { reopenFinalReview } from '../core/run/final-review.js';
 import { PlanValidationError, UnknownProjectError, type RunManager } from './run-manager.js';
 import { parseBody } from './state.js';
 
@@ -404,6 +405,12 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         existing.runId,
         body.data.choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
       );
+    }
+    if (continued === false) {
+      // The answer is recorded but nothing carries it out: offer the review again.
+      const reason = 'the server could not start it (the run is busy or no longer waiting)';
+      reopenFinalReview(runs, existing.runId, reason);
+      return c.json({ error: `The answer could not be carried out: ${reason}` }, 409);
     }
     return c.json({
       decision: runs.getDecision(id),

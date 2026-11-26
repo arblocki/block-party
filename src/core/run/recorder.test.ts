@@ -27,7 +27,7 @@ function runState(over: Partial<RunState> = {}): RunState {
     stage: 'setup',
     stageNote: null,
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
     prNumber: null,
     createdAt: '2026-11-22T10:00:00.000Z',
     updatedAt: '2026-11-22T10:00:00.000Z',

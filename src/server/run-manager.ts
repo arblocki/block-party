@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { dataDir } from '../core/paths.js';
 import { loadRunConfig, RunConfigSchema, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
+import { reopenFinalReview } from '../core/run/final-review.js';
 import { isResting } from '../core/run/machine.js';
 import {
   continueRun,
@@ -219,6 +220,9 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         try {
           await continuePipeline(runId, entry, ac.signal);
         } catch (err) {
+          // The answer that started this could not be carried out: offer the review again
+          // (a no-op when the pipeline already did, or the run is no longer resting).
+          reopenFinalReview(runs, runId, err instanceof Error ? err.message : String(err));
           onError(runId, err);
         } finally {
           live.delete(entryRec);

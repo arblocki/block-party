@@ -106,6 +106,9 @@ export function fakeGitHub(overrides: Partial<Fixture> = {}): FakeGitHub {
     async createPr() {
       throw new Error('fakeGitHub: createPr not supported');
     },
+    async updatePr() {
+      throw new Error('fakeGitHub: updatePr not supported');
+    },
     async getPr() {
       throw new Error('fakeGitHub: getPr not supported');
     },

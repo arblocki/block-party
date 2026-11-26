@@ -61,8 +61,12 @@ describe('publishRun', () => {
           log.push(`create:${input.draft}`);
           return mk(heads.shift() ?? SHA);
         },
-        async getPr() {
-          log.push('get');
+        async updatePr(_r, n, input) {
+          log.push(`update:${n}:${input.title}:${input.body}`);
+          return mk(heads[0] ?? SHA);
+        },
+        async getPr(_r, n) {
+          log.push(`get:${n}`);
           return mk(heads.shift() ?? heads[0] ?? 'stale');
         },
       },
@@ -118,7 +122,32 @@ describe('publishRun', () => {
     });
     const r = await publishRun(base);
     expect(r.created).toBe(false);
-    expect(log).toEqual(['push', 'find']);
+    expect(log).toEqual(['push', 'find', 'update:5:T:B']);
+  });
+
+  it("prefers the run's own PR and updates its title and body", async () => {
+    const { base, log } = setup({ prHeads: [SHA] });
+    const r = await publishRun({ ...base, prNumber: 5, title: 'New', body: 'Newer' });
+    expect(r).toMatchObject({ prNumber: 5, created: false });
+    expect(log).toEqual(['push', 'get:5', 'update:5:New:Newer']);
+  });
+
+  it("does not open a second PR when the run's PR is closed or merged", async () => {
+    const { base, log } = setup({});
+    for (const state of ['closed', 'merged'] as const) {
+      log.length = 0;
+      const err = await publishRun({
+        ...base,
+        prNumber: 5,
+        github: {
+          ...base.github,
+          getPr: async () => ({ number: 5, headSha: SHA, url: 'u', draft: false, state }),
+        },
+      }).catch((e: unknown) => e);
+      expect(err).toMatchObject({ code: 'pr_closed', done: { pushed: true, prNumber: 5 } });
+      expect((err as Error).message).toContain(state);
+      expect(log).toEqual(['push']);
+    }
   });
 
   it('polls getPr until GitHub shows the new head', async () => {
@@ -127,7 +156,7 @@ describe('publishRun', () => {
       prHeads: ['old', SHA],
     });
     expect((await publishRun(base)).headSha).toBe(SHA);
-    expect(log.filter((l) => l === 'get')).toHaveLength(2);
+    expect(log.filter((l) => l.startsWith('get'))).toHaveLength(2);
   });
 
   it('fails with head_mismatch when the PR head never updates', async () => {

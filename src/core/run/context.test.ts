@@ -65,6 +65,8 @@ function setup(stage: RunStage) {
     summary: 'Second',
     findings: [finding('f_2_1')],
   });
+  // Review round 1 started the first (and only) review-fix.
+  write(join(runDir, 'inputs', 'findings-round-1.json'), [finding('f_1_1'), finding('f_1_2')]);
   write(join(runDir, 'reports', 'implement-1.json'), report('Built it'));
   write(
     join(runDir, 'reports', 'review-fix-1.json'),
@@ -91,7 +93,7 @@ function setup(stage: RunStage) {
     stageNote: null,
     implementer: { mode: 'pane', sessionId: 's-9', paneLabel: 'pane-1' },
     sessionEnded: true,
-    rounds: { checkFix: 1, reviewFix: 1, feedback: 0 },
+    rounds: { checkFix: 1, reviewFix: 1, feedback: 0, checkRuns: 0 },
     prNumber: 7,
     createdAt: '2026-11-22T10:00:00.000Z',
     updatedAt: '2026-11-22T10:00:00.000Z',

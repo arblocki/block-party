@@ -113,6 +113,8 @@ export interface PublishedPr {
   headSha: string;
   url: string;
   draft: boolean;
+  /** Absent means open. */
+  state?: 'open' | 'closed' | 'merged';
 }
 
 export interface CreatePrInput {
@@ -158,6 +160,12 @@ export interface GitHubClient {
   /** The open PR whose head is `branch` in the same repo, if any. */
   findOpenPrForBranch(repo: RepoRef, branch: string): Promise<PublishedPr | undefined>;
   createPr(repo: RepoRef, input: CreatePrInput): Promise<PublishedPr>;
+  /** Replaces the title and body of an existing PR. */
+  updatePr(
+    repo: RepoRef,
+    number: number,
+    input: { title: string; body: string },
+  ): Promise<PublishedPr>;
   getPr(repo: RepoRef, number: number): Promise<PublishedPr>;
   /** Check runs and commit statuses for `sha`, combined into one state. */
   getCiStatus(repo: RepoRef, sha: string): Promise<CiStatus>;

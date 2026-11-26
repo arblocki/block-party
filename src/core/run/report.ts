@@ -12,6 +12,8 @@ export const ReportObjectSchema = z.strictObject({
     }),
   ),
   questions: z.array(z.string().min(1)),
+  /** Only for a turn that answers send-back feedback: whether any code was changed. */
+  feedbackOutcome: z.enum(['changed', 'no_changes']).optional(),
   findingResolutions: z.array(
     z.strictObject({
       findingId: z.string().min(1),

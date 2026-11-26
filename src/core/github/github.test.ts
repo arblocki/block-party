@@ -453,6 +453,7 @@ describe('github client publish methods', () => {
       headSha: 'abc',
       url: 'https://x/pull/7',
       draft: true,
+      state: 'open',
     });
     expect(calls[0]).toEqual({
       route: 'GET /repos/{owner}/{repo}/pulls',
@@ -484,6 +485,22 @@ describe('github client publish methods', () => {
         draft: true,
       },
     });
+  });
+
+  it('updatePr patches title and body', async () => {
+    const { calls, client } = recorder(() => prData);
+    expect((await client.updatePr(repo, 7, { title: 'T2', body: 'B2' })).number).toBe(7);
+    expect(calls[0]).toEqual({
+      route: 'PATCH /repos/{owner}/{repo}/pulls/{pull_number}',
+      params: { owner: 'o', repo: 'r', pull_number: 7, title: 'T2', body: 'B2' },
+    });
+  });
+
+  it('getPr reports closed and merged PRs', async () => {
+    const closed = recorder(() => ({ ...prData, state: 'closed' }));
+    expect((await closed.client.getPr(repo, 7)).state).toBe('closed');
+    const merged = recorder(() => ({ ...prData, state: 'closed', merged: true }));
+    expect((await merged.client.getPr(repo, 7)).state).toBe('merged');
   });
 
   it('getPr reads one PR', async () => {
