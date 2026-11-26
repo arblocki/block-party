@@ -16,6 +16,7 @@ import type { ResolutionKind, ReviewRoundInput, TurnReport } from './publish.js'
 import { RunRecorder } from './recorder.js';
 import { ReportSchema, type Report } from './report.js';
 import { loadRunState, type RunState } from './run-state.js';
+import { parseRulings, type Ruling } from './triage.js';
 
 /** Everything one pass of the pipeline works with; rebuilt from the run directory on resume. */
 export interface Ctx {
@@ -43,6 +44,10 @@ export interface Ctx {
   /** Fix rounds already used when this pass began: the caps count from here. */
   fixBase: { checkFix: number; reviewFix: number };
   rulingsWritten: boolean;
+  /** The commit range of the latest fix turn, for judging how broad it was. */
+  lastFix?: { from: string; to: string };
+  /** The owner's rulings so far; written to `inputs/rulings.json` after every answer. */
+  rulings: Ruling[];
   /** In-flight run.json save started from a synchronous callback. */
   pending: Promise<void>;
 }
@@ -130,6 +135,7 @@ export function buildCtx(b: BuildCtxInput): Ctx {
     reports: [],
     fixBase: { checkFix: st.rounds.checkFix, reviewFix: st.rounds.reviewFix },
     rulingsWritten: false,
+    rulings: [],
     pending: Promise.resolve(),
   };
   return ctx;
@@ -312,6 +318,7 @@ export async function loadContext(
   ctx.reports = await loadReports(runDir, runId, deps.store);
   ctx.lastReport = ctx.reports.at(-1)?.report;
   ctx.rulingsWritten = (await listDir(join(runDir, 'inputs'))).includes('rulings.json');
+  ctx.rulings = parseRulings(await readJson(join(runDir, 'inputs', 'rulings.json')));
   if (st.implementer) {
     ctx.session = {
       mode: st.implementer.mode,

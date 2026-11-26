@@ -170,6 +170,20 @@ describe('summarizeEvent', () => {
     expect(sum('review.result', { round: 2, findings: 1, blocking: 1 })).toBe(
       'Review round 2: 1 finding, 1 blocking',
     );
+    expect(sum('triage.asked', { round: 1, findings: ['r1:f_1', 'r1:f_2'] })).toBe(
+      'Asked you to triage 2 findings',
+    );
+    expect(sum('triage.answered', { key: 'r1:f_1', choice: 'skip' })).toBe('Triage r1:f_1: skip');
+    expect(sum('dispute.opened', { findings: ['r1:f_1'], decisions: [3] })).toBe(
+      '1 finding disputed by the implementer',
+    );
+    expect(sum('dispute.answered', { key: 'r1:f_1', choice: 'uphold' })).toBe(
+      'Dispute r1:f_1: uphold',
+    );
+    expect(sum('fix.broad', { files: 12, lines: 340 })).toBe(
+      'Fix looks broad: 12 files, 340 lines',
+    );
+    expect(sum('fix.broad')).toBe('fix.broad');
     expect(sum('question', { question: 'Which db?' })).toBe('Question: Which db?');
     expect(sum('pr', { number: 9, url: 'u' })).toBe('Opened PR #9');
     expect(sum('publish.stopped', { code: 'push_failed' })).toBe('Publish stopped (push_failed)');

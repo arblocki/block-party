@@ -70,7 +70,7 @@ function resolutionOf(round: ReviewRoundInput, f: Finding): ResolutionKind {
 /**
  * Unresolved blocking findings (Phase 1 rule): every P0/P1 finding of the LAST round (it was
  * never fixed and re-reviewed), plus P0/P1 findings of earlier rounds whose resolution is
- * disputed, deferred or open. Earlier P0/P1 findings marked `fixed` count as resolved,
+ * disputed, deferred or open (not `wont_fix`: the owner accepted the dispute). Earlier P0/P1 findings marked `fixed` count as resolved,
  * including when the last round found nothing. Deduplicated by finding id.
  */
 export function unresolvedBlocking(rounds: ReviewRoundInput[]): Finding[] {
@@ -79,6 +79,8 @@ export function unresolvedBlocking(rounds: ReviewRoundInput[]): Finding[] {
     const isLast = i === rounds.length - 1;
     for (const f of round.findings) {
       if (!isBlocking(f)) continue;
+      // The owner agreed to leave it.
+      if (resolutionOf(round, f) === 'wont_fix') continue;
       if (isLast || resolutionOf(round, f) !== 'fixed') out.set(f.id, f);
     }
   });

@@ -15,6 +15,9 @@ describe('resolveRunConfig', () => {
       maxCheckFixRounds: 2,
       maxReviewFixRounds: 1,
       autoFix: ['P0', 'P1'],
+      ask: ['P2'],
+      maxFixLinesPerFinding: 200,
+      broadFixFiles: 10,
       stageTimeoutMs: 7_200_000,
       checkTimeoutMs: 900_000,
     });

@@ -11,6 +11,7 @@ import type { Git } from '../git/index.js';
 import type { GitHubClient } from '../github/types.js';
 import type { RunShellOptions, RunShellResult } from '../process/run-shell.js';
 import type { Finding } from '../reviewer/findings.js';
+import type { DecisionAnswer, DecisionOption, DecisionKind, FindingStatus } from '../store/runs.js';
 import type { ReviewResult, ReviewWithCodexOptions } from '../reviewer/codex-reviewer.js';
 import { writeArtifact } from './artifacts.js';
 import type { RunConfig } from './config.js';
@@ -44,6 +45,21 @@ import {
 import { FINAL_REVIEW_OPTIONS, FINAL_REVIEW_TITLE } from './final-review.js';
 import { attachCommand, buildCtx, loadContext, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
+import { DecisionDismissedError } from './wait.js';
+import {
+  assessFix,
+  BROAD_FIX_OPTIONS,
+  broadFixBody,
+  disputeBody,
+  DISPUTE_OPTIONS,
+  FINAL_RULINGS,
+  statusForRuling,
+  triageBody,
+  triageOf,
+  TRIAGE_OPTIONS,
+  withRuling,
+  type RulingKind,
+} from './triage.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
 import { loadRunState, saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
@@ -79,6 +95,7 @@ export interface PipelineDeps {
     | 'headSha'
     | 'isClean'
     | 'commitsBetween'
+    | 'diffFiles'
     | 'pushBranch'
     | 'remoteBranchSha'
   >;
@@ -570,10 +587,40 @@ async function judgeTurn(
   return report;
 }
 
-async function writeRulingsOnce(ctx: Ctx): Promise<string> {
-  const art = await writeArtifact(ctx.runDir, 'inputs/rulings.json', []);
-  if (!ctx.rulingsWritten) ctx.rulingsWritten = true;
+/** Writes the owner's rulings so far where the fix brief points the implementer. */
+async function writeRulings(ctx: Ctx): Promise<string> {
+  const art = await writeArtifact(ctx.runDir, 'inputs/rulings.json', ctx.rulings);
+  ctx.rulingsWritten = true;
   return art.path;
+}
+
+async function recordRuling(ctx: Ctx, key: string, ruling: RulingKind, note: string | null) {
+  ctx.rulings = withRuling(ctx.rulings, { key, ruling, note: note ?? '' });
+  await writeRulings(ctx);
+}
+
+/** Records a finding's status in its row and in the round's resolutions. */
+function setStatus(
+  ctx: Ctx,
+  round: number,
+  id: string,
+  status: FindingStatus,
+  note: string | null,
+): void {
+  ctx.rec.setFindingStatus(round, id, status, note);
+  const r = ctx.rounds.find((x) => x.round === round);
+  if (!r) return;
+  if (status === 'open') delete r.resolutions[id];
+  else r.resolutions[id] = { resolution: status, note: note ?? '' };
+}
+
+/** The status of finding `key` (`r<round>:<id>`) as this run knows it. */
+function statusOfKey(ctx: Ctx, key: string): FindingStatus | undefined {
+  const m = /^r(\d+):(.+)$/.exec(key);
+  const round = ctx.rounds.find((r) => r.round === Number(m?.[1]));
+  if (!m || !round) return undefined;
+  if (!round.findings.some((f) => f.id === m[2])) return undefined;
+  return (round.resolutions[m[2]!]?.resolution ?? 'open') as FindingStatus;
 }
 
 async function fixTurn(
@@ -584,9 +631,7 @@ async function fixTurn(
   extra: TurnChecks,
 ): Promise<Report> {
   const { deps, st, input } = ctx;
-  const rulingsPath = ctx.rulingsWritten
-    ? join(ctx.runDir, 'inputs', 'rulings.json')
-    : await writeRulingsOnce(ctx);
+  const rulingsPath = await writeRulings(ctx);
   const brief = await writeArtifact(
     ctx.runDir,
     `briefs/${kind}-${n}.md`,
@@ -594,7 +639,7 @@ async function fixTurn(
   );
   await setStage(ctx, 'fixing', `${kind} ${n}`);
   const prevHead = await deps.git.headSha(st.worktreePath);
-  return inStage(
+  const report = await inStage(
     ctx,
     kind,
     n,
@@ -615,6 +660,8 @@ async function fixTurn(
     },
     () => turnOutput(ctx, kind, n),
   );
+  ctx.lastFix = { from: prevHead, to: ctx.st.headSha ?? prevHead };
+  return report;
 }
 
 /** Step 5: local CI on HEAD; failing checks go back to the implementer up to the cap. */
@@ -685,10 +732,144 @@ async function checksGreen(ctx: Ctx): Promise<void> {
   }
 }
 
-/** Steps 6-7: Codex review, and one (configurable) fix round for blocking findings. */
+/** A finding that goes to the implementer in a fix round. */
+interface FixItem {
+  round: number;
+  id: string;
+  key: string;
+  finding: Finding;
+}
+
+const keyOf = (round: number, id: string) => `r${round}:${id}`;
+
+function fixItem(round: number, finding: Finding): FixItem {
+  return { round, id: finding.id, key: keyOf(round, finding.id), finding };
+}
+
+/** "2 P2 findings", "1 P1, 2 P2 findings". */
+function severityCounts(findings: Finding[]): string {
+  const counts = new Map<string, number>();
+  for (const f of findings) counts.set(f.severity, (counts.get(f.severity) ?? 0) + 1);
+  const parts = [...counts].sort().map(([sev, n]) => `${n} ${sev}`);
+  return `${parts.join(', ')} ${findings.length === 1 ? 'finding' : 'findings'}`;
+}
+
+/**
+ * Moves the run to `awaiting_decision` and opens one decision per spec. A run database that
+ * cannot take them halts the run: nothing could answer, so waiting would never end.
+ */
+async function openDecisions(
+  ctx: Ctx,
+  kind: DecisionKind,
+  specs: { title: string; body: string; options: DecisionOption[] }[],
+  waitNote: string,
+): Promise<number[]> {
+  await setStage(ctx, 'awaiting_decision', waitNote);
+  const ids: number[] = [];
+  for (const spec of specs) {
+    const id = ctx.rec.openDecision(kind, spec.title, spec.body, attachCommand(ctx), spec.options);
+    if (id === null) {
+      throw new Halt(
+        'blocked',
+        `Cannot ask about ${waitNote}: the run database is unavailable, so nothing could answer.`,
+      );
+    }
+    ids.push(id);
+  }
+  return ids;
+}
+
+/** Waits for every answer; a dismissed question halts the run. */
+async function awaitAnswers(ctx: Ctx, ids: number[]): Promise<DecisionAnswer[]> {
+  const answers: DecisionAnswer[] = [];
+  for (const id of ids) {
+    try {
+      answers.push(await ctx.rec.awaitDecision(id, ctx.input.signal));
+    } catch (e) {
+      if (e instanceof DecisionDismissedError) {
+        throw new Halt(
+          'blocked',
+          `A question (decision ${id}) was dismissed without an answer, so the run cannot go on.`,
+        );
+      }
+      throw e;
+    }
+  }
+  return answers;
+}
+
+/** A finding that raises a `fixed` one again stops the run: the fix did not hold. */
+function haltOnRepeatOfFixed(ctx: Ctx, rec: ReviewRoundInput): void {
+  for (const f of rec.findings) {
+    if (f.repeatOf && statusOfKey(ctx, f.repeatOf) === 'fixed') {
+      throw new Halt(
+        'blocked',
+        `Finding ${keyOf(rec.round, f.id)} raises ${f.repeatOf} again, but ${f.repeatOf} was marked fixed.`,
+      );
+    }
+  }
+}
+
+/**
+ * A finding that raises one the owner already ruled on (skip, defer, accepted dispute) takes
+ * the same ruling: it is not asked about or fixed again. Returns the ids that did.
+ */
+async function inheritRulings(ctx: Ctx, rec: ReviewRoundInput): Promise<Set<string>> {
+  const inherited = new Set<string>();
+  for (const f of rec.findings) {
+    const earlier = f.repeatOf ? ctx.rulings.find((r) => r.key === f.repeatOf) : undefined;
+    if (!f.repeatOf || !earlier || !FINAL_RULINGS.includes(earlier.ruling)) continue;
+    inherited.add(f.id);
+    const note = `Same as ${f.repeatOf}, which you ruled ${earlier.ruling}`;
+    setStatus(ctx, rec.round, f.id, statusForRuling(earlier.ruling), note);
+    await recordRuling(ctx, keyOf(rec.round, f.id), earlier.ruling, note);
+  }
+  return inherited;
+}
+
+/** Asks about the round's `ask` findings; returns the ids the owner wants fixed. */
+async function askTriage(ctx: Ctx, rec: ReviewRoundInput, skip: Set<string>): Promise<Set<string>> {
+  const policy = ctx.input.config.policy;
+  const asked = rec.findings.filter(
+    (f) => triageOf(policy, f.severity) === 'ask' && !skip.has(f.id) && !rec.resolutions[f.id],
+  );
+  const toFix = new Set<string>();
+  if (asked.length === 0) return toFix;
+  const ids = await openDecisions(
+    ctx,
+    'finding_triage',
+    asked.map((f) => ({
+      title: `Fix, skip or defer: ${f.title}`,
+      body: triageBody(f),
+      options: TRIAGE_OPTIONS,
+    })),
+    `${severityCounts(asked)} to triage`,
+  );
+  ctx.rec.event('triage.asked', {
+    round: rec.round,
+    findings: asked.map((f) => keyOf(rec.round, f.id)),
+    decisions: ids,
+  });
+  const answers = await awaitAnswers(ctx, ids);
+  for (const [i, f] of asked.entries()) {
+    const { choice, note } = answers[i]!;
+    const key = keyOf(rec.round, f.id);
+    ctx.rec.event('triage.answered', { key, choice });
+    const ruling = choice as RulingKind;
+    await recordRuling(ctx, key, ruling, note);
+    if (ruling === 'fix') toFix.add(f.id);
+    else setStatus(ctx, rec.round, f.id, statusForRuling(ruling), note ?? `Owner ruled ${ruling}`);
+  }
+  await setStage(ctx, 'reviewing', 'triage answered');
+  return toFix;
+}
+
+/** Steps 6-7: Codex review, triage, and one (configurable) fix round for the fix set. */
 async function verifyLoop(ctx: Ctx): Promise<void> {
   const { deps, input } = ctx;
   const policy = input.config.policy;
+  /** Findings the owner upheld after a dispute: they go into the next fix set. */
+  let upheld: FixItem[] = [];
   // A continuation numbers its reviews after the ones already done.
   for (let round = Math.max(0, ...ctx.rounds.map((r) => r.round)) + 1; ; round++) {
     await checksGreen(ctx);
@@ -697,7 +878,7 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
     // Stored rows are the record of what a round found and how it ended; rounds from before
     // they existed have only the findings files, which ctx.rounds was built from.
-    const prior = mergedPriorFindings(ctx.rounds, ctx.rec.listFindings());
+    const prior = mergedPriorFindings(ctx.rounds, ctx.rec.listFindings(), ctx.rulings);
     const { rec, blocking } = await inStage(
       ctx,
       'review',
@@ -727,10 +908,8 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
           resolutions: {},
         };
         ctx.rounds.push(rec);
-        const blocking = rec.findings.filter((f) => policy.autoFix.includes(f.severity));
-        ctx.rec.recordFindings(round, rec.findings, (f) =>
-          policy.autoFix.includes(f.severity) ? 'auto_fix' : 'record',
-        );
+        const blocking = rec.findings.filter((f) => triageOf(policy, f.severity) === 'auto_fix');
+        ctx.rec.recordFindings(round, rec.findings, (f) => triageOf(policy, f.severity));
         ctx.rec.event('review.result', {
           round,
           findings: rec.findings.length,
@@ -752,41 +931,124 @@ async function verifyLoop(ctx: Ctx): Promise<void> {
         };
       },
     );
-    if (
-      blocking.length === 0 ||
-      ctx.st.rounds.reviewFix - ctx.fixBase.reviewFix >= policy.maxReviewFixRounds
-    ) {
-      return;
-    }
-    await reviewFix(ctx, rec, blocking);
+    haltOnRepeatOfFixed(ctx, rec);
+    const inherited = await inheritRulings(ctx, rec);
+    // Past the cap nothing more is fixed, so there is nothing to ask either.
+    if (ctx.st.rounds.reviewFix - ctx.fixBase.reviewFix >= policy.maxReviewFixRounds) return;
+    const answeredFix = await askTriage(ctx, rec, inherited);
+    const fixSet = [
+      ...upheld,
+      ...blocking.filter((f) => !inherited.has(f.id)).map((f) => fixItem(round, f)),
+      ...rec.findings.filter((f) => answeredFix.has(f.id)).map((f) => fixItem(round, f)),
+    ];
+    if (fixSet.length === 0) return;
+    upheld = await reviewFix(ctx, rec, fixSet);
   }
 }
 
-async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, blocking: Finding[]): Promise<void> {
+/** Runs one fix turn for `items`, then rules on what it disputed and how broad it was. */
+async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, items: FixItem[]): Promise<FixItem[]> {
+  const policy = ctx.input.config.policy;
   const n = ctx.st.rounds.reviewFix + 1;
   await patchState(ctx, { rounds: { ...ctx.st.rounds, reviewFix: n } });
+  // Ids restart every round, so a finding from an earlier round goes by its key.
+  const fileId = (i: FixItem) => (i.round === rec.round ? i.id : i.key);
   const findings = await writeArtifact(
     ctx.runDir,
     `inputs/findings-round-${rec.round}.json`,
-    blocking,
+    items.map((i) => ({ ...i.finding, id: fileId(i) })),
   );
   const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
   const report = await fixTurn(ctx, 'review-fix', n, findings.path, {
     validate: (r) => {
       for (const x of r.findingResolutions) resolved.set(x.findingId, x);
-      const missing = blocking.filter((f) => !resolved.has(f.id)).map((f) => f.id);
+      const missing = items.filter((i) => !resolved.has(fileId(i))).map(fileId);
       return missing.length > 0
         ? `Fix report is missing resolutions for: ${missing.join(', ')}`
         : null;
     },
-    requireCommit: () => blocking.some((f) => resolved.get(f.id)?.resolution === 'fixed'),
+    requireCommit: () => items.some((i) => resolved.get(fileId(i))?.resolution === 'fixed'),
   });
-  for (const x of report.findingResolutions) {
-    if (rec.findings.some((f) => f.id === x.findingId)) {
-      rec.resolutions[x.findingId] = { resolution: x.resolution, note: x.note };
-      ctx.rec.setFindingStatus(rec.round, x.findingId, x.resolution, x.note);
+  const said = new Map(report.findingResolutions.map((x) => [x.findingId, x]));
+  const disputed: { item: FixItem; note: string }[] = [];
+  for (const i of items) {
+    const x = said.get(fileId(i));
+    if (!x) continue;
+    setStatus(ctx, i.round, i.id, x.resolution, x.note);
+    if (x.resolution === 'disputed') disputed.push({ item: i, note: x.note });
+  }
+
+  let waited = false;
+  const { from, to } = ctx.lastFix ?? {};
+  if (from && to && from !== to) {
+    const { files } = await ctx.deps.git.diffFiles(ctx.st.worktreePath, from, to);
+    const a = assessFix(
+      files,
+      items.map((i) => i.finding),
+      policy,
+    );
+    if (a.broad) {
+      ctx.rec.event('fix.broad', {
+        files: a.files,
+        lines: a.lines,
+        lineBudget: a.lineBudget,
+        deletedFiles: a.deletedFiles,
+        outsideFiles: a.outsideFiles,
+      });
+      const [id] = await openDecisions(
+        ctx,
+        'broad_fix',
+        [
+          {
+            title: 'Fix is much broader than its findings',
+            body: broadFixBody(a, files, items.length),
+            options: BROAD_FIX_OPTIONS,
+          },
+        ],
+        `broad fix: ${a.reasons.join('; ')}`,
+      );
+      waited = true;
+      const [answer] = await awaitAnswers(ctx, [id!]);
+      if (answer!.choice === 'stop') {
+        throw new Halt(
+          'blocked',
+          `Stopped at your request: the fix was much broader than its findings (${a.reasons.join('; ')}).`,
+        );
+      }
     }
   }
+
+  const upheld: FixItem[] = [];
+  if (disputed.length > 0) {
+    const ids = await openDecisions(
+      ctx,
+      'dispute',
+      disputed.map((d) => ({
+        title: `Disputed: ${d.item.finding.title}`,
+        body: disputeBody(d.item.key, d.item.finding, d.note),
+        options: DISPUTE_OPTIONS,
+      })),
+      `${disputed.length} disputed ${disputed.length === 1 ? 'finding' : 'findings'} to rule on`,
+    );
+    waited = true;
+    ctx.rec.event('dispute.opened', { findings: disputed.map((d) => d.item.key), decisions: ids });
+    const answers = await awaitAnswers(ctx, ids);
+    for (const [k, d] of disputed.entries()) {
+      const { choice, note } = answers[k]!;
+      ctx.rec.event('dispute.answered', { key: d.item.key, choice });
+      const ruling = choice as RulingKind;
+      await recordRuling(ctx, d.item.key, ruling, note);
+      if (ruling === 'accept_dispute') {
+        const why = `Owner agreed with the dispute: ${d.note}${note ? ` (${note})` : ''}`;
+        setStatus(ctx, d.item.round, d.item.id, 'wont_fix', why);
+      } else {
+        setStatus(ctx, d.item.round, d.item.id, 'open', null);
+        upheld.push(d.item);
+      }
+    }
+  }
+  if (waited) await setStage(ctx, 'checking', 'questions answered');
+  return upheld;
 }
 
 /** Stops the implementer process; the conversation can still be resumed later. */

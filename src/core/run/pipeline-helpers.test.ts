@@ -51,5 +51,12 @@ describe('mergedPriorFindings', () => {
       ['r1:f_1_1', 'fixed', 'done'],
       ['r2:f_2_1', 'disputed', 'no'],
     ]);
+    const withRuling = mergedPriorFindings(rounds, rows, [
+      { key: 'r1:f_1_1', ruling: 'skip', note: 'later' },
+    ]);
+    expect(withRuling.map((p) => [p.key, p.ruling, p.rulingNote])).toEqual([
+      ['r1:f_1_1', 'skip', 'later'],
+      ['r2:f_2_1', undefined, undefined],
+    ]);
   });
 });

@@ -70,6 +70,14 @@ export interface DiffStat {
   deletions: number;
 }
 
+export interface DiffFile {
+  path: string;
+  added: number;
+  deleted: number;
+  /** git's status letter: A(dded), M(odified), D(eleted), T(ype changed). */
+  status: string;
+}
+
 export function createGit(runner: GitRunner = defaultRunner) {
   const run = async (cwd: string, args: string[]): Promise<string> => {
     const r = await runner(args, { cwd });
@@ -184,6 +192,34 @@ export function createGit(runner: GitRunner = defaultRunner) {
         insertions: num(/(\d+) insertions?\(\+\)/),
         deletions: num(/(\d+) deletions?\(-\)/),
       };
+    },
+
+    /** Per-file changes between two commits (renames are shown as a delete and an add). */
+    async diffFiles(cwd: string, base: string, head: string): Promise<{ files: DiffFile[] }> {
+      const flags = ['-c', 'core.quotepath=false', 'diff', '--no-renames'];
+      const [nums, statuses] = await Promise.all([
+        run(cwd, [...flags, '--numstat', base, head, '--']),
+        run(cwd, [...flags, '--name-status', base, head, '--']),
+      ]);
+      const status = new Map<string, string>();
+      for (const line of statuses.split('\n')) {
+        const [s, ...rest] = line.split('\t');
+        if (s && rest.length > 0) status.set(rest.join('\t'), s.charAt(0));
+      }
+      const files: DiffFile[] = [];
+      for (const line of nums.split('\n')) {
+        const [a, d, ...rest] = line.split('\t');
+        if (a === undefined || d === undefined || rest.length === 0) continue;
+        const path = rest.join('\t');
+        // Binary files show `-` for both counts.
+        files.push({
+          path,
+          added: Number(a) || 0,
+          deleted: Number(d) || 0,
+          status: status.get(path) ?? 'M',
+        });
+      }
+      return { files };
     },
 
     async pushBranch(cwd: string, branch: string): Promise<void> {

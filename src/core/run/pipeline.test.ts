@@ -18,6 +18,7 @@ import type {
   TurnOutcome,
 } from '../agents/types.js';
 import type { ChecksRunResult } from '../checks/run.js';
+import type { DiffFile } from '../git/index.js';
 import type { GitHubClient } from '../github/types.js';
 import type { Finding } from '../reviewer/findings.js';
 import type { ReviewResult } from '../reviewer/codex-reviewer.js';
@@ -30,7 +31,7 @@ import type { Report } from './report.js';
 import type { RunStage } from './machine.js';
 import type { PriorFinding } from '../reviewer/prompt.js';
 import { openStore } from '../store/index.js';
-import type { RunStore } from '../store/runs.js';
+import type { DecisionKind, RunStore } from '../store/runs.js';
 
 /** Lets a test declare one otherwise-legal move illegal, to force setStage to reject it. */
 const forced = vi.hoisted(() => ({ illegal: null as null | [string, string] }));
@@ -131,6 +132,8 @@ interface Opts {
   abortAt?: { step: 'fetch' | 'setup' | 'checks' | 'review'; ac: AbortController };
   onReview?: (git: { head: string }) => void;
   store?: RunStore;
+  /** Files each fix turn changed, for the broad-fix check; default: one small file. */
+  diffFiles?: DiffFile[];
   onStart?: (input: ImplementerStartInput) => void;
 }
 
@@ -204,6 +207,9 @@ function harness(o: Opts) {
       isClean: async () => !git.dirty,
       commitsBetween: async (_c, base, head) =>
         base === head ? [] : [{ sha: head, subject: 'c' }],
+      diffFiles: async () => ({
+        files: o.diffFiles ?? [{ path: 'a.ts', added: 3, deleted: 1, status: 'M' }],
+      }),
       pushBranch: async () => undefined,
       remoteBranchSha: async () => git.head,
     },
@@ -316,6 +322,32 @@ function state(out: RunOutcome) {
     rounds: { checkFix: number; reviewFix: number };
     prNumber: number | null;
   };
+}
+
+/**
+ * A store that answers each optioned decision of a kind as it is opened, from a script of
+ * choices (the run then never waits).
+ */
+function scripted(script: Partial<Record<DecisionKind, string[]>>) {
+  const real = openStore(':memory:').runs;
+  const asked: { kind: string; title: string; body: string; choice: string }[] = [];
+  const store: RunStore = new Proxy(real, {
+    get(target, prop, recv) {
+      if (prop === 'openDecision') {
+        return (input: Parameters<RunStore['openDecision']>[0]) => {
+          const id = target.openDecision(input);
+          const choice = input.options ? script[input.kind]?.shift() : undefined;
+          if (choice !== undefined) {
+            target.answerDecision(id, { choice, note: null });
+            asked.push({ kind: input.kind, title: input.title, body: input.body, choice });
+          }
+          return id;
+        };
+      }
+      return Reflect.get(target, prop, recv) as unknown;
+    },
+  });
+  return { store, asked };
 }
 
 describe('runPipeline', () => {
@@ -493,8 +525,8 @@ describe('runPipeline', () => {
         },
       ],
       reviews: [
-        review([finding('f_1_1', 'P0', 'Data loss'), finding('f_1_2', 'P2', 'Minor')]),
-        review([finding('f_2_1', 'P1', 'Still lossy', 'r1:f_1_1')]),
+        review([finding('f_1_1', 'P0', 'Data loss'), finding('f_1_2', 'P3', 'Minor')]),
+        review([finding('f_2_1', 'P1', 'Still lossy', 'r1:f_9')]),
       ],
     });
     const out = await h.run();
@@ -502,7 +534,7 @@ describe('runPipeline', () => {
     expect(rows.map((r) => [r.key, r.triage, r.status, r.resolutionNote, r.repeatOf])).toEqual([
       ['r1:f_1_1', 'auto_fix', 'fixed', 'tried', null],
       ['r1:f_1_2', 'record', 'open', null, null],
-      ['r2:f_2_1', 'auto_fix', 'open', null, 'r1:f_1_1'],
+      ['r2:f_2_1', 'auto_fix', 'open', null, 'r1:f_9'],
     ]);
     // Round 2's reviewer saw round 1's findings by key, with their statuses.
     expect(h.calls.reviews[1]!.priorFindings.map((p) => [p.key, p.status])).toEqual([
@@ -514,6 +546,7 @@ describe('runPipeline', () => {
   it('accepts a fix round with only disputed findings and no new commit', async () => {
     const f = finding('f_1_1', 'P1', 'Maybe wrong');
     const h = harness({
+      store: scripted({ dispute: ['accept_dispute'] }).store,
       turns: [
         {},
         {
@@ -527,7 +560,7 @@ describe('runPipeline', () => {
     });
     const out = await h.run();
     expect(out.stage).toBe('awaiting_review');
-    expect(h.calls.published[0]!.body).toContain('disputed');
+    expect(h.calls.published[0]!.body).toContain('wont_fix');
   });
 
   it('blocks when the fix report omits a blocking finding', async () => {
@@ -541,7 +574,7 @@ describe('runPipeline', () => {
   it('does not auto-fix findings below the autoFix severities', async () => {
     const h = harness({
       turns: [{}],
-      reviews: [review([finding('f_1_1', 'P2', 'Nit')])],
+      reviews: [review([finding('f_1_1', 'P3', 'Nit')])],
     });
     const out = await h.run();
     expect(out.stage).toBe('awaiting_review');
@@ -801,6 +834,248 @@ function brokenStore(): RunStore {
     },
   });
 }
+
+const fixed = (...ids: string[]) =>
+  report({
+    findingResolutions: ids.map((id) => ({ findingId: id, resolution: 'fixed', note: 'ok' })),
+  });
+
+const readJson = (out: RunOutcome, rel: string): unknown =>
+  JSON.parse(readFileSync(join(out.runDir, rel), 'utf8'));
+
+describe('triage, disputes and stop conditions', () => {
+  const two = [finding('f_1_1', 'P1', 'Null deref'), finding('f_1_2', 'P2', 'Missing test')];
+
+  it('fixes the P1 automatically and asks about the P2; fix adds it to the fix round', async () => {
+    const { store, asked } = scripted({ finding_triage: ['fix'] });
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1', 'f_1_2') }],
+      reviews: [review(two), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toMatchObject({ kind: 'finding_triage', choice: 'fix' });
+    expect(asked[0]!.title).toContain('Missing test');
+    expect(asked[0]!.body).toContain('P2 Missing test');
+    expect(asked[0]!.body).toContain('a.ts:1-2');
+    const sent = readJson(out, 'inputs/findings-round-1.json') as { id: string }[];
+    expect(sent.map((f) => f.id)).toEqual(['f_1_1', 'f_1_2']);
+    expect(store.listFindings(out.runId).map((r) => [r.key, r.triage, r.status])).toEqual([
+      ['r1:f_1_1', 'auto_fix', 'fixed'],
+      ['r1:f_1_2', 'ask', 'fixed'],
+    ]);
+    expect(readJson(out, 'inputs/rulings.json')).toEqual([
+      { key: 'r1:f_1_2', ruling: 'fix', note: '' },
+    ]);
+    const events = store.listEvents(out.runId);
+    expect(events.map((e) => e.type)).toEqual(
+      expect.arrayContaining(['triage.asked', 'triage.answered', 'decision.answered']),
+    );
+    const waiting = events.find(
+      (e) => e.type === 'stage' && /awaiting_decision/.test(JSON.stringify(e.payload)),
+    );
+    expect(waiting?.payload).toMatchObject({ note: '1 P2 finding to triage' });
+  });
+
+  it('skip marks the finding skipped and runs no fix turn for it', async () => {
+    const { store } = scripted({ finding_triage: ['skip'] });
+    const h = harness({
+      store,
+      turns: [{}],
+      reviews: [review([two[1]!])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(0);
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'skipped' });
+    expect(readJson(out, 'inputs/rulings.json')).toEqual([
+      { key: 'r1:f_1_2', ruling: 'skip', note: '' },
+    ]);
+  });
+
+  it('with a skipped P2 and a P1, only the P1 is fixed', async () => {
+    const { store } = scripted({ finding_triage: ['defer'] });
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review(two), review([])],
+    });
+    const out = await h.run();
+    const sent = readJson(out, 'inputs/findings-round-1.json') as { id: string }[];
+    expect(sent.map((f) => f.id)).toEqual(['f_1_1']);
+    expect(store.listFindings(out.runId).map((r) => r.status)).toEqual(['fixed', 'deferred']);
+  });
+
+  it('does not ask again about a finding that raises one already ruled on', async () => {
+    const { store, asked } = scripted({ finding_triage: ['skip'] });
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review(two), review([finding('f_2_1', 'P2', 'Missing test', 'r1:f_1_2')])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(1);
+    expect(store.listFindings(out.runId).map((r) => [r.key, r.status])).toEqual([
+      ['r1:f_1_1', 'fixed'],
+      ['r1:f_1_2', 'skipped'],
+      ['r2:f_2_1', 'skipped'],
+    ]);
+    // Round 2's reviewer was shown the ruling next to the finding.
+    expect(h.calls.reviews[1]!.priorFindings.find((p) => p.key === 'r1:f_1_2')).toMatchObject({
+      status: 'skipped',
+      ruling: 'skip',
+    });
+  });
+
+  it('halts blocked when a P2 needs asking and there is no database', async () => {
+    const h = harness({ turns: [{}], reviews: [review([two[1]!])] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('database is unavailable');
+  });
+
+  it('halts blocked when the question is dismissed', async () => {
+    const real = openStore(':memory:').runs;
+    const store: RunStore = new Proxy(real, {
+      get(target, prop, recv) {
+        if (prop === 'openDecision') {
+          return (input: Parameters<RunStore['openDecision']>[0]) => {
+            const id = target.openDecision(input);
+            if (input.kind === 'finding_triage') target.dismissDecision(id);
+            return id;
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    const out = await harness({ store, turns: [{}], reviews: [review([two[1]!])] }).run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('dismissed');
+  });
+
+  const disputeTurn = (): Turn => ({
+    commit: false,
+    report: report({
+      findingResolutions: [{ findingId: 'f_1_1', resolution: 'disputed', note: 'Works as is' }],
+    }),
+  });
+
+  it('a disputed finding opens a dispute decision; accept_dispute sets wont_fix', async () => {
+    const { store, asked } = scripted({ dispute: ['accept_dispute'] });
+    const h = harness({
+      store,
+      turns: [{}, disputeTurn()],
+      reviews: [review([two[0]!]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked[0]).toMatchObject({ kind: 'dispute', choice: 'accept_dispute' });
+    expect(asked[0]!.body).toContain('Works as is');
+    const [row] = store.listFindings(out.runId);
+    expect(row).toMatchObject({ status: 'wont_fix' });
+    expect(row!.resolutionNote).toContain('Works as is');
+    expect(readJson(out, 'inputs/rulings.json')).toEqual([
+      { key: 'r1:f_1_1', ruling: 'accept_dispute', note: '' },
+    ]);
+    // The accepted dispute is not an unresolved blocking finding.
+    expect(h.calls.published[0]!.body).not.toContain('Unresolved blocking');
+    expect(h.calls.reviews[1]!.priorFindings[0]).toMatchObject({
+      status: 'wont_fix',
+      ruling: 'accept_dispute',
+    });
+    const types = store.listEvents(out.runId).map((e) => e.type);
+    expect(types).toEqual(expect.arrayContaining(['dispute.opened', 'dispute.answered']));
+  });
+
+  it('uphold sends the finding back with the ruling in rulings.json', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      section: { policy: { maxReviewFixRounds: 2 } },
+      turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1') }],
+      reviews: [review([two[0]!]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(2);
+    expect(readJson(out, 'inputs/rulings.json')).toEqual([
+      { key: 'r1:f_1_1', ruling: 'uphold', note: '' },
+    ]);
+    // Round 2 sent it again, by key, because ids restart every round.
+    const again = readJson(out, 'inputs/findings-round-2.json') as { id: string }[];
+    expect(again.map((f) => f.id)).toEqual(['r1:f_1_1']);
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'fixed' });
+    expect(h.calls.reviews[1]!.priorFindings[0]).toMatchObject({ ruling: 'uphold' });
+  });
+
+  it('blocks when a finding raises a fixed one again, naming both keys', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([finding('f_2_1', 'P1', 'Still', 'r1:f_1_1')])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('r2:f_2_1');
+    expect(out.note).toContain('r1:f_1_1');
+    expect(store.listDecisions({ runId: out.runId }).map((d) => d.kind)).toContain('blocked');
+  });
+
+  const big: DiffFile[] = [{ path: 'a.ts', added: 250, deleted: 0, status: 'M' }];
+
+  it('opens broad_fix for a fix over the line budget; stop blocks the run', async () => {
+    const { store, asked } = scripted({ broad_fix: ['stop'] });
+    const h = harness({
+      store,
+      diffFiles: big,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([])],
+    });
+    const out = await h.run();
+    expect(asked[0]).toMatchObject({ kind: 'broad_fix', choice: 'stop' });
+    expect(asked[0]!.body).toContain('250 lines');
+    expect(asked[0]!.body).toContain('a.ts');
+    expect(out.stage).toBe('blocked');
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('fix.broad');
+  });
+
+  it('accepting a broad fix carries on', async () => {
+    const { store } = scripted({ broad_fix: ['accept'] });
+    const out = await harness({
+      store,
+      diffFiles: big,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([])],
+    }).run();
+    expect(out.stage).toBe('awaiting_review');
+  });
+
+  it('a fix that deletes a file is a broad fix', async () => {
+    const { store, asked } = scripted({ broad_fix: ['stop'] });
+    await harness({
+      store,
+      diffFiles: [{ path: 'a.ts', added: 0, deleted: 1, status: 'D' }],
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!])],
+    }).run();
+    expect(asked[0]!.body).toContain('deleted 1 file');
+  });
+
+  it('a normal fix does not ask', async () => {
+    const { store, asked } = scripted({ broad_fix: ['stop'] });
+    const out = await harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1') }],
+      reviews: [review([two[0]!]), review([])],
+    }).run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(0);
+  });
+});
 
 describe('runPipeline with a store', () => {
   it('dismisses open optioned decisions when the run ends, leaving plain ones', async () => {

@@ -15,7 +15,10 @@ below. Your job is to find real problems before it merges, not to praise it.
 
 Earlier review rounds produced the findings below. Each is listed by its key
 (\`r<round>:<id>\`) with its current status and the note recorded for it.
-Do not re-raise a finding that was fixed correctly or that the owner ruled "skip"/"defer".
+Where the owner ruled on a finding, the ruling is shown beside it: "skip", "defer" and
+"accept_dispute" (the owner agreed with the implementer to leave it) are final. Do NOT re-raise
+a finding that was fixed correctly or that has one of those rulings. A finding ruled "uphold"
+or "fix" is meant to be fixed.
 If a prior fix is incomplete or wrong, or a prior finding is still a problem, raise it again
 as a new finding and set its \`repeatOf\` to the key of the prior finding. If the list is
 empty, this is the first round.
@@ -59,6 +62,9 @@ export interface PriorFinding {
   /** Where the finding stands: open, fixed, disputed, deferred, ... */
   status: string;
   note: string;
+  /** What the owner ruled on it (fix, skip, defer, uphold, accept_dispute), if anything. */
+  ruling?: string | undefined;
+  rulingNote?: string | undefined;
 }
 
 export interface ReviewPromptInput {
@@ -79,7 +85,10 @@ export function renderReviewPrompt(input: ReviewPromptInput): string {
       : input.priorFindings
           .map(
             (f) =>
-              `- [${f.severity}] ${f.key} "${f.title}" at ${f.location} — status: ${f.status} — ${f.note}`,
+              `- [${f.severity}] ${f.key} "${f.title}" at ${f.location} — status: ${f.status} — ${f.note}` +
+              (f.ruling
+                ? ` — owner ruling: ${f.ruling}${f.rulingNote ? ` (${f.rulingNote})` : ''}`
+                : ''),
           )
           .join('\n');
   const values: Record<string, string> = {

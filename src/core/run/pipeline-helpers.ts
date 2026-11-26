@@ -3,6 +3,7 @@ import { tailLog } from '../checks/run.js';
 import type { PriorFinding } from '../reviewer/prompt.js';
 import type { Finding } from '../reviewer/findings.js';
 import type { FindingRow } from '../store/runs.js';
+import type { Ruling } from './triage.js';
 import type { ResolutionKind, ReviewRoundInput } from './publish.js';
 
 export class InterruptedError extends Error {
@@ -118,9 +119,16 @@ export function priorFindingsFromRows(rows: FindingRow[]): PriorFinding[] {
 export function mergedPriorFindings(
   rounds: ReviewRoundInput[],
   rows: FindingRow[],
+  rulings: Ruling[] = [],
 ): PriorFinding[] {
-  return rounds.flatMap((r) => {
-    const mine = rows.filter((row) => row.round === r.round);
-    return mine.length > 0 ? priorFindingsFromRows(mine) : priorFindings([r]);
-  });
+  const byKey = new Map(rulings.map((r) => [r.key, r]));
+  return rounds
+    .flatMap((r) => {
+      const mine = rows.filter((row) => row.round === r.round);
+      return mine.length > 0 ? priorFindingsFromRows(mine) : priorFindings([r]);
+    })
+    .map((f) => {
+      const ruling = byKey.get(f.key);
+      return ruling ? { ...f, ruling: ruling.ruling, rulingNote: ruling.note || undefined } : f;
+    });
 }

@@ -26,6 +26,12 @@ export const RunConfigSchema = z.object({
       maxCheckFixRounds: z.number().int().min(0).default(2),
       maxReviewFixRounds: z.number().int().min(0).default(1),
       autoFix: z.array(SeveritySchema).default(['P0', 'P1']),
+      /** Severities that are not fixed automatically but asked about in the inbox. */
+      ask: z.array(SeveritySchema).default(['P2']),
+      /** A fix turn that changes more lines than this per finding it fixes is a broad fix. */
+      maxFixLinesPerFinding: z.number().int().positive().default(200),
+      /** A fix turn that touches more files than this outside the fix set's paths is broad. */
+      broadFixFiles: z.number().int().min(0).default(10),
       stageTimeoutMs: z
         .number()
         .int()

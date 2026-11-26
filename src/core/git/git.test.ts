@@ -170,6 +170,30 @@ describe('git service', () => {
     });
   });
 
+  it('diffFiles lists per-file added and deleted lines with a status', async () => {
+    const base = sh(clone, 'rev-parse', 'HEAD');
+    const wt = join(root, 'wt-files');
+    await git.createWorktree({ repo: clone, path: wt, branch: 'bp/files', baseSha: base });
+    expect(await git.diffFiles(wt, base, base)).toEqual({ files: [] });
+    writeFileSync(join(wt, 'new.txt'), 'one\ntwo\n');
+    writeFileSync(join(wt, 'a.txt'), 'changed\n');
+    sh(wt, 'add', '-A');
+    sh(wt, 'commit', '-m', 'edit');
+    const first = sh(wt, 'rev-parse', 'HEAD');
+    sh(wt, 'rm', '-q', 'new.txt');
+    sh(wt, 'commit', '-m', 'drop');
+    const head = sh(wt, 'rev-parse', 'HEAD');
+    const byPath = (r: { files: { path: string }[] }) =>
+      [...r.files].sort((a, b) => a.path.localeCompare(b.path));
+    expect(byPath(await git.diffFiles(wt, base, first))).toEqual([
+      { path: 'a.txt', added: 1, deleted: 1, status: 'M' },
+      { path: 'new.txt', added: 2, deleted: 0, status: 'A' },
+    ]);
+    expect(byPath(await git.diffFiles(wt, first, head))).toEqual([
+      { path: 'new.txt', added: 0, deleted: 2, status: 'D' },
+    ]);
+  });
+
   it('pushBranch pushes to the bare remote and remoteBranchSha matches', async () => {
     const base = sh(clone, 'rev-parse', 'HEAD');
     const wt = join(root, 'wt-push');

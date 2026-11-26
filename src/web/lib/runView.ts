@@ -151,6 +151,25 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       const round = num('round') !== null ? ` round ${num('round')}` : '';
       return `Review${round}: ${plural(found, 'finding')}${blocking !== null ? `, ${blocking} blocking` : ''}`;
     }
+    case 'triage.asked': {
+      const n = Array.isArray(p.findings) ? p.findings.length : null;
+      return n !== null ? `Asked you to triage ${plural(n, 'finding')}` : type;
+    }
+    case 'triage.answered':
+      return s('key') && s('choice') ? `Triage ${s('key')}: ${s('choice')}` : type;
+    case 'dispute.opened': {
+      const n = Array.isArray(p.findings) ? p.findings.length : null;
+      return n !== null ? `${plural(n, 'finding')} disputed by the implementer` : type;
+    }
+    case 'dispute.answered':
+      return s('key') && s('choice') ? `Dispute ${s('key')}: ${s('choice')}` : type;
+    case 'fix.broad': {
+      const files = num('files');
+      const lines = num('lines');
+      return files !== null && lines !== null
+        ? `Fix looks broad: ${plural(files, 'file')}, ${plural(lines, 'line')}`
+        : type;
+    }
     case 'question':
       return s('question') ? `Question: ${s('question')}` : type;
     case 'pr':

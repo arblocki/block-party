@@ -221,6 +221,37 @@ describe('renderReviewPrompt', () => {
     expect(p).not.toContain('(none: first round)');
   });
 
+  it('shows the owner ruling beside a finding and says which rulings are final', () => {
+    const p = renderReviewPrompt({
+      ...base,
+      priorFindings: [
+        {
+          key: 'r1:f_1_3',
+          severity: 'P2',
+          title: 't2',
+          location: 'b.ts:1-1',
+          status: 'skipped',
+          note: 'n',
+          ruling: 'skip',
+          rulingNote: 'not now',
+        },
+        {
+          key: 'r1:f_1_4',
+          severity: 'P1',
+          title: 't3',
+          location: 'c.ts:1-1',
+          status: 'wont_fix',
+          note: 'n',
+          ruling: 'accept_dispute',
+        },
+      ],
+    });
+    expect(p).toContain('status: skipped — n — owner ruling: skip (not now)');
+    expect(p).toContain('status: wont_fix — n — owner ruling: accept_dispute');
+    expect(p).toContain('"accept_dispute" (the owner agreed');
+    expect(p).toContain('Do NOT re-raise');
+  });
+
   it('does not re-substitute placeholders found inside values', () => {
     const p = renderReviewPrompt({
       ...base,
