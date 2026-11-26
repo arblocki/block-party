@@ -236,3 +236,29 @@ export interface ReviewRound {
 export interface RunFindings {
   rounds: ReviewRound[];
 }
+
+/** A registered project (GET /api/projects, POST /api/projects). */
+export interface Project {
+  id: string;
+  owner: string;
+  repo: string;
+  localPath: string;
+  defaultBase: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** POST /api/plans/validate */
+export type ValidatePlanResponse =
+  { ok: true; title: string; acceptanceCriteria: string[] } | { ok: false; errors: string[] };
+
+/** POST /api/runs body. */
+export interface StartRunRequest {
+  projectId: string;
+  baseRef: string;
+  planText: string;
+  title?: string;
+  mode?: 'pane' | 'headless';
+  model?: string;
+  publish?: boolean;
+}

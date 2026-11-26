@@ -205,16 +205,3 @@ export function Home() {
     </div>
   );
 }
-
-/** Stand-in for pages later tasks build (run view, new-run form). */
-export function ComingSoon({ what }: { what: string }) {
-  return (
-    <div className="mx-auto max-w-4xl px-4 py-6">
-      <TopBar />
-      <p className="text-muted">{what} is coming soon.</p>
-      <a href={HOME_HREF} className="mt-2 inline-block text-accent hover:underline">
-        Back to home
-      </a>
-    </div>
-  );
-}

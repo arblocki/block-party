@@ -29,7 +29,8 @@ import { SubmitModal } from './components/SubmitModal';
 import { groupNeighbors, orderGroups, pickGroup, resolveView, type ViewMode } from './lib/groups';
 import { mainPaneState } from './lib/mainPane';
 import { fileThreadOwners } from './lib/sections';
-import { ComingSoon, Home } from './components/Home';
+import { Home } from './components/Home';
+import { NewRun } from './components/NewRun';
 import { RunView } from './components/RunView';
 import { PrPicker } from './components/PrPicker';
 import { RepoPicker } from './components/RepoPicker';
@@ -265,7 +266,7 @@ export function App() {
   const route = routeFromSearch(location.search, session);
   if (route.kind === 'home') return <Home />;
   if (route.kind === 'run') return <RunView key={route.id} id={route.id} />;
-  if (route.kind === 'new-run') return <ComingSoon what="The new-run form" />;
+  if (route.kind === 'new-run') return <NewRun />;
   if (route.kind === 'repos') return <RepoPicker />;
   if (route.kind === 'pulls') return <PrPicker repo={route.repo} />;
 
