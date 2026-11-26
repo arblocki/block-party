@@ -98,6 +98,7 @@ export function exitCodeFor(stage: RunOutcome['stage']): number {
   switch (stage) {
     case 'complete':
     case 'awaiting_review':
+    case 'awaiting_plan_approval':
       return 0;
     case 'blocked':
       return 3;

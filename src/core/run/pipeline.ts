@@ -1,10 +1,20 @@
 import { z } from 'zod';
 import { scrubbedEnv } from '../process/env.js';
-import { mkdir, readFile, rename } from 'node:fs/promises';
+import { mkdir, readFile, readdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildAgents, buildSettings, shellRules } from '../agents/claude-config.js';
-import { renderBrief } from '../agents/brief.js';
-import type { ImplementerAdapter, ImplementerSession, TurnOutcome } from '../agents/types.js';
+import {
+  buildAgents,
+  buildSettings,
+  plannerPermissions,
+  shellRules,
+} from '../agents/claude-config.js';
+import { PLAN_TEMPLATE, renderBrief, renderPlannerBrief } from '../agents/brief.js';
+import type {
+  ImplementerAdapter,
+  ImplementerSession,
+  ImplementerStartInput,
+  TurnOutcome,
+} from '../agents/types.js';
 import type { loadProjectChecks as LoadProjectChecks } from '../checks/load.js';
 import type { ChecksRunResult, RunChecksOptions } from '../checks/run.js';
 import type { Git } from '../git/index.js';
@@ -17,7 +27,7 @@ import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
 import { assertTransition, isResting, isTerminal } from './machine.js';
-import { parsePlan } from './plan.js';
+import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
   failedChecks,
@@ -28,6 +38,7 @@ import {
   renderCheckFailures,
   type ShutdownError,
   throwIfAborted,
+  titleFromDescription,
 } from './pipeline-helpers.js';
 import {
   PublishError,
@@ -40,8 +51,14 @@ import {
   unresolvedBlocking,
   type WaitForCiOptions,
 } from './publish.js';
-import { FINAL_REVIEW_OPTIONS, FINAL_REVIEW_TITLE } from './final-review.js';
-import { attachCommand, buildCtx, loadContext, type Ctx } from './context.js';
+import {
+  FINAL_REVIEW_OPTIONS,
+  FINAL_REVIEW_TITLE,
+  PLAN_APPROVAL_OPTIONS,
+  PLAN_APPROVAL_TITLE,
+  restDecisionFor,
+} from './rest-decision.js';
+import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
 import {
   askTriage,
@@ -62,9 +79,14 @@ import { loadRunState, saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
 import type { RunStore, StageKind, StageState } from '../store/runs.js';
 
-export interface RunInput {
+/** What a run starts from: a plan file, or a description the planner turns into a plan. */
+export type RunSource =
+  { planFile: string; description?: undefined } | { description: string; planFile?: undefined };
+
+export type RunInput = RunInputBase & RunSource;
+
+interface RunInputBase {
   repo: string;
-  planFile: string;
   baseRef: string;
   title?: string;
   config: RunConfig;
@@ -77,7 +99,14 @@ export interface RunInput {
 export interface RunOutcome {
   runId: string;
   runDir: string;
-  stage: 'complete' | 'awaiting_review' | 'blocked' | 'failed' | 'cancelled' | 'interrupted';
+  stage:
+    | 'complete'
+    | 'awaiting_review'
+    | 'awaiting_plan_approval'
+    | 'blocked'
+    | 'failed'
+    | 'cancelled'
+    | 'interrupted';
   note: string | null;
   prNumber: number | null;
 }
@@ -168,8 +197,8 @@ async function patchState(ctx: Ctx, patch: Partial<RunState>) {
   ctx.rec.state(ctx.st);
 }
 
-function describeSession(ctx: Ctx): string {
-  return ctx.session ? ` Attach: ${ctx.deps.adapter.describe(ctx.session)}` : '';
+function describeSession(ctx: Ctx, session: ImplementerSession | undefined = ctx.session): string {
+  return session ? ` Attach: ${ctx.deps.adapter.describe(session)}` : '';
 }
 
 /** How a stage execution ends when `e` interrupts it. */
@@ -257,17 +286,27 @@ export async function runPipeline(input: RunInput, deps: PipelineDeps): Promise<
   const ctx = await preflight(input, deps);
   try {
     await provision(ctx);
-    await implement(ctx);
-    await verifyLoop(ctx);
-    if (!input.config.publish) {
-      await restForReview(ctx, 'Publishing disabled (--no-publish); stopped after review');
+    if (input.description !== undefined) {
+      // The run rests for the plan's approval; implementing starts from a continuation.
+      await planStep(ctx, null);
     } else {
-      await publish(ctx);
+      await implement(ctx);
+      await verifyLoop(ctx);
+      await finishRun(ctx);
     }
   } catch (e) {
     await endRun(ctx, e);
   }
   return outcomeOf(ctx);
+}
+
+/** After a passing review: publish, or rest for review when publishing is off. */
+async function finishRun(ctx: Ctx): Promise<void> {
+  if (!ctx.input.config.publish) {
+    await restForReview(ctx, 'Publishing disabled (--no-publish); stopped after review');
+  } else {
+    await publish(ctx);
+  }
 }
 
 function outcomeOf(ctx: Ctx): RunOutcome {
@@ -287,12 +326,8 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
   if (isResting(ctx.st.stage)) {
     // A continuation that failed before leaving rest: the run has not moved, so it cannot end
     // (a resting run only leaves by its own moves).
-    if (ctx.st.stage === 'awaiting_review') {
-      // Offer the review again.
-      ctx.rec.reopenFinalReview(ctx.st.title, (e as Error).message);
-    } else {
-      ctx.rec.event('continuation.failed', { reason: (e as Error).message });
-    }
+    // Offer the same question again (the final review, or the plan approval).
+    ctx.rec.reopenRestDecision(ctx.st.stage, ctx.st.title, (e as Error).message);
     return;
   }
   if (isShutdown(input.signal)) {
@@ -325,10 +360,17 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
 async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const now = deps.now ?? (() => new Date());
   const { git } = deps;
-  const planText = await readFile(input.planFile, 'utf8');
-  const parsed = parsePlan(planText);
-  if (!parsed.ok) throw new Error(`Invalid plan:\n- ${parsed.errors.join('\n- ')}`);
-  const plan = parsed.plan;
+  if ((input.planFile === undefined) === (input.description === undefined)) {
+    throw new Error('A run starts from either a plan file or a description');
+  }
+  let planText: string | null = null;
+  let plan: Plan | null = null;
+  if (input.planFile !== undefined) {
+    planText = await readFile(input.planFile, 'utf8');
+    const parsed = parsePlan(planText);
+    if (!parsed.ok) throw new Error(`Invalid plan:\n- ${parsed.errors.join('\n- ')}`);
+    plan = parsed.plan;
+  }
 
   const repoPath = await git.repoRoot(input.repo);
   const origin = await git.originRepo(repoPath);
@@ -352,9 +394,14 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const runDir = paths.runDir(runId);
   const wt = paths.worktreePath(origin.owner, origin.repo, runId);
   const log = deps.createLog(runDir);
-  const title = input.title ?? plan.title;
+  const title = input.title ?? plan?.title ?? titleFromDescription(input.description!);
   const branch = branchName(title, runId);
-  const planPath = (await writeArtifact(runDir, 'plans/v1.md', planText)).path;
+  // A pasted plan is version 1, already approved; a description's plan comes from the planner.
+  const planPath =
+    planText !== null ? (await writeArtifact(runDir, 'plans/v1.md', planText)).path : '';
+  if (input.description !== undefined) {
+    await writeArtifact(runDir, 'inputs/description.md', input.description);
+  }
   // What a continuation needs to rebuild this run's context later.
   await writeArtifact(runDir, 'inputs/config.json', input.config);
   const ts = now().toISOString();
@@ -370,11 +417,12 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     worktreePath: wt,
     headSha: null,
     planPath,
-    planHash: plan.contentHash,
-    planVersion: 1,
+    planHash: plan?.contentHash ?? '',
+    planVersion: plan ? 1 : 0,
     stage: 'setup',
     stageNote: null,
     implementer: null,
+    planner: null,
     sessionEnded: false,
     rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
     prNumber: null,
@@ -385,7 +433,26 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   const rec = new RunRecorder(log, deps.store);
   rec.state(st);
 
-  const ctx = buildCtx({ input, deps, rec, st, runDir, plan, checks });
+  if (plan) {
+    rec.addPlanVersion({
+      version: 1,
+      path: planPath,
+      contentHash: plan.contentHash,
+      title: plan.title,
+      status: 'approved',
+      createdBy: 'me',
+    });
+  }
+
+  const ctx = buildCtx({
+    input,
+    deps,
+    rec,
+    st,
+    runDir,
+    plan: plan ?? unapprovedPlan(title),
+    checks,
+  });
 
   for (const e of configErrors) rec.event('checks.warning', { warning: e });
   rec.event('run.started', { runId, runDir, worktree: wt, branch });
@@ -456,10 +523,229 @@ async function provision(ctx: Ctx): Promise<void> {
   );
 }
 
+const PROMPT_PLAN = (p: string) => `Read the planning brief at ${p} and follow it.`;
+const PROMPT_PLAN_REVISE = (p: string) => `Read the revision brief at ${p} and follow it.`;
+
+/** One more than the highest `plans/v<n>.md` in the run directory. */
+async function nextPlanVersion(runDir: string): Promise<number> {
+  return (await latestPlanVersion(runDir)) + 1;
+}
+
+/** The highest `plans/v<n>.md` in the run directory; 0 when there is none. */
+async function latestPlanVersion(runDir: string): Promise<number> {
+  const names = await readdir(join(runDir, 'plans')).catch(() => [] as string[]);
+  return Math.max(0, ...names.map((n) => Number(/^v(\d+)\.md$/.exec(n)?.[1] ?? 0)));
+}
+
+/** How a planner turn starts: read-only tools, and everything else asks a human. */
+function plannerStart(ctx: Ctx, planPath: string): Omit<ImplementerStartInput, 'prompt'> {
+  const perms = plannerPermissions(planPath, ctx.reportPath);
+  return {
+    ...ctx.start,
+    settingsPath: join(ctx.runDir, 'planner-settings.json'),
+    agentsPath: join(ctx.runDir, 'planner-agents.json'),
+    permissionMode: 'default',
+    allowedTools: perms.allowedTools,
+    disallowedTools: perms.disallowedTools,
+    onPermission: (message) => {
+      const attach = ctx.plannerSession ? ctx.deps.adapter.describe(ctx.plannerSession) : null;
+      ctx.rec.event('planner.waiting_for_human', {
+        notice: `Planner needs your approval - attach: ${attach ?? '(session starting)'}`,
+        message,
+      });
+      ctx.rec.permissionWait(message, attach);
+    },
+  };
+}
+
+type PlanRead = { ok: true; plan: Plan } | { ok: false; errors: string[] };
+
+async function readPlanFile(path: string): Promise<PlanRead> {
+  let text: string;
+  try {
+    text = await readFile(path, 'utf8');
+  } catch {
+    return { ok: false, errors: [`The plan file was not written (${path})`] };
+  }
+  return parsePlan(text);
+}
+
+/** Stops the planner process; its conversation can still be resumed. */
+async function stopPlanner(ctx: Ctx): Promise<void> {
+  if (!ctx.plannerSession) return;
+  try {
+    await ctx.deps.adapter.stop(ctx.plannerSession);
+  } catch (e) {
+    ctx.rec.event('planner.stop_failed', { error: (e as Error).message });
+  }
+}
+
+/**
+ * Planning: a read-only planner session explores the repo and writes the next plan version
+ * (`feedback` is the note that asked for it; null for the first). An invalid plan gets one
+ * retry turn. The version is stored, a `plan_approval` item is opened, the planner is stopped
+ * (its session id stays in run.json) and the run rests in `awaiting_plan_approval`.
+ */
+async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
+  const { deps, input, runDir } = ctx;
+  if (input.description === undefined) throw new Error('This run has no description to plan');
+  const n = await nextPlanVersion(runDir);
+  await setStage(ctx, 'planning', n > 1 ? `version ${n}` : null);
+  const planPath = join(runDir, 'plans', `v${n}.md`);
+  const previous = n > 1 ? join(runDir, 'plans', `v${n - 1}.md`) : null;
+  const templatePath = (await writeArtifact(runDir, 'inputs/plan-template.md', PLAN_TEMPLATE)).path;
+  await writeArtifact(
+    runDir,
+    'planner-settings.json',
+    buildSettings({
+      hookArgv: deps.hookArgv,
+      eventsPath: ctx.start.eventsPath,
+      permissionMode: 'default',
+    }),
+  );
+  // Only the read-only explorer: the planner writes nothing but its plan and report.
+  await writeArtifact(
+    runDir,
+    'planner-agents.json',
+    buildAgents([{ name: 'explorer', model: input.config.subagents.explorer, readOnly: true }]),
+  );
+  const brief = await writeArtifact(
+    runDir,
+    `briefs/plan-${n}.md`,
+    renderPlannerBrief({
+      description: input.description,
+      planPath,
+      templatePath,
+      reportPath: ctx.reportPath,
+      reportSchemaPath: join(runDir, 'report.schema.json'),
+      feedback,
+      previousPlanPath: previous,
+    }),
+  );
+  const start = plannerStart(ctx, planPath);
+  const onSession = (session: ImplementerSession) => {
+    ctx.plannerSession = session;
+    ctx.rec.event('planner.session', {
+      mode: session.mode,
+      attach: deps.adapter.describe(session),
+    });
+    ctx.pending = ctx.pending.then(() =>
+      patchState(ctx, {
+        planner: {
+          mode: session.mode,
+          sessionId: session.sessionId,
+          paneLabel: session.paneLabel ?? null,
+        },
+      }),
+    );
+  };
+  // One planner turn: the first starts the session, later ones continue it.
+  const turn = async (prompt: string, kind: string) => {
+    let outcome: TurnOutcome;
+    if (ctx.plannerSession) {
+      outcome = await turnEnded(
+        ctx,
+        abortable(
+          deps.adapter.send(ctx.plannerSession, { ...start, prompt }, prompt),
+          input.signal,
+        ),
+      );
+    } else {
+      const started = await turnEnded(
+        ctx,
+        abortable(deps.adapter.start({ ...start, prompt, onSession }), input.signal),
+      );
+      if (!ctx.plannerSession) onSession(started.session);
+      ctx.plannerSession = started.session;
+      await ctx.pending;
+      outcome = started.outcome;
+    }
+    await judgeTurn(ctx, outcome, kind, n, '', { planner: true });
+  };
+
+  const plan = await inStage(
+    ctx,
+    'plan',
+    n,
+    { brief: brief.path, model: ctx.start.model },
+    async () => {
+      await turn(feedback ? PROMPT_PLAN_REVISE(brief.path) : PROMPT_PLAN(brief.path), 'plan');
+      let read = await readPlanFile(planPath);
+      if (!read.ok) {
+        ctx.rec.event('plan.invalid', { version: n, errors: read.errors });
+        const list = read.errors.map((e) => `- ${e}`).join('\n');
+        await turn(
+          `The plan at ${planPath} failed validation:\n${list}\n\nFix these in the same file, ` +
+            'write report.json again (status "done"), and stop.',
+          'plan-retry',
+        );
+        read = await readPlanFile(planPath);
+        if (!read.ok) {
+          throw new Halt(
+            'blocked',
+            `The plan is still invalid after one retry:\n- ${read.errors.join('\n- ')}${describeSession(ctx, ctx.plannerSession)}`,
+          );
+        }
+      }
+      return read.plan;
+    },
+    (p) => ({ output: { version: n, planPath, title: p.title } }),
+  );
+  ctx.rec.addPlanVersion({
+    version: n,
+    path: planPath,
+    contentHash: plan.contentHash,
+    title: plan.title,
+    createdBy: 'agent',
+    feedback,
+  });
+  // Stopped while the run is still active, so a failure here still ends the run normally.
+  await stopPlanner(ctx);
+  await setStage(ctx, 'awaiting_plan_approval', `Plan version ${n} ready`);
+  ctx.rec.openDecision(
+    'plan_approval',
+    PLAN_APPROVAL_TITLE,
+    `${plan.title}: version ${n} of the plan is ready for your approval.`,
+    null,
+    PLAN_APPROVAL_OPTIONS,
+  );
+}
+
+/**
+ * Approves the latest plan version and implements from it: the plan's title, path and hash
+ * go into the run, the version is approved (the others superseded), and the usual
+ * implement, verify and publish steps follow.
+ */
+async function approvePlanStep(ctx: Ctx): Promise<void> {
+  const n = await latestPlanVersion(ctx.runDir);
+  if (n === 0) throw new Error('This run has no plan to approve');
+  const path = join(ctx.runDir, 'plans', `v${n}.md`);
+  const read = await readPlanFile(path);
+  if (!read.ok) throw new Error(`Invalid plan:\n- ${read.errors.join('\n- ')}`);
+  const { plan } = read;
+  // The run leaves rest first, so a failure up to here reopens the approval.
+  await setStage(ctx, 'implementing');
+  await patchState(ctx, {
+    planPath: path,
+    planHash: plan.contentHash,
+    planVersion: n,
+    title: plan.title,
+  });
+  ctx.rec.approvePlan(n);
+  ctx.rec.event('plan.approved', { version: n });
+  ctx.plan = plan;
+  ctx.planPath = path;
+  ctx.briefBase = { ...ctx.briefBase, runTitle: plan.title, planPath: path, planVersion: n };
+  await implement(ctx);
+  await verifyLoop(ctx);
+  await finishRun(ctx);
+}
+
 /** Step 3: write the implement brief and run the first turn. */
 async function implement(ctx: Ctx): Promise<void> {
   const { deps, st, input } = ctx;
-  await setStage(ctx, 'implementing');
+  // An approved plan's continuation has already moved the run here.
+  if (ctx.st.stage !== 'implementing') await setStage(ctx, 'implementing');
   const brief = await writeArtifact(
     ctx.runDir,
     'briefs/implement-1.md',
@@ -517,6 +803,11 @@ interface TurnChecks {
   validate?: (report: Report) => string | null;
   /** Whether this turn must have produced a new commit (default true). */
   requireCommit?: (report: Report) => boolean;
+  /**
+   * A planner turn: no commit is expected and nothing is recorded as implementer work, but
+   * the worktree must still be clean.
+   */
+  planner?: boolean;
 }
 
 /**
@@ -532,7 +823,9 @@ async function judgeTurn(
   extra: TurnChecks = {},
 ): Promise<Report> {
   const { deps, st } = ctx;
-  const attach = describeSession(ctx);
+  const planner = extra.planner === true;
+  const who = planner ? 'Planner' : 'Implementer';
+  const attach = describeSession(ctx, planner ? ctx.plannerSession : ctx.session);
   if (outcome.kind !== 'report') {
     const why =
       outcome.kind === 'permission'
@@ -542,13 +835,13 @@ async function judgeTurn(
           : outcome.kind === 'no_report'
             ? `finished without a report${outcome.detail ? ` (${outcome.detail})` : ''}`
             : 'timed out';
-    throw new Halt('blocked', `Implementer ${why} during ${kind}-${n}.${attach}`);
+    throw new Halt('blocked', `${who} ${why} during ${kind}-${n}.${attach}`);
   }
   const read = await readReport(ctx.reportPath);
   if ('missing' in read) {
     throw new Halt(
       'blocked',
-      `Implementer reported but report.json is missing (${kind}-${n}).${attach}`,
+      `${who} reported but report.json is missing (${kind}-${n}).${attach}`,
     );
   }
   await mkdir(join(ctx.runDir, 'reports'), { recursive: true });
@@ -563,11 +856,11 @@ async function judgeTurn(
     for (const q of report.questions) ctx.rec.event('question', { question: q });
     throw new Halt(
       'blocked',
-      `Implementer is blocked and has questions: ${report.questions.join(' | ')}.${attach}`,
+      `${who} is blocked and has questions: ${report.questions.join(' | ')}.${attach}`,
     );
   }
   if (report.status === 'partial') {
-    throw new Halt('blocked', `Implementer reported partial work: ${report.summary}.${attach}`);
+    throw new Halt('blocked', `${who} reported partial work: ${report.summary}.${attach}`);
   }
   const problem = extra.validate?.(report);
   if (problem) throw new Halt('blocked', `${problem}.${attach}`);
@@ -576,6 +869,7 @@ async function judgeTurn(
   if (!(await deps.git.isClean(wt))) {
     throw new Halt('blocked', `Worktree has uncommitted changes after ${kind}-${n}.${attach}`);
   }
+  if (planner) return report;
   const head = await deps.git.headSha(wt);
   const needCommit = extra.requireCommit ? extra.requireCommit(report) : true;
   if (needCommit) {
@@ -945,7 +1239,11 @@ async function publish(ctx: Ctx): Promise<void> {
   return restForReview(ctx, `PR #${pr.prNumber} ${pr.url} (CI: ${ci.state})`);
 }
 
-export type ContinueEntry = { kind: 'feedback'; text: string } | { kind: 'approve' };
+export type ContinueEntry =
+  | { kind: 'feedback'; text: string }
+  | { kind: 'approve' }
+  | { kind: 'plan_approve' }
+  | { kind: 'plan_revise'; note: string };
 
 /** Header of a feedback file: what the implementer is asked to do with the text below it. */
 const FEEDBACK_HEADER = `# Feedback from your human reviewer
@@ -963,10 +1261,13 @@ then; say why in \`summary\`). Findings do not apply here: leave \`findingResolu
 `;
 
 /**
- * Continues a run that is resting in `awaiting_review`: approval completes it; feedback goes
+ * Continues a run that is resting. In `awaiting_plan_approval`: `plan_approve` implements from
+ * the latest plan version, and `plan_revise` resumes the planner with the note for the next
+ * version. In `awaiting_review`: approval completes it; feedback goes
  * to the same implementer session, then local CI, review, a push to the same PR and CI again,
  * and the run rests for review once more. A failure after the run leaves rest ends it as in
- * `runPipeline`; a failure before that reopens the final review, so the answer can be retried.
+ * `runPipeline`; a failure before that reopens the question (the final review or the plan
+ * approval), so the answer can be retried.
  */
 export async function continueRun(
   runId: string,
@@ -990,6 +1291,16 @@ export async function continueRun(
       await setStage(light, 'complete', 'Approved');
       return outcomeFromState(light.st, runDir);
     }
+    if (entry.kind === 'plan_approve' || entry.kind === 'plan_revise') {
+      ctx = await loadContext(runId, deps, signal);
+      if (ctx.st.stage !== 'awaiting_plan_approval') {
+        throw new Error(`Run ${runId} is not waiting for plan approval (stage: ${ctx.st.stage})`);
+      }
+      ctx.rec.resume(ctx.st);
+      if (entry.kind === 'plan_revise') await planStep(ctx, entry.note);
+      else await approvePlanStep(ctx);
+      return outcomeOf(ctx);
+    }
     ctx = await loadContext(runId, deps, signal);
     if (ctx.st.stage !== 'awaiting_review') {
       throw new Error(`Run ${runId} is not waiting for review (stage: ${ctx.st.stage})`);
@@ -1008,11 +1319,7 @@ export async function continueRun(
       requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
     });
     await verifyLoop(ctx);
-    if (!ctx.input.config.publish) {
-      await restForReview(ctx, 'Publishing disabled; stopped after review');
-    } else {
-      await publish(ctx);
-    }
+    await finishRun(ctx);
   } catch (e) {
     if (ctx) {
       await endRun(ctx, e);
@@ -1036,7 +1343,7 @@ function outcomeFromState(st: RunState, runDir: string): RunOutcome {
   };
 }
 
-/** A continuation failed before it had a context: reopen the final review if the run rests. */
+/** A continuation failed before it had a context: reopen the run's question if it rests. */
 async function reopenIfResting(
   runId: string,
   runDir: string,
@@ -1045,10 +1352,10 @@ async function reopenIfResting(
 ): Promise<void> {
   try {
     const st = await loadRunState(runDir);
-    if (st.stage !== 'awaiting_review') return;
+    if (!restDecisionFor(st.stage)) return;
     const rec = new RunRecorder(deps.createLog(runDir), deps.store);
     rec.attach(runId);
-    rec.reopenFinalReview(st.title, (e as Error).message);
+    rec.reopenRestDecision(st.stage, st.title, (e as Error).message);
   } catch {
     // run.json is unreadable too: nothing here can say what the run needs.
   }

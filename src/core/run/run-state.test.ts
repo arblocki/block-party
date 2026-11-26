@@ -23,6 +23,7 @@ const state: RunState = {
   stage: 'setup',
   stageNote: null,
   implementer: null,
+  planner: null,
   rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
   prNumber: null,
   createdAt: '2026-11-08T00:00:00Z',

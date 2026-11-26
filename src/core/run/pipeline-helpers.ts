@@ -132,3 +132,11 @@ export function mergedPriorFindings(
       return ruling ? { ...f, ruling: ruling.ruling, rulingNote: ruling.note || undefined } : f;
     });
 }
+
+const MAX_TITLE_CHARS = 72;
+
+/** A run's title from its description: the first non-empty line, cut to 72 characters. */
+export function titleFromDescription(description: string): string {
+  const line = description.split(/\r?\n/).find((l) => l.trim() !== '') ?? '';
+  return line.trim().slice(0, MAX_TITLE_CHARS).trim() || 'Untitled run';
+}

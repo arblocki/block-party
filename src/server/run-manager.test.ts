@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -8,6 +8,7 @@ import { parsePlan } from '../core/run/plan.js';
 import { openStore, type Store } from '../core/store/index.js';
 import {
   createRunManager,
+  InvalidStartError,
   PlanValidationError,
   UnknownProjectError,
   type RunManagerOptions,
@@ -126,7 +127,7 @@ describe('RunManager.start', () => {
     expect(input.config.publish).toBe(false);
     const hash = (parsePlan(PLAN) as { ok: true; plan: { contentHash: string } }).plan.contentHash;
     expect(input.planFile).toBe(join(root, 'plans', `${hash}.md`));
-    expect(readFileSync(input.planFile, 'utf8')).toBe(PLAN);
+    expect(readFileSync(input.planFile!, 'utf8')).toBe(PLAN);
     await m.shutdown();
   });
 
@@ -295,7 +296,7 @@ describe('RunManager.continue', () => {
     return { calls, continuePipeline, release: () => release() };
   }
 
-  const rest = (stage = 'awaiting_review' as const) => {
+  const rest = (stage: 'awaiting_review' | 'awaiting_plan_approval' = 'awaiting_review') => {
     createRow();
     store.runs.updateRun(RUN_ID, { stage });
   };
@@ -377,6 +378,53 @@ describe('RunManager.continue', () => {
     const open = store.runs.listDecisions({ runId: RUN_ID, status: 'open' });
     expect(open.map((d) => d.kind)).toEqual(['final_review']);
     expect(open[0]!.body).toContain('no saved config');
+    await m.shutdown();
+  });
+
+  it('reopens the plan approval when a plan continuation fails before it could run', async () => {
+    rest('awaiting_plan_approval');
+    store.runs.openDecision({
+      runId: RUN_ID,
+      kind: 'plan_approval',
+      title: 'Plan',
+      body: 'b',
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'revise', label: 'Request changes' },
+      ],
+    });
+    store.runs.answerDecision(1, { choice: 'approve', note: null });
+    const m = manager({ continuePipeline: () => Promise.reject(new Error('no saved config')) });
+    expect(m.continue(RUN_ID, { kind: 'plan_approve' })).toBe(true);
+    await new Promise((r) => setTimeout(r, 0));
+    const open = store.runs.listDecisions({ runId: RUN_ID, status: 'open' });
+    expect(open.map((d) => d.kind)).toEqual(['plan_approval']);
+    expect(open[0]!.options!.map((o) => o.id)).toEqual(['approve', 'revise']);
+    expect(open[0]!.body).toContain('no saved config');
+    await m.shutdown();
+  });
+});
+
+describe('RunManager.start from a description', () => {
+  it('starts the pipeline with the description and writes no plan file', async () => {
+    const fake = fakePipeline();
+    const m = manager({ startPipeline: fake.startPipeline });
+    await m.start({ projectId, baseRef: 'main', description: 'Add a widgets page' });
+    const input = fake.inputs[0]!;
+    expect(input.description).toBe('Add a widgets page');
+    expect(input.planFile).toBeUndefined();
+    expect(existsSync(join(root, 'plans'))).toBe(false);
+    await m.shutdown();
+  });
+
+  it('refuses both a plan and a description, and neither', async () => {
+    const fake = fakePipeline();
+    const m = manager({ startPipeline: fake.startPipeline });
+    await expect(
+      m.start({ projectId, baseRef: 'main', planText: PLAN, description: 'x' }),
+    ).rejects.toBeInstanceOf(InvalidStartError);
+    await expect(m.start({ projectId, baseRef: 'main' })).rejects.toBeInstanceOf(InvalidStartError);
+    expect(fake.inputs).toHaveLength(0);
     await m.shutdown();
   });
 });

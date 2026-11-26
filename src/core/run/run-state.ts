@@ -15,9 +15,10 @@ export const RunStateSchema = z.strictObject({
   branch: z.string(),
   worktreePath: z.string(),
   headSha: z.string().nullable(),
+  /** Empty until a plan is approved, for a run that starts from a description. */
   planPath: z.string(),
   planHash: z.string(),
-  /** Which plan version the run implements (Phase 3 planning adds new versions). */
+  /** Which plan version the run implements (0 until one is approved). */
   planVersion: z.number().int().default(1),
   stage: z.enum(RUN_STAGES),
   stageNote: z.string().nullable(),
@@ -28,6 +29,15 @@ export const RunStateSchema = z.strictObject({
       paneLabel: z.string().nullable(),
     })
     .nullable(),
+  /** The planner session of a run that started from a description. */
+  planner: z
+    .strictObject({
+      mode: z.enum(['pane', 'headless']),
+      sessionId: z.string(),
+      paneLabel: z.string().nullable(),
+    })
+    .nullable()
+    .default(null),
   /** The implementer process was stopped (the conversation can still be resumed). */
   sessionEnded: z.boolean().default(false),
   rounds: z.strictObject({

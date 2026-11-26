@@ -7,13 +7,14 @@ import type {
   FindingRow,
   FindingStatus,
   FindingTriage,
+  PlanInput,
   RunStore,
   StageKind,
   StageState,
 } from '../store/runs.js';
 import type { RunLog } from './events.js';
 import type { RunState } from './run-state.js';
-import { FINAL_REVIEW_OPTIONS, FINAL_REVIEW_TITLE, reopenedBody } from './final-review.js';
+import { restDecisionFor } from './rest-decision.js';
 import { waitForAnswer } from './wait.js';
 
 export interface RecorderOptions {
@@ -104,24 +105,21 @@ export class RunRecorder {
   }
 
   /**
-   * An answer to the final review could not be carried out and the run is still resting:
-   * release it and open a fresh final_review item saying why, so the person can try again.
+   * An answer to a resting run's question (the final review, or the plan approval) could not
+   * be carried out and the run is still resting: release it and open a fresh item of the same
+   * kind saying why, so the person can try again.
    */
-  reopenFinalReview(title: string, reason: string): void {
+  reopenRestDecision(stage: RunState['stage'], title: string, reason: string): void {
+    const spec = restDecisionFor(stage);
+    if (!spec) return;
     const open = this.withRun('listDecisions', (s, runId) =>
       s.listDecisions({ runId, status: 'open' }),
     );
-    // One open final review at a time: an earlier failure handler may have reopened it.
-    if (open?.some((d) => d.kind === 'final_review')) return;
+    // One open item at a time: an earlier failure handler may have reopened it.
+    if (open?.some((d) => d.kind === spec.kind)) return;
     this.event('continuation.failed', { reason });
     this.release();
-    this.openDecision(
-      'final_review',
-      FINAL_REVIEW_TITLE,
-      reopenedBody(title, reason),
-      null,
-      FINAL_REVIEW_OPTIONS,
-    );
+    this.openDecision(spec.kind, spec.title, spec.reopenedBody(title, reason), null, spec.options);
   }
 
   /** Clears the run's owner: nothing drives a run that is resting, so reconciliation skips it. */
@@ -161,6 +159,16 @@ export class RunRecorder {
     options?: DecisionOption[],
   ): number | null {
     return this.openDecisionId(kind, title, body, attach, options) ?? null;
+  }
+
+  /** Stores a plan version (no-op without a store). */
+  addPlanVersion(input: Omit<PlanInput, 'runId'>): void {
+    this.withRun('addPlanVersion', (s, runId) => s.addPlanVersion({ ...input, runId }));
+  }
+
+  /** Approves a plan version and supersedes the others. */
+  approvePlan(version: number): void {
+    this.withRun('approvePlan', (s, runId) => s.approvePlan(runId, version));
   }
 
   /** Stores a review round's findings as rows. */

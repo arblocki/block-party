@@ -36,6 +36,8 @@ export interface Ctx {
     'stage' | 'round' | 'findingsPath' | 'rulingsPath'
   >;
   session?: ImplementerSession;
+  /** The planner's session (its own conversation, separate from the implementer's). */
+  plannerSession?: ImplementerSession;
   rounds: ReviewRoundInput[];
   lastReport?: Report;
   /** Every accepted implementer report, in turn order. */
@@ -64,6 +66,11 @@ function toolsLine(allowedTools: string[], runDir: string): string {
 /** The command that attaches to the implementer's session, if there is one. */
 export function attachCommand(ctx: Ctx): string | null {
   return ctx.session ? ctx.deps.adapter.describe(ctx.session) : null;
+}
+
+/** Stands in for the plan of a run that has none approved yet (its stages do not read it). */
+export function unapprovedPlan(title: string): Plan {
+  return { title, sections: {}, acceptanceCriteria: [], contentHash: '' };
 }
 
 export interface BuildCtxInput {
@@ -293,9 +300,17 @@ export async function loadContext(
     throw new Error(`Run ${runId} has no saved config (inputs/config.json is missing or invalid)`);
   }
   const config: RunConfig = parsedConfig.data;
-  const planText = await readFile(st.planPath, 'utf8');
-  const plan = parsePlan(planText);
-  if (!plan.ok) throw new Error(`Invalid plan:\n- ${plan.errors.join('\n- ')}`);
+  // A run that started from a description has no approved plan yet (planPath is empty).
+  const description =
+    st.planPath === '' ? await readFile(join(runDir, 'inputs', 'description.md'), 'utf8') : null;
+  let plan: Plan;
+  if (description !== null) {
+    plan = unapprovedPlan(st.title);
+  } else {
+    const parsed = parsePlan(await readFile(st.planPath, 'utf8'));
+    if (!parsed.ok) throw new Error(`Invalid plan:\n- ${parsed.errors.join('\n- ')}`);
+    plan = parsed.plan;
+  }
   const loaded = deps.loadProjectChecks(st.repoPath);
   if (!loaded.config) {
     throw new Error(
@@ -303,15 +318,10 @@ export async function loadContext(
     );
   }
   const rec = new RunRecorder(deps.createLog(runDir), deps.store);
-  const input: RunInput = {
-    repo: st.repoPath,
-    planFile: st.planPath,
-    baseRef: st.baseRef,
-    title: st.title,
-    config,
-    signal,
-  };
-  const ctx = buildCtx({ input, deps, rec, st, runDir, plan: plan.plan, checks: loaded.config });
+  const common = { repo: st.repoPath, baseRef: st.baseRef, title: st.title, config, signal };
+  const input: RunInput =
+    description !== null ? { ...common, description } : { ...common, planFile: st.planPath };
+  const ctx = buildCtx({ input, deps, rec, st, runDir, plan, checks: loaded.config });
   ctx.rounds = await loadRounds(runDir);
   rec.attach(runId);
   applyStoredStatuses(ctx.rounds, rec.listFindings());
@@ -327,6 +337,14 @@ export async function loadContext(
       sessionId: st.implementer.sessionId,
       cwd: st.worktreePath,
       ...(st.implementer.paneLabel ? { paneLabel: st.implementer.paneLabel } : {}),
+    };
+  }
+  if (st.planner) {
+    ctx.plannerSession = {
+      mode: st.planner.mode,
+      sessionId: st.planner.sessionId,
+      cwd: st.worktreePath,
+      ...(st.planner.paneLabel ? { paneLabel: st.planner.paneLabel } : {}),
     };
   }
   return ctx;

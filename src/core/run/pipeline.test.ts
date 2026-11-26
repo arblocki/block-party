@@ -113,6 +113,8 @@ interface Turn {
   report?: Report | 'invalid';
   commit?: boolean;
   dirty?: boolean;
+  /** Planner turns: the plan text to write (default PLAN); null writes nothing. */
+  plan?: string | null;
 }
 
 interface Opts {
@@ -135,6 +137,8 @@ interface Opts {
   /** Files each fix turn changed, for the broad-fix check; default: one small file. */
   diffFiles?: DiffFile[];
   onStart?: (input: ImplementerStartInput) => void;
+  /** Start from a description instead of a plan file. */
+  description?: string;
 }
 
 function harness(o: Opts) {
@@ -147,7 +151,10 @@ function harness(o: Opts) {
     sends: [] as string[],
     sendSessions: [] as string[],
     starts: [] as string[],
+    startInputs: [] as ImplementerStartInput[],
+    sendInputs: [] as ImplementerStartInput[],
     stops: 0,
+    stoppedSessions: [] as string[],
     reviews: [] as {
       round: number;
       prior: number;
@@ -162,7 +169,15 @@ function harness(o: Opts) {
   let turnIdx = 0;
   const doTurn = (input: ImplementerStartInput): TurnOutcome => {
     const t = o.turns[turnIdx++] ?? {};
-    if (t.commit !== false) git.head = String(++git.n).padStart(40, 'c');
+    const planner = input.permissionMode === 'default';
+    if (planner && t.plan !== null) {
+      // The plan path is the one file (besides the report) a planner may write.
+      const rule = input.allowedTools.find((x) => /^Write\(\/\/.*plans\/v\d+\.md\)$/.test(x));
+      const path = '/' + rule!.slice('Write(/'.length, -1);
+      mkdirSync(join(path, '..'), { recursive: true });
+      writeFileSync(path, t.plan ?? PLAN);
+    }
+    if (t.commit !== false && !planner) git.head = String(++git.n).padStart(40, 'c');
     git.dirty = t.dirty ?? false;
     if (t.report === 'invalid') writeFileSync(input.reportPath, '{nope');
     else if (t.report !== undefined || !t.outcome) {
@@ -171,22 +186,27 @@ function harness(o: Opts) {
     return t.outcome ?? { kind: 'report' };
   };
   const session: ImplementerSession = { mode: 'headless', sessionId: 's1', cwd: root };
+  const plannerSession: ImplementerSession = { ...session, sessionId: 'planner-1' };
   const adapter: ImplementerAdapter = {
     async start(input) {
       calls.starts.push(input.prompt);
-      input.onSession?.(session);
+      calls.startInputs.push(input);
+      const mine = input.permissionMode === 'default' ? plannerSession : session;
+      input.onSession?.(mine);
       o.onStart?.(input);
       for (let i = 0; i < (o.permissionPrompts ?? 0); i++) input.onPermission?.(`approve ${i + 1}`);
       if (o.hangFirstTurn) await new Promise(() => undefined);
-      return { session, outcome: doTurn(input) };
+      return { session: mine, outcome: doTurn(input) };
     },
     async send(s, input, message) {
       calls.sends.push(message);
       calls.sendSessions.push(s.sessionId);
+      calls.sendInputs.push(input);
       return doTurn(input);
     },
-    async stop() {
+    async stop(s) {
       calls.stops++;
+      calls.stoppedSessions.push(s.sessionId);
     },
     describe: () => 'attach-cmd',
   };
@@ -304,7 +324,7 @@ function harness(o: Opts) {
     runPipeline(
       {
         repo: root,
-        planFile,
+        ...(o.description !== undefined ? { description: o.description } : { planFile }),
         baseRef: 'main',
         config: resolveRunConfig(o.section, o.flags),
         signal,
@@ -1934,6 +1954,297 @@ describe('final review and continuations', () => {
       expect(next.stage).toBe('blocked');
       expect(next.note).toContain('PR #7 is closed');
       expect(gh.calls).toEqual(['create', 'get:7']);
+    });
+  });
+});
+
+describe('planning', () => {
+  const DESCRIPTION = 'Add a widgets page\n\nIt should list every widget.';
+  const planDecisions = (store: RunStore, runId: string) =>
+    store.listDecisions({ runId }).filter((d) => d.kind === 'plan_approval');
+  const answerPlan = (store: RunStore, runId: string, choice: string, note: string | null) => {
+    const d = store
+      .listDecisions({ runId, status: 'open' })
+      .find((x) => x.kind === 'plan_approval')!;
+    expect(store.answerDecision(d.id, { choice, note })).toBe('answered');
+  };
+  const PLAN_V2 = PLAN.replace('# Add widgets', '# Add widgets, smaller').replace(
+    'Do it.',
+    'Do it in two steps.',
+  );
+
+  it('records a pasted plan as approved version 1 by me', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    expect(store.listPlans(out.runId)).toEqual([
+      expect.objectContaining({
+        version: 1,
+        status: 'approved',
+        createdBy: 'me',
+        title: 'Add widgets',
+        feedback: null,
+      }),
+    ]);
+  });
+
+  it('plans from a description and rests with a v1 plan and a plan_approval decision', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_plan_approval');
+    expect(h.calls.worktrees).toBe(1);
+    // One planner turn; the implementer never started.
+    expect(h.calls.starts).toHaveLength(1);
+    expect(h.calls.starts[0]).toMatch(/^Read the planning brief at .*plan-1\.md and follow it\.$/);
+    const start = h.calls.startInputs[0]!;
+    expect(start.permissionMode).toBe('default');
+    expect(start.settingsPath).toBe(join(out.runDir, 'planner-settings.json'));
+    expect(start.allowedTools).toContain(`Write(/${join(out.runDir, 'plans', 'v1.md')})`);
+    expect(start.allowedTools).not.toContain('Write');
+    expect(start.disallowedTools).toContain('Bash(git commit:*)');
+    const brief = readFileSync(join(out.runDir, 'briefs', 'plan-1.md'), 'utf8');
+    expect(brief).toContain('Add a widgets page');
+    expect(brief).toContain(join(out.runDir, 'plans', 'v1.md'));
+    expect(readFileSync(join(out.runDir, 'inputs', 'plan-template.md'), 'utf8')).toContain(
+      '## Acceptance criteria',
+    );
+    expect(readFileSync(join(out.runDir, 'plans', 'v1.md'), 'utf8')).toBe(PLAN);
+    expect(existsSync(join(out.runDir, 'reports', 'plan-1.json'))).toBe(true);
+
+    expect(store.listPlans(out.runId)).toEqual([
+      expect.objectContaining({ version: 1, status: 'draft', createdBy: 'agent', feedback: null }),
+    ]);
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({
+      kind: 'plan_approval',
+      options: [
+        { id: 'approve', label: 'Approve' },
+        { id: 'revise', label: 'Request changes' },
+      ],
+    });
+    // The planner is stopped, its session kept; nothing owns the run.
+    expect(h.calls.stoppedSessions).toEqual(['planner-1']);
+    const run = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as {
+      planner: { sessionId: string };
+      planPath: string;
+      planVersion: number;
+      title: string;
+      implementer: unknown;
+    };
+    expect(run.planner.sessionId).toBe('planner-1');
+    expect(run).toMatchObject({ planPath: '', planVersion: 0, title: 'Add a widgets page' });
+    expect(run.implementer).toBeNull();
+    const row = store.getRun(out.runId)!;
+    expect(row).toMatchObject({ stage: 'awaiting_plan_approval', ownerPid: null, planPath: '' });
+    expect(store.listStages(out.runId).map((x) => [x.kind, x.state])).toEqual([
+      ['plan', 'succeeded'],
+    ]);
+  });
+
+  it('cuts the title from a long first line', async () => {
+    const h = harness({ description: 'x'.repeat(100), turns: [{}] });
+    const out = await h.run();
+    expect(JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')).title).toBe(
+      'x'.repeat(72),
+    );
+  });
+
+  it('requests changes in the same planner session, then implements from the approved v2', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      description: DESCRIPTION,
+      turns: [{}, { plan: PLAN_V2 }, {}],
+    });
+    const out = await h.run();
+    answerPlan(store, out.runId, 'revise', 'Make it smaller');
+    const revised = await continueRun(
+      out.runId,
+      { kind: 'plan_revise', note: 'Make it smaller' },
+      h.deps,
+    );
+    expect(revised.stage).toBe('awaiting_plan_approval');
+    // The same session was resumed, not a new one started.
+    expect(h.calls.starts).toHaveLength(1);
+    expect(h.calls.sendSessions).toEqual(['planner-1']);
+    expect(h.calls.sends[0]).toMatch(/^Read the revision brief at .*plan-2\.md and follow it\.$/);
+    const brief = readFileSync(join(out.runDir, 'briefs', 'plan-2.md'), 'utf8');
+    expect(brief).toContain('Make it smaller');
+    expect(brief).toContain(join(out.runDir, 'plans', 'v1.md'));
+    expect(h.calls.sendInputs[0]!.allowedTools).toContain(
+      `Write(/${join(out.runDir, 'plans', 'v2.md')})`,
+    );
+    expect(store.listPlans(out.runId).map((p) => [p.version, p.status, p.feedback])).toEqual([
+      [1, 'draft', null],
+      [2, 'draft', 'Make it smaller'],
+    ]);
+    expect(planDecisions(store, out.runId).map((d) => d.status)).toEqual(['open', 'answered']);
+
+    answerPlan(store, out.runId, 'approve', null);
+    const done = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(done.stage).toBe('awaiting_review');
+    expect(store.listPlans(out.runId).map((p) => [p.version, p.status])).toEqual([
+      [1, 'superseded'],
+      [2, 'approved'],
+    ]);
+    // Implementation started a new session, from the approved version.
+    expect(h.calls.starts).toHaveLength(2);
+    expect(h.calls.starts[1]).toMatch(/implement-1\.md/);
+    expect(h.calls.startInputs[1]!.permissionMode).toBe('acceptEdits');
+    const implementBrief = readFileSync(join(out.runDir, 'briefs', 'implement-1.md'), 'utf8');
+    expect(implementBrief).toContain(join(out.runDir, 'plans', 'v2.md'));
+    expect(implementBrief).toContain('version 2');
+    const run = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as Record<
+      string,
+      unknown
+    >;
+    expect(run).toMatchObject({
+      planPath: join(out.runDir, 'plans', 'v2.md'),
+      planVersion: 2,
+      title: 'Add widgets, smaller',
+      stage: 'awaiting_review',
+    });
+    expect(run.planHash).toBe(store.listPlans(out.runId)[1]!.contentHash);
+    expect(store.getRun(out.runId)).toMatchObject({
+      title: 'Add widgets, smaller',
+      planPath: join(out.runDir, 'plans', 'v2.md'),
+    });
+    expect(h.calls.published[0]!.title).toBe('Add widgets, smaller');
+  });
+
+  it('gives an invalid plan one retry turn listing the errors', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      description: DESCRIPTION,
+      turns: [{ plan: '# Only a title\n' }, {}],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_plan_approval');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sendSessions).toEqual(['planner-1']);
+    expect(h.calls.sends[0]).toContain('Missing section: Goal');
+    expect(h.calls.sends[0]).toContain('v1.md');
+    expect(store.listPlans(out.runId)).toHaveLength(1);
+    expect(readFileSync(join(out.runDir, 'plans', 'v1.md'), 'utf8')).toBe(PLAN);
+  });
+
+  it('blocks with the validation errors when the retry is invalid too', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      description: DESCRIPTION,
+      turns: [{ plan: '# Only a title\n' }, { plan: '# Still a title\n' }],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('still invalid after one retry');
+    expect(out.note).toContain('Missing section: Approach');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(store.listPlans(out.runId)).toHaveLength(0);
+    expect(store.listDecisions({ runId: out.runId, status: 'open' })[0]!.kind).toBe('blocked');
+  });
+
+  it('treats a plan the planner did not write as invalid', async () => {
+    const h = harness({ description: DESCRIPTION, turns: [{ plan: null }, { plan: null }] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('The plan file was not written');
+  });
+
+  it('blocks when the planner leaves the worktree dirty', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: DESCRIPTION, turns: [{ dirty: true }] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('Worktree has uncommitted changes');
+    expect(store.listPlans(out.runId)).toHaveLength(0);
+  });
+
+  it('blocks with the questions when the planner reports blocked', async () => {
+    const h = harness({
+      description: DESCRIPTION,
+      turns: [{ report: report({ status: 'blocked', questions: ['Which page?'] }) }],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('Planner is blocked and has questions: Which page?');
+  });
+
+  it('does not put planner reports among the implementer work', async () => {
+    const h = harness({ description: DESCRIPTION, turns: [{}, {}] });
+    const out = await h.run();
+    await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    const pub = h.calls.published[0]!;
+    expect(pub.body).not.toContain('plan-1');
+  });
+
+  describe('when an answer cannot be carried out', () => {
+    it('reopens the plan approval when the plan cannot be read', async () => {
+      const store = openStore(':memory:').runs;
+      const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+      const out = await h.run();
+      answerPlan(store, out.runId, 'approve', null);
+      writeFileSync(join(out.runDir, 'plans', 'v1.md'), '# broken');
+      const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+      expect(next.stage).toBe('awaiting_plan_approval');
+      const open = store.listDecisions({ runId: out.runId, status: 'open' });
+      expect(open).toHaveLength(1);
+      expect(open[0]).toMatchObject({
+        kind: 'plan_approval',
+        options: [
+          { id: 'approve', label: 'Approve' },
+          { id: 'revise', label: 'Request changes' },
+        ],
+      });
+      expect(open[0]!.body).toContain('could not be carried out');
+      expect(store.getRun(out.runId)).toMatchObject({
+        stage: 'awaiting_plan_approval',
+        ownerPid: null,
+      });
+      expect(h.calls.starts).toHaveLength(1);
+    });
+
+    it('reopens it when the run cannot even be loaded', async () => {
+      const store = openStore(':memory:').runs;
+      const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+      const out = await h.run();
+      answerPlan(store, out.runId, 'revise', 'x');
+      rmSync(join(out.runDir, 'inputs', 'config.json'));
+      await expect(
+        continueRun(out.runId, { kind: 'plan_revise', note: 'x' }, h.deps),
+      ).rejects.toThrow(/no saved config/);
+      const open = store.listDecisions({ runId: out.runId, status: 'open' });
+      expect(open.map((d) => d.kind)).toEqual(['plan_approval']);
+      expect(open[0]!.body).toContain('no saved config');
+    });
+
+    it('ends the run when a revision fails after it left rest', async () => {
+      const store = openStore(':memory:').runs;
+      const h = harness({
+        store,
+        description: DESCRIPTION,
+        turns: [{}, { report: report({ status: 'blocked', questions: ['Which?'] }) }],
+      });
+      const out = await h.run();
+      answerPlan(store, out.runId, 'revise', 'x');
+      const next = await continueRun(out.runId, { kind: 'plan_revise', note: 'x' }, h.deps);
+      expect(next.stage).toBe('blocked');
+      expect(store.listDecisions({ runId: out.runId, status: 'open' }).map((d) => d.kind)).toEqual([
+        'blocked',
+      ]);
+    });
+
+    it('leaves a run that is not waiting for a plan where it is', async () => {
+      const store = openStore(':memory:').runs;
+      const h = harness({ store, turns: [{}] });
+      const out = await h.run();
+      const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+      expect(next.stage).toBe('awaiting_review');
+      expect(h.calls.starts).toHaveLength(1);
+      expect(store.listPlans(out.runId)).toHaveLength(1);
     });
   });
 });

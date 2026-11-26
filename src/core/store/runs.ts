@@ -55,7 +55,8 @@ export type StageKind =
   | 'checks'
   | 'review'
   | 'publish'
-  | 'wait-ci';
+  | 'wait-ci'
+  | 'plan';
 
 export type StageState = 'running' | 'succeeded' | 'failed' | 'blocked' | 'cancelled';
 
@@ -124,6 +125,35 @@ export interface Decision {
   options: DecisionOption[] | null;
   answer: DecisionAnswer | null;
   answeredAt: string | null;
+}
+
+export type PlanStatus = 'draft' | 'approved' | 'superseded';
+
+/** One version of a run's plan. */
+export interface PlanRow {
+  id: number;
+  runId: string;
+  version: number;
+  path: string;
+  contentHash: string;
+  title: string;
+  status: PlanStatus;
+  createdBy: 'agent' | 'me';
+  /** The note that asked for this version; null for the first. */
+  feedback: string | null;
+  createdAt: string;
+}
+
+export interface PlanInput {
+  runId: string;
+  version: number;
+  path: string;
+  contentHash: string;
+  title: string;
+  /** Default `draft`. */
+  status?: 'draft' | 'approved';
+  createdBy: 'agent' | 'me';
+  feedback?: string | null;
 }
 
 export type FindingTriage = 'auto_fix' | 'ask' | 'record';
@@ -250,6 +280,16 @@ export interface RunStore {
   setFindingStatus(runId: string, key: string, status: FindingStatus, note: string | null): boolean;
   /** By round, then in the reviewer's order. */
   listFindings(runId: string): FindingRow[];
+
+  /** Stores a plan version; throws if the run already has that version. */
+  addPlanVersion(input: PlanInput): PlanRow;
+  /**
+   * Approves `version` and supersedes the run's other versions, in one transaction; false
+   * (and nothing changed) when the run has no such version.
+   */
+  approvePlan(runId: string, version: number): boolean;
+  /** Ascending by version. */
+  listPlans(runId: string): PlanRow[];
 }
 
 interface ProjectDb {
@@ -326,6 +366,19 @@ interface FindingDb {
   status: string;
   resolution_note: string | null;
   updated_at: string;
+}
+
+interface PlanDb {
+  id: number;
+  run_id: string;
+  version: number;
+  path: string;
+  content_hash: string;
+  title: string;
+  status: string;
+  created_by: string;
+  feedback: string | null;
+  created_at: string;
 }
 
 interface DecisionDb {
@@ -484,6 +537,21 @@ function toFinding(r: FindingDb): FindingRow {
   };
 }
 
+function toPlan(r: PlanDb): PlanRow {
+  return {
+    id: r.id,
+    runId: r.run_id,
+    version: r.version,
+    path: r.path,
+    contentHash: r.content_hash,
+    title: r.title,
+    status: r.status as PlanStatus,
+    createdBy: r.created_by as PlanRow['createdBy'],
+    feedback: r.feedback,
+    createdAt: r.created_at,
+  };
+}
+
 const now = (): string => new Date().toISOString();
 
 /**
@@ -592,6 +660,23 @@ export function createRunStore(db: Database.Database): RunStore {
     ORDER BY created_at DESC, id DESC`);
   const openCount = db.prepare<[], { n: number }>(
     "SELECT count(*) AS n FROM decisions WHERE status = 'open'",
+  );
+
+  const insertPlan = db.prepare(`
+    INSERT INTO plans
+      (run_id, version, path, content_hash, title, status, created_by, feedback, created_at)
+    VALUES (@runId, @version, @path, @contentHash, @title, @status, @createdBy, @feedback, @at)`);
+  const planByVersion = db.prepare<[string, number], PlanDb>(
+    'SELECT * FROM plans WHERE run_id = ? AND version = ?',
+  );
+  const supersedePlans = db.prepare(
+    "UPDATE plans SET status = 'superseded' WHERE run_id = ? AND version != ?",
+  );
+  const approvePlanStmt = db.prepare(
+    "UPDATE plans SET status = 'approved' WHERE run_id = ? AND version = ?",
+  );
+  const plansByRun = db.prepare<[string], PlanDb>(
+    'SELECT * FROM plans WHERE run_id = ? ORDER BY version',
   );
 
   // SQLite treats a negative LIMIT as "no limit".
@@ -770,6 +855,38 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     listFindings(runId) {
       return findingsByRun.all(runId).map(toFinding);
+    },
+
+    addPlanVersion(input) {
+      return db
+        .transaction((): PlanRow => {
+          insertPlan.run({
+            runId: input.runId,
+            version: input.version,
+            path: input.path,
+            contentHash: input.contentHash,
+            title: input.title,
+            status: input.status ?? 'draft',
+            createdBy: input.createdBy,
+            feedback: input.feedback ?? null,
+            at: now(),
+          });
+          return toPlan(planByVersion.get(input.runId, input.version) as PlanDb);
+        })
+        .immediate();
+    },
+    approvePlan(runId, version) {
+      return db
+        .transaction((): boolean => {
+          if (!planByVersion.get(runId, version)) return false;
+          approvePlanStmt.run(runId, version);
+          supersedePlans.run(runId, version);
+          return true;
+        })
+        .immediate();
+    },
+    listPlans(runId) {
+      return plansByRun.all(runId).map(toPlan);
     },
   };
 }

@@ -9,6 +9,7 @@ import {
   buildSettings,
   hookArgv,
   implementerPermissions,
+  plannerPermissions,
   shellQuote,
   shellRules,
 } from './claude-config.js';
@@ -103,6 +104,46 @@ describe('implementerPermissions', () => {
     for (const d of ['git push', 'curl', 'wget', 'rm -rf', 'pnpm add', 'npm install', 'gh']) {
       expect(p.disallowedTools).toContain(`Bash(${d}:*)`);
     }
+  });
+});
+
+describe('plannerPermissions', () => {
+  const p = plannerPermissions('/data/runs/r1/plans/v2.md', '/data/runs/r1/report.json');
+
+  it('allows writes only to the plan and the report, with absolute-path rules', () => {
+    const writes = p.allowedTools.filter((t) => /^(Write|Edit)\(/.test(t));
+    expect(writes.sort()).toEqual([
+      'Edit(//data/runs/r1/plans/v2.md)',
+      'Edit(//data/runs/r1/report.json)',
+      'Write(//data/runs/r1/plans/v2.md)',
+      'Write(//data/runs/r1/report.json)',
+    ]);
+    expect(p.allowedTools).not.toContain('Write');
+    expect(p.allowedTools).not.toContain('Edit');
+  });
+
+  it('allows reading and the read-only commands, but not committing or running code', () => {
+    for (const t of [
+      'Read',
+      'Glob',
+      'Grep',
+      'Bash(git status:*)',
+      'Bash(git diff:*)',
+      'Bash(ls:*)',
+    ]) {
+      expect(p.allowedTools).toContain(t);
+    }
+    for (const t of ['Bash(git add:*)', 'Bash(git commit:*)', 'Bash(node:*)']) {
+      expect(p.allowedTools).not.toContain(t);
+    }
+  });
+
+  it('disallows everything the implementer is denied, plus commits', () => {
+    for (const d of implementerPermissions([]).disallowedTools) {
+      expect(p.disallowedTools).toContain(d);
+    }
+    expect(p.disallowedTools).toContain('Bash(git add:*)');
+    expect(p.disallowedTools).toContain('Bash(git commit:*)');
   });
 });
 

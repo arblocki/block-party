@@ -446,6 +446,59 @@ describe('run store', () => {
       expect(runs.listFindings('r1')[0]!.status).toBe('open');
     });
   });
+
+  describe('plans', () => {
+    const plan = (version: number, over: Record<string, unknown> = {}) => ({
+      runId: 'r1',
+      version,
+      path: `/runs/r1/plans/v${version}.md`,
+      contentHash: `hash${version}`,
+      title: `Plan ${version}`,
+      createdBy: 'agent' as const,
+      ...over,
+    });
+    beforeEach(() => {
+      runs.createRun(runInput(projectId));
+    });
+
+    it('stores versions as drafts, with feedback, in version order', () => {
+      runs.addPlanVersion(plan(2, { feedback: 'smaller please' }));
+      runs.addPlanVersion(plan(1));
+      const rows = runs.listPlans('r1');
+      expect(rows.map((p) => p.version)).toEqual([1, 2]);
+      expect(rows[0]).toMatchObject({
+        status: 'draft',
+        createdBy: 'agent',
+        feedback: null,
+        title: 'Plan 1',
+        contentHash: 'hash1',
+      });
+      expect(rows[1]!.feedback).toBe('smaller please');
+    });
+
+    it('records a pasted plan as approved, created by me', () => {
+      const row = runs.addPlanVersion(plan(1, { status: 'approved', createdBy: 'me' }));
+      expect(row).toMatchObject({ status: 'approved', createdBy: 'me' });
+    });
+
+    it('refuses a second row for the same version', () => {
+      runs.addPlanVersion(plan(1));
+      expect(() => runs.addPlanVersion(plan(1))).toThrow();
+    });
+
+    it('approves one version and supersedes the others', () => {
+      runs.addPlanVersion(plan(1));
+      runs.addPlanVersion(plan(2));
+      expect(runs.approvePlan('r1', 2)).toBe(true);
+      expect(runs.listPlans('r1').map((p) => p.status)).toEqual(['superseded', 'approved']);
+    });
+
+    it('changes nothing when the version does not exist', () => {
+      runs.addPlanVersion(plan(1));
+      expect(runs.approvePlan('r1', 5)).toBe(false);
+      expect(runs.listPlans('r1')[0]!.status).toBe('draft');
+    });
+  });
 });
 
 describe('run store on a file', () => {

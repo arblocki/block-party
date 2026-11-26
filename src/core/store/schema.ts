@@ -224,4 +224,21 @@ export const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX review_findings_by_run ON review_findings (run_id, round);
   `,
+  `
+  -- Plan versions of a run: what the planner wrote (or a person pasted), and which one was
+  -- approved. The text lives in the run directory; the row points at it.
+  CREATE TABLE plans (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id       TEXT NOT NULL REFERENCES runs (id),
+    version      INTEGER NOT NULL,
+    path         TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    title        TEXT NOT NULL,
+    status       TEXT NOT NULL CHECK (status IN ('draft', 'approved', 'superseded')),
+    created_by   TEXT NOT NULL CHECK (created_by IN ('agent', 'me')),
+    feedback     TEXT,
+    created_at   TEXT NOT NULL,
+    UNIQUE (run_id, version)
+  );
+  `,
 ];

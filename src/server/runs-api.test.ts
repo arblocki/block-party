@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -204,6 +204,7 @@ const ENDPOINTS: [string, string][] = [
   ['GET', `/api/runs/${RUN_A}`],
   ['GET', `/api/runs/${RUN_A}/events`],
   ['GET', `/api/runs/${RUN_A}/plan`],
+  ['GET', `/api/runs/${RUN_A}/plans`],
   ['GET', `/api/runs/${RUN_A}/findings`],
   ['GET', `/api/runs/${RUN_A}/stream`],
   ['GET', '/api/stream'],
@@ -381,7 +382,7 @@ describe('JSON endpoints', () => {
       runs.createRun(runInput(projectId));
       return runs.openDecision({
         runId: RUN_A,
-        kind: 'plan_approval',
+        kind: 'dispute',
         title: 'Approve?',
         body: 'b',
         options,
@@ -506,6 +507,67 @@ describe('JSON endpoints', () => {
         expect(open[0]!.body).toContain('could not be carried out');
       });
 
+      describe('plan approval', () => {
+        const openPlan = () => {
+          runs.createRun(runInput(projectId, { stage: 'awaiting_plan_approval' }));
+          return runs.openDecision({
+            runId: RUN_A,
+            kind: 'plan_approval',
+            title: 'Plan',
+            body: 'b',
+            options: [
+              { id: 'approve', label: 'Approve' },
+              { id: 'revise', label: 'Request changes' },
+            ],
+          });
+        };
+
+        it('starts a plan_approve continuation once', async () => {
+          const id = openPlan();
+          const { fake, app: a } = withManager();
+          expect((await answerWith(a, id, { choice: 'approve' })).status).toBe(200);
+          expect((await answerWith(a, id, { choice: 'approve' })).status).toBe(409);
+          expect(fake.continues).toEqual([{ runId: RUN_A, entry: { kind: 'plan_approve' } }]);
+        });
+
+        it('starts a plan_revise continuation with the trimmed note', async () => {
+          const id = openPlan();
+          const { fake, app: a } = withManager();
+          const res = await answerWith(a, id, { choice: 'revise', note: '  smaller  ' });
+          expect(res.status).toBe(200);
+          expect(fake.continues).toEqual([
+            { runId: RUN_A, entry: { kind: 'plan_revise', note: 'smaller' } },
+          ]);
+        });
+
+        it('refuses to request changes without a note, leaving the decision open', async () => {
+          const id = openPlan();
+          const { fake, app: a } = withManager();
+          expect((await answerWith(a, id, { choice: 'revise' })).status).toBe(400);
+          expect((await answerWith(a, id, { choice: 'revise', note: ' ' })).status).toBe(400);
+          expect(runs.getDecision(id)?.status).toBe('open');
+          expect(fake.continues).toEqual([]);
+        });
+
+        it('answers 503 without a manager, leaving the decision open', async () => {
+          const id = openPlan();
+          expect((await answerWith(makeApp(), id, { choice: 'approve' })).status).toBe(503);
+          expect(runs.getDecision(id)?.status).toBe('open');
+        });
+
+        it('reopens the plan approval and answers 409 when the continuation cannot start', async () => {
+          const id = openPlan();
+          const fake = fakeManager();
+          fake.manager.continue = () => false;
+          const res = await answerWith(makeApp(runs, fake.manager), id, { choice: 'approve' });
+          expect(res.status).toBe(409);
+          const open = runs.listDecisions({ runId: RUN_A, status: 'open' });
+          expect(open.map((d) => d.kind)).toEqual(['plan_approval']);
+          expect(open[0]!.options!.map((o) => o.id)).toEqual(['approve', 'revise']);
+          expect(open[0]!.body).toContain('could not be carried out');
+        });
+      });
+
       it('does not continue for other decision kinds', async () => {
         const id = open();
         const { fake, app: a } = withManager();
@@ -608,6 +670,113 @@ describe('run plan and findings', () => {
       text: PLAN,
       title: 'Add widgets',
       acceptanceCriteria: ['Widgets exist', 'Widgets are blue'],
+    });
+  });
+
+  describe('plan versions', () => {
+    const V2 = PLAN.replace('# Add widgets', '# Add widgets, smaller');
+    beforeEach(() => {
+      writeFileSync(join(dir, 'plans', 'v2.md'), V2);
+    });
+    const addPlans = (statuses: ['draft' | 'approved', 'draft' | 'approved']) => {
+      addRun({ planPath: '' });
+      runs.addPlanVersion({
+        runId: RUN_A,
+        version: 1,
+        path: join(dir, 'plans', 'v1.md'),
+        contentHash: 'h1',
+        title: 'Add widgets',
+        createdBy: 'agent',
+        status: statuses[0],
+      });
+      runs.addPlanVersion({
+        runId: RUN_A,
+        version: 2,
+        path: join(dir, 'plans', 'v2.md'),
+        contentHash: 'h2',
+        title: 'Add widgets, smaller',
+        createdBy: 'agent',
+        feedback: 'smaller',
+        status: statuses[1],
+      });
+    };
+
+    it('lists every version with its text', async () => {
+      addPlans(['draft', 'draft']);
+      const body = (await json(`/api/runs/${RUN_A}/plans`)) as { plans: Record<string, unknown>[] };
+      expect(body.plans).toEqual([
+        {
+          version: 1,
+          title: 'Add widgets',
+          status: 'draft',
+          createdBy: 'agent',
+          feedback: null,
+          createdAt: expect.any(String),
+          text: PLAN,
+        },
+        {
+          version: 2,
+          title: 'Add widgets, smaller',
+          status: 'draft',
+          createdBy: 'agent',
+          feedback: 'smaller',
+          createdAt: expect.any(String),
+          text: V2,
+        },
+      ]);
+    });
+
+    it('lists no versions for a run without plan rows', async () => {
+      addRun();
+      expect(await json(`/api/runs/${RUN_A}/plans`)).toEqual({ plans: [] });
+    });
+
+    it('gives a missing file as null text', async () => {
+      addPlans(['draft', 'draft']);
+      rmSync(join(dir, 'plans', 'v1.md'));
+      const body = (await json(`/api/runs/${RUN_A}/plans`)) as { plans: { text: unknown }[] };
+      expect(body.plans[0]!.text).toBeNull();
+    });
+
+    it('refuses a version whose path is outside the run directory', async () => {
+      writeFileSync(join(outside, 'secret.md'), 'secret');
+      addRun({ planPath: '' });
+      runs.addPlanVersion({
+        runId: RUN_A,
+        version: 1,
+        path: join(outside, 'secret.md'),
+        contentHash: 'h',
+        title: 't',
+        createdBy: 'agent',
+      });
+      const res = await req(`/api/runs/${RUN_A}/plans`);
+      expect(res.status).toBe(403);
+      expect(JSON.stringify(await res.json())).not.toContain('secret"');
+      expect((await req(`/api/runs/${RUN_A}/plan`)).status).toBe(403);
+    });
+
+    it('serves the approved version as the plan, else the latest', async () => {
+      addPlans(['approved', 'draft']);
+      expect(await json(`/api/runs/${RUN_A}/plan`)).toMatchObject({
+        text: PLAN,
+        version: 1,
+        status: 'approved',
+      });
+      runs.approvePlan(RUN_A, 2);
+      expect(await json(`/api/runs/${RUN_A}/plan`)).toMatchObject({
+        text: V2,
+        title: 'Add widgets, smaller',
+        version: 2,
+      });
+    });
+
+    it('serves the latest draft while none is approved, and 404 with no plan at all', async () => {
+      addPlans(['draft', 'draft']);
+      expect(await json(`/api/runs/${RUN_A}/plan`)).toMatchObject({ version: 2, status: 'draft' });
+      runs.updateRun(RUN_A, { planPath: '' });
+      const bare = RUN_B;
+      runs.createRun(runInput(projectId, { id: bare, planPath: '', runDir: dir }));
+      expect((await req(`/api/runs/${bare}/plan`)).status).toBe(404);
     });
   });
 
@@ -950,6 +1119,37 @@ describe('POST /api/runs', () => {
         flags: { mode: 'headless', publish: false },
       },
     ]);
+  });
+
+  it('starts a run from a description', async () => {
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const res = await post(
+      '/api/runs',
+      { projectId, baseRef: 'main', description: '  Add a widgets page  ', title: 'T' },
+      a,
+    );
+    expect(res.status).toBe(201);
+    expect(fake.starts).toEqual([
+      { projectId, baseRef: 'main', description: 'Add a widgets page', title: 'T', flags: {} },
+    ]);
+  });
+
+  it('answers 400 for both a plan and a description, for neither, and for a bad description', async () => {
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const base = { projectId, baseRef: 'main' };
+    expect((await post('/api/runs', { ...base, planText: PLAN, description: 'x' }, a)).status).toBe(
+      400,
+    );
+    expect((await post('/api/runs', base, a)).status).toBe(400);
+    expect((await post('/api/runs', { ...base, description: '   ' }, a)).status).toBe(400);
+    expect((await post('/api/runs', { ...base, description: 'x'.repeat(20_001) }, a)).status).toBe(
+      400,
+    );
+    expect(fake.starts).toHaveLength(0);
+    const ok = await post('/api/runs', { ...base, description: 'x'.repeat(20_000) }, a);
+    expect(ok.status).toBe(201);
   });
 
   it('returns 400 with the plan errors for an invalid plan, starting nothing', async () => {

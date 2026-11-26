@@ -94,6 +94,7 @@ function setup(stage: RunStage) {
     stage,
     stageNote: null,
     implementer: { mode: 'pane', sessionId: 's-9', paneLabel: 'pane-1' },
+    planner: null,
     sessionEnded: true,
     rounds: { checkFix: 1, reviewFix: 1, feedback: 0, checkRuns: 0 },
     prNumber: 7,

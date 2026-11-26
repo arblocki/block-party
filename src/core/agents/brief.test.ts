@@ -1,6 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { TASK_BRIEF_TEMPLATE, renderBrief, type BriefVars } from './brief.js';
+import {
+  PLAN_TEMPLATE,
+  TASK_BRIEF_TEMPLATE,
+  renderBrief,
+  renderPlannerBrief,
+  type BriefVars,
+} from './brief.js';
 
 const base: BriefVars = {
   runTitle: 'Add widget',
@@ -63,5 +69,51 @@ describe('renderBrief', () => {
 
   it('errors when a fix-stage variable is missing', () => {
     expect(() => renderBrief({ ...base, stage: 'fix' })).toThrow(/round/);
+  });
+});
+
+describe('PLAN_TEMPLATE', () => {
+  it('equals the fenced block in docs/templates/plan.md', () => {
+    const doc = readFileSync(new URL('../../../docs/templates/plan.md', import.meta.url), 'utf8');
+    const m = /```markdown\n([\s\S]*?)\n```\n/.exec(doc);
+    expect(m).not.toBeNull();
+    expect(PLAN_TEMPLATE).toBe(m![1]);
+  });
+});
+
+describe('renderPlannerBrief', () => {
+  const vars = {
+    description: 'Add a widget page.\nWith a list.',
+    planPath: '/runs/r1/plans/v1.md',
+    templatePath: '/runs/r1/inputs/plan-template.md',
+    reportPath: '/runs/r1/report.json',
+    reportSchemaPath: '/runs/r1/report.schema.json',
+  };
+
+  it('tells the planner to explore read-only and write the plan and report', () => {
+    const out = renderPlannerBrief(vars);
+    expect(out).toContain('Add a widget page.\nWith a list.');
+    expect(out).toContain('`/runs/r1/plans/v1.md`');
+    expect(out).toContain('`/runs/r1/inputs/plan-template.md`');
+    expect(out).toContain('`/runs/r1/report.json`');
+    expect(out).toContain('`status: "done"`');
+    expect(out).toContain('`status: "blocked"`');
+    expect(out).toContain('read-only');
+    expect(out).toContain('Acceptance criteria');
+    expect(out).toContain('TODO or TBD');
+    expect(out).not.toContain('## Revision');
+  });
+
+  it('points a revision at the previous version and the feedback', () => {
+    const out = renderPlannerBrief({
+      ...vars,
+      planPath: '/runs/r1/plans/v2.md',
+      feedback: 'Split step 3 in two.',
+      previousPlanPath: '/runs/r1/plans/v1.md',
+    });
+    expect(out).toContain('## Revision');
+    expect(out).toContain('`/runs/r1/plans/v1.md`');
+    expect(out).toContain('Split step 3 in two.');
+    expect(out).toContain('`/runs/r1/plans/v2.md`');
   });
 });

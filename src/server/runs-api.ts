@@ -10,6 +10,7 @@ import { parsePlan } from '../core/run/plan.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
 import type {
   Decision,
+  PlanRow,
   FindingRow,
   FindingStatus,
   Project,
@@ -17,8 +18,13 @@ import type {
   RunStore,
   StageRow,
 } from '../core/store/runs.js';
-import { reopenFinalReview } from '../core/run/final-review.js';
-import { PlanValidationError, UnknownProjectError, type RunManager } from './run-manager.js';
+import { reopenRestDecision } from '../core/run/rest-decision.js';
+import {
+  InvalidStartError,
+  PlanValidationError,
+  UnknownProjectError,
+  type RunManager,
+} from './run-manager.js';
 import { parseBody } from './state.js';
 
 export interface RunsApiDeps {
@@ -178,6 +184,7 @@ function mergeRounds(stored: FindingsRound[], fromFiles: FindingsRound[]): Findi
 const projectSchema = z.strictObject({ path: z.string().trim().min(1) });
 
 const MAX_NOTE_CHARS = 4000;
+const MAX_DESCRIPTION_CHARS = 20_000;
 
 const answerSchema = z.strictObject({
   choice: z.string().min(1),
@@ -189,7 +196,8 @@ const validatePlanSchema = z.strictObject({ text: z.string() });
 const startRunSchema = z.strictObject({
   projectId: z.string().min(1),
   baseRef: z.string().trim().min(1),
-  planText: z.string(),
+  planText: z.string().optional(),
+  description: z.string().trim().min(1).max(MAX_DESCRIPTION_CHARS).optional(),
   title: z.string().trim().min(1).optional(),
   mode: z.enum(['pane', 'headless']).optional(),
   model: z.string().trim().min(1).optional(),
@@ -287,12 +295,47 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     });
   });
 
+  /** One plan version as the API shows it; `text` is null when its file cannot be read. */
+  const planView = (run: RunRow, p: PlanRow) => {
+    let text: string | null = null;
+    try {
+      text = readInsideRunDir(run.runDir, p.path);
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) throw e;
+    }
+    return {
+      version: p.version,
+      title: p.title,
+      status: p.status,
+      createdBy: p.createdBy,
+      feedback: p.feedback,
+      createdAt: p.createdAt,
+      text,
+    };
+  };
+
+  app.get('/api/runs/:id/plans', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    try {
+      return c.json({ plans: runs.listPlans(run.id).map((p) => planView(run, p)) });
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
+      throw e;
+    }
+  });
+
   app.get('/api/runs/:id/plan', (c) => {
     const run = runOf(c);
     if (run instanceof Response) return run;
+    // The approved version, else the latest; a run from before plan rows has only its file.
+    const plans = runs.listPlans(run.id);
+    const chosen = plans.find((p) => p.status === 'approved') ?? plans.at(-1);
+    const path = chosen?.path ?? run.planPath;
+    if (path === '') return c.json({ error: 'plan not found' }, 404);
     let text: string;
     try {
-      text = readInsideRunDir(run.runDir, run.planPath);
+      text = readInsideRunDir(run.runDir, path);
     } catch (e) {
       if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
       return c.json({ error: 'plan not found' }, 404);
@@ -302,6 +345,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       text,
       title: parsed.ok ? parsed.plan.title : run.title,
       acceptanceCriteria: parsed.ok ? parsed.plan.acceptanceCriteria : [],
+      ...(chosen ? { version: chosen.version, status: chosen.status } : {}),
     });
   });
 
@@ -464,11 +508,15 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const note = body.data.note?.trim() || null;
     const existing = runs.getDecision(id)!;
     const isFinalReview = existing.kind === 'final_review';
-    if (isFinalReview) {
+    const isPlanApproval = existing.kind === 'plan_approval';
+    if (isFinalReview || isPlanApproval) {
       // Checked before answering: an answer that cannot start its continuation would strand the run.
       if (!deps.manager) return c.json({ error: 'this server cannot continue runs' }, 503);
-      if (body.data.choice === 'send_back' && !note) {
+      if (isFinalReview && body.data.choice === 'send_back' && !note) {
         return badRequest(c, 'a note is required to send the run back');
+      }
+      if (isPlanApproval && body.data.choice === 'revise' && !note) {
+        return badRequest(c, 'a note is required to request changes');
       }
     }
     const result = runs.answerDecision(id, { choice: body.data.choice, note });
@@ -482,11 +530,18 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         existing.runId,
         body.data.choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
       );
+    } else if (isPlanApproval) {
+      continued = deps.manager!.continue(
+        existing.runId,
+        body.data.choice === 'approve'
+          ? { kind: 'plan_approve' }
+          : { kind: 'plan_revise', note: note! },
+      );
     }
     if (continued === false) {
-      // The answer is recorded but nothing carries it out: offer the review again.
+      // The answer is recorded but nothing carries it out: ask the question again.
       const reason = 'the server could not start it (the run is busy or no longer waiting)';
-      reopenFinalReview(runs, existing.runId, reason);
+      reopenRestDecision(runs, existing.runId, reason);
       return c.json({ error: `The answer could not be carried out: ${reason}` }, 409);
     }
     return c.json({
@@ -532,11 +587,16 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   app.post('/api/runs', async (c) => {
     const body = await parseBody(c, startRunSchema);
     if ('error' in body) return c.json({ error: body.error }, 400);
-    const { projectId, baseRef, planText, title, mode, model, publish } = body.data;
+    const { projectId, baseRef, planText, description, title, mode, model, publish } = body.data;
+    if ((planText === undefined) === (description === undefined)) {
+      return badRequest(c, 'give either planText or description');
+    }
     // Checked here as well as by the manager, so these answers do not depend on it.
     if (!runs.getProject(projectId)) return c.json({ error: 'project not found' }, 404);
-    const parsed = parsePlan(planText);
-    if (!parsed.ok) return c.json({ error: 'invalid plan', errors: parsed.errors }, 400);
+    if (planText !== undefined) {
+      const parsed = parsePlan(planText);
+      if (!parsed.ok) return c.json({ error: 'invalid plan', errors: parsed.errors }, 400);
+    }
     const { manager } = deps;
     if (!manager) return c.json({ error: 'this server cannot start runs' }, 503);
     const flags: RunFlagOverrides = {};
@@ -547,7 +607,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       const runId = await manager.start({
         projectId,
         baseRef,
-        planText,
+        ...(planText !== undefined ? { planText } : { description: description! }),
         ...(title ? { title } : {}),
         flags,
       });
@@ -557,6 +617,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         return c.json({ error: 'invalid plan', errors: e.errors }, 400);
       }
       if (e instanceof UnknownProjectError) return c.json({ error: 'project not found' }, 404);
+      if (e instanceof InvalidStartError) return badRequest(c, e.message);
       return c.json({ error: `could not start the run: ${errorMessage(e)}` }, 500);
     }
   });

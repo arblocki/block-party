@@ -4,13 +4,14 @@ import { join } from 'node:path';
 import { dataDir } from '../core/paths.js';
 import { loadRunConfig, RunConfigSchema, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
-import { reopenFinalReview } from '../core/run/final-review.js';
+import { reopenRestDecision } from '../core/run/rest-decision.js';
 import { isResting } from '../core/run/machine.js';
 import {
   continueRun,
   runPipeline,
   type ContinueEntry,
   type RunInput,
+  type RunSource,
   type RunOutcome,
 } from '../core/run/pipeline.js';
 import { ShutdownError, throwIfAborted } from '../core/run/pipeline-helpers.js';
@@ -20,7 +21,10 @@ import type { RunStore } from '../core/store/runs.js';
 export interface StartRunRequest {
   projectId: string;
   baseRef: string;
-  planText: string;
+  /** A plan to implement; exactly one of `planText` and `description` is given. */
+  planText?: string;
+  /** What to build; a planner writes the plan, and the run rests for its approval. */
+  description?: string;
   title?: string;
   flags?: RunFlagOverrides;
 }
@@ -30,6 +34,14 @@ export class PlanValidationError extends Error {
   constructor(readonly errors: string[]) {
     super(`Invalid plan:\n- ${errors.join('\n- ')}`);
     this.name = 'PlanValidationError';
+  }
+}
+
+/** The request does not name what to build; nothing was started. */
+export class InvalidStartError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'InvalidStartError';
   }
 }
 
@@ -125,12 +137,15 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   return {
     async start(req) {
       if (stopping) throw new Error('The server is shutting down');
-      const parsed = parsePlan(req.planText);
-      if (!parsed.ok) throw new PlanValidationError(parsed.errors);
+      if ((req.planText === undefined) === (req.description === undefined)) {
+        throw new InvalidStartError('Give either planText or description');
+      }
+      const parsed = req.planText !== undefined ? parsePlan(req.planText) : undefined;
+      if (parsed && !parsed.ok) throw new PlanValidationError(parsed.errors);
       const project = runs.getProject(req.projectId);
       if (!project) throw new UnknownProjectError(req.projectId);
       const config = loadRunConfig(project.localPath, req.flags);
-      const planFile = join(plansDir, `${parsed.plan.contentHash}.md`);
+      const planFile = parsed?.ok ? join(plansDir, `${parsed.plan.contentHash}.md`) : undefined;
 
       const ac = new AbortController();
       let runId: string | undefined;
@@ -159,16 +174,20 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
 
         entry.done = (async () => {
           try {
-            await mkdir(plansDir, { recursive: true });
-            // Same text means same path: write a temp file and rename it into place, so a
-            // concurrent start reading this plan never sees it truncated or half-written.
-            const tmp = `${planFile}.${randomUUID()}.tmp`;
-            await writeFile(tmp, req.planText);
-            await rename(tmp, planFile);
+            if (planFile !== undefined) {
+              await mkdir(plansDir, { recursive: true });
+              // Same text means same path: write a temp file and rename it into place, so a
+              // concurrent start reading this plan never sees it truncated or half-written.
+              const tmp = `${planFile}.${randomUUID()}.tmp`;
+              await writeFile(tmp, req.planText!);
+              await rename(tmp, planFile);
+            }
             if (ac.signal.aborted) throw stoppedError();
+            const source: RunSource =
+              planFile !== undefined ? { planFile } : { description: req.description! };
             const outcome = await startPipeline({
               repo: project.localPath,
-              planFile,
+              ...source,
               baseRef: req.baseRef,
               ...(req.title ? { title: req.title } : {}),
               config,
@@ -222,7 +241,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         } catch (err) {
           // The answer that started this could not be carried out: offer the review again
           // (a no-op when the pipeline already did, or the run is no longer resting).
-          reopenFinalReview(runs, runId, err instanceof Error ? err.message : String(err));
+          reopenRestDecision(runs, runId, err instanceof Error ? err.message : String(err));
           onError(runId, err);
         } finally {
           live.delete(entryRec);
