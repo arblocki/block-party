@@ -56,9 +56,8 @@ export function hostGuard(
 
 /**
  * Accepts the token from the header, or else from the session cookie. A header that is
- * present but wrong is rejected without trying the cookie. Cookies are sent automatically
- * by browsers, so a cookie-authenticated write must also carry an Origin (already checked
- * by hostGuard).
+ * present but wrong is rejected without trying the cookie. Cookie-only requests must carry
+ * `Sec-Fetch-Site: same-origin`.
  */
 export function tokenGuard(token: string): MiddlewareHandler {
   return async (c, next) => {
@@ -72,9 +71,10 @@ export function tokenGuard(token: string): MiddlewareHandler {
     if (!tokensMatch(token, getCookie(c, SESSION_COOKIE))) {
       return c.json({ error: 'unauthorized' }, 401);
     }
-    const safe = c.req.method === 'GET' || c.req.method === 'HEAD';
-    if (!safe && c.req.header('origin') === undefined) {
-      return c.json({ error: 'origin required' }, 403);
+    // Browsers attach cookies to cross-site requests too, so cookie-only auth requires the
+    // browser to vouch that the request is same-origin (for every method, GET included).
+    if (c.req.header('sec-fetch-site') !== 'same-origin') {
+      return c.json({ error: 'cross-site' }, 403);
     }
     await next();
   };

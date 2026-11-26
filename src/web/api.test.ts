@@ -1,11 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { api, initToken, openStream, resolveToken } from './api.js';
+import { api, initToken, login, openStream, resolveToken } from './api.js';
 
 function memoryStorage() {
   const m = new Map<string, string>();
   return {
     getItem: (k: string) => m.get(k) ?? null,
     setItem: (k: string, v: string) => void m.set(k, v),
+    removeItem: (k: string) => void m.delete(k),
   };
 }
 
@@ -108,5 +109,42 @@ describe('openStream on 401', () => {
     });
     expect(fetchMock.mock.calls.length).toBeGreaterThanOrEqual(2);
     expect(onUnauthorized).not.toHaveBeenCalled();
+  });
+});
+
+describe('login()', () => {
+  it('clears a stale stored token on success, so the cookie is used', async () => {
+    const storage = memoryStorage();
+    vi.stubGlobal('location', { hash: '#token=stale', pathname: '/', search: '' });
+    vi.stubGlobal('history', { replaceState: () => {} });
+    vi.stubGlobal('sessionStorage', {
+      ...storage,
+      removeItem: vi.fn((k: string) => storage.removeItem(k)),
+    });
+    initToken();
+    const fetchMock = vi.fn(async (url: string) =>
+      url === '/auth/login' ? new Response(null, { status: 204 }) : new Response('{}'),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    await login('good');
+    expect(storage.getItem('block-party-token')).toBeNull();
+    await api('/api/health');
+    const calls = fetchMock.mock.calls as unknown as [string, RequestInit][];
+    expect((calls[1]![1].headers as Headers).has('x-block-party-token')).toBe(false);
+  });
+
+  it('keeps the stored token when login fails', async () => {
+    const storage = memoryStorage();
+    storage.setItem('block-party-token', 'keep');
+    vi.stubGlobal('sessionStorage', {
+      ...storage,
+      removeItem: (k: string) => storage.removeItem(k),
+    });
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => new Response('{}', { status: 401 })),
+    );
+    await expect(login('bad')).rejects.toThrow('Wrong token');
+    expect(storage.getItem('block-party-token')).toBe('keep');
   });
 });

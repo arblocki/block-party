@@ -49,7 +49,8 @@ To reach the server through a reverse proxy (e.g. over a tailnet), set
 accepted as the Host and as `https://<host>` for Origin. The server still binds 127.0.0.1. A
 browser without `#token=` in its URL shows a login page: paste the token (set a stable one with
 `BLOCK_PARTY_TOKEN`) once and the device gets an HttpOnly session cookie (`__Host-bp_session`);
-the **Log out** button clears it. Unset, behaviour is unchanged.
+the **Log out** button clears it. Cookie-only requests must carry `Sec-Fetch-Site: same-origin`.
+Unset, behaviour is unchanged.
 
 Flags: `--provider`, `--model`, `--port`, `--no-open`, `--debug`.
 

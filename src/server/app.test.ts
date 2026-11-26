@@ -56,6 +56,7 @@ describe('allowed hosts', () => {
   const call = (path: string, headers: Record<string, string>, init: RequestInit = {}) =>
     proxied.request(path, { ...init, headers });
   const SESSION = `${SESSION_COOKIE}=${TOKEN}`;
+  const SAME = { 'sec-fetch-site': 'same-origin' };
 
   it('allows an extra host with a valid token', async () => {
     expect((await call('/api/health', { host: HOST, [TOKEN_HEADER]: TOKEN })).status).toBe(200);
@@ -164,39 +165,51 @@ describe('allowed hosts', () => {
 
   describe('session cookie', () => {
     it('authenticates a GET without the header', async () => {
-      expect((await call('/api/health', { host: HOST, cookie: SESSION })).status).toBe(200);
+      expect((await call('/api/health', { host: HOST, cookie: SESSION, ...SAME })).status).toBe(
+        200,
+      );
     });
 
     it('rejects a wrong cookie', async () => {
-      const res = await call('/api/health', { host: HOST, cookie: `${SESSION_COOKIE}=nope` });
+      const res = await call('/api/health', {
+        host: HOST,
+        cookie: `${SESSION_COOKIE}=nope`,
+        ...SAME,
+      });
       expect(res.status).toBe(401);
     });
 
-    it('rejects a cookie-authenticated write with no Origin', async () => {
-      const res = await call(
-        '/api/runs',
-        { host: HOST, cookie: SESSION, 'content-type': 'application/json' },
-        { method: 'POST', body: '{}' },
-      );
-      expect(res.status).toBe(403);
-      expect(await res.json()).toEqual({ error: 'origin required' });
-    });
+    it.each([['same-site'], ['cross-site'], ['none'], [undefined]])(
+      'rejects a cookie-only request with Sec-Fetch-Site %s, GET and POST',
+      async (site) => {
+        const h: Record<string, string> = { host: HOST, cookie: SESSION };
+        if (site) h['sec-fetch-site'] = site;
+        const get = await call('/api/health', h);
+        expect(get.status).toBe(403);
+        expect(await get.json()).toEqual({ error: 'cross-site' });
+        const post = await call(
+          '/api/runs',
+          { ...h, origin: `https://${HOST}`, 'content-type': 'application/json' },
+          { method: 'POST', body: '{}' },
+        );
+        expect(post.status).toBe(403);
+      },
+    );
 
-    it('lets a cookie-authenticated write through with the own origin', async () => {
+    it('lets a same-origin cookie write through', async () => {
       const res = await call(
         '/api/runs',
-        {
-          host: HOST,
-          cookie: SESSION,
-          origin: `https://${HOST}`,
-          'content-type': 'application/json',
-        },
+        { host: HOST, cookie: SESSION, ...SAME, 'content-type': 'application/json' },
         { method: 'POST', body: '{}' },
       );
       expect([401, 403]).not.toContain(res.status);
     });
 
-    it('does not require an Origin for header-authenticated writes', async () => {
+    it('does not require Sec-Fetch-Site for header-authenticated requests', async () => {
+      expect((await call('/api/health', { host: HOST, [TOKEN_HEADER]: TOKEN })).status).toBe(200);
+    });
+
+    it('lets header-authenticated writes through without cookie checks', async () => {
       const res = await call(
         '/api/runs',
         { host: HOST, [TOKEN_HEADER]: TOKEN, 'content-type': 'application/json' },
@@ -206,7 +219,12 @@ describe('allowed hosts', () => {
     });
 
     it('falls back to the cookie when the header is empty', async () => {
-      const res = await call('/api/health', { host: HOST, cookie: SESSION, [TOKEN_HEADER]: '' });
+      const res = await call('/api/health', {
+        host: HOST,
+        cookie: SESSION,
+        ...SAME,
+        [TOKEN_HEADER]: '',
+      });
       expect(res.status).toBe(200);
     });
 

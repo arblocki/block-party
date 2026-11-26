@@ -198,17 +198,23 @@ export async function login(pastedToken: string): Promise<void> {
       res.status === 401 ? 'Wrong token' : `${res.status} ${res.statusText}`,
     );
   }
+  clearToken();
 }
 
-/** Clears the session cookie and the stored token. */
-export async function logout(): Promise<void> {
-  await fetch('/auth/logout', { method: 'POST' });
+/** Forgets the stored token. A stale one would be sent as a header and beat the cookie. */
+export function clearToken(): void {
   try {
     sessionStorage.removeItem(STORAGE_KEY);
   } catch {
     // storage unavailable
   }
   token = '';
+}
+
+/** Clears the session cookie and the stored token. */
+export async function logout(): Promise<void> {
+  await fetch('/auth/logout', { method: 'POST' });
+  clearToken();
 }
 
 export function jsonBody(value: unknown): RequestInit {
