@@ -104,6 +104,11 @@ export class RunRecorder {
    * release it and open a fresh final_review item saying why, so the person can try again.
    */
   reopenFinalReview(title: string, reason: string): void {
+    const open = this.withRun('listDecisions', (s, runId) =>
+      s.listDecisions({ runId, status: 'open' }),
+    );
+    // One open final review at a time: an earlier failure handler may have reopened it.
+    if (open?.some((d) => d.kind === 'final_review')) return;
     this.event('continuation.failed', { reason });
     this.release();
     this.openDecision(

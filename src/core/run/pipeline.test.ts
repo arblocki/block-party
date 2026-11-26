@@ -1308,6 +1308,23 @@ describe('final review and continuations', () => {
     expect(open[0]!.body).toContain('Illegal run stage transition');
   });
 
+  it('opens exactly one final review when approving fails at the stage move', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    answerReview(store, out.runId, 'approve', null);
+    forced.illegal = ['awaiting_review', 'complete'];
+    await expect(continueRun(out.runId, { kind: 'approve' }, h.deps)).rejects.toThrow(
+      /Illegal run stage transition/,
+    );
+    const open = finalReviews(store, out.runId).filter((d) => d.status === 'open');
+    expect(open).toHaveLength(1);
+    expect(
+      store.listEvents(out.runId).filter((e) => e.type === 'continuation.failed'),
+    ).toHaveLength(1);
+    expect(store.getRun(out.runId)).toMatchObject({ stage: 'awaiting_review', ownerPid: null });
+  });
+
   it('does not open a second unresolved-findings item on a continuation', async () => {
     const store = openStore(':memory:').runs;
     const h = harness({

@@ -1,5 +1,4 @@
 import type { DecisionOption, RunStore } from '../store/runs.js';
-import { isResting } from './machine.js';
 
 export const FINAL_REVIEW_TITLE = 'Ready for your review';
 
@@ -15,13 +14,13 @@ export function reopenedBody(title: string, reason: string): string {
 
 /**
  * Reopens a fresh `final_review` item for a run that is still resting, after an answer that
- * could not be carried out. Does nothing (returns null) when the run is not resting or already
+ * could not be carried out. Does nothing (returns null) when the run is not awaiting review or already
  * has an open final review. Store only: used where there is no pipeline context.
  */
 export function reopenFinalReview(runs: RunStore, runId: string, reason: string): number | null {
   try {
     const run = runs.getRun(runId);
-    if (!run || !isResting(run.stage)) return null;
+    if (!run || run.stage !== 'awaiting_review') return null;
     const open = runs.listDecisions({ runId, status: 'open' });
     if (open.some((d) => d.kind === 'final_review')) return null;
     runs.appendEvent({

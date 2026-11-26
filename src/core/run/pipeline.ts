@@ -266,8 +266,13 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
   await ctx.pending.catch(() => undefined);
   if (isResting(ctx.st.stage)) {
     // A continuation that failed before leaving rest: the run has not moved, so it cannot end
-    // (a resting run only leaves by its own moves). Offer the review again instead.
-    ctx.rec.reopenFinalReview(ctx.st.title, (e as Error).message);
+    // (a resting run only leaves by its own moves).
+    if (ctx.st.stage === 'awaiting_review') {
+      // Offer the review again.
+      ctx.rec.reopenFinalReview(ctx.st.title, (e as Error).message);
+    } else {
+      ctx.rec.event('continuation.failed', { reason: (e as Error).message });
+    }
     return;
   }
   if (isShutdown(input.signal)) {
@@ -946,12 +951,8 @@ export async function continueRun(
       const rec = new RunRecorder(deps.createLog(runDir), deps.store);
       rec.resume(st);
       const light = { st, runDir, rec, deps };
-      try {
-        await setStage(light, 'complete', 'Approved');
-      } catch (e) {
-        rec.reopenFinalReview(st.title, (e as Error).message);
-        throw e;
-      }
+      // A failure here leaves the run resting: the catch below reopens the review.
+      await setStage(light, 'complete', 'Approved');
       return outcomeFromState(light.st, runDir);
     }
     ctx = await loadContext(runId, deps, signal);
@@ -1009,7 +1010,7 @@ async function reopenIfResting(
 ): Promise<void> {
   try {
     const st = await loadRunState(runDir);
-    if (!isResting(st.stage)) return;
+    if (st.stage !== 'awaiting_review') return;
     const rec = new RunRecorder(deps.createLog(runDir), deps.store);
     rec.attach(runId);
     rec.reopenFinalReview(st.title, (e as Error).message);
