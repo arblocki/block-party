@@ -213,6 +213,8 @@ const ENDPOINTS: [string, string][] = [
   ['POST', '/api/inbox/1/answer'],
   ['GET', '/api/projects'],
   ['POST', '/api/projects'],
+  ['GET', '/api/new-run/repos'],
+  ['POST', '/api/new-run/prepare'],
   ['POST', '/api/plans/validate'],
   ['POST', '/api/runs'],
   ['POST', `/api/runs/${RUN_A}/cancel`],

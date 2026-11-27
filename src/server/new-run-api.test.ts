@@ -164,7 +164,7 @@ describe('GET /api/new-run/repos', () => {
       localPath: '/p/p1',
       defaultBase: 'main',
     });
-    const p2 = store.runs.upsertProject({
+    store.runs.upsertProject({
       owner: 'me',
       repo: 'p2',
       localPath: '/p/p2',
@@ -183,8 +183,8 @@ describe('GET /api/new-run/repos', () => {
       baseSha: 's',
       headSha: null,
       prNumber: null,
-      planPath: null,
-      planHash: null,
+      planPath: '/r/plan.md',
+      planHash: 'h',
       implementer: null,
       rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
       ownerPid: null,
@@ -192,7 +192,6 @@ describe('GET /api/new-run/repos', () => {
       createdAt: '2099-01-01T00:00:00.000Z',
       updatedAt: '2099-01-01T00:00:00.000Z',
     });
-    void p2;
     const r = await list();
     expect(r.repos.map((x) => x.repo)).toEqual(['p1', 'p2', 'cloned', 'new', 'old']);
   });

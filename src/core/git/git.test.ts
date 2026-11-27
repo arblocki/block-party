@@ -215,4 +215,21 @@ describe('git service', () => {
     const push = calls.find((c) => c[0] === 'push');
     expect(push).toEqual(['push', '-u', 'origin', 'feat/y:refs/heads/feat/y']);
   });
+
+  it('clones with plain git clone, a timeout, and the error text on failure', async () => {
+    const calls: { args: string[]; cwd: string; timeoutMs?: number }[] = [];
+    let code = 0;
+    const runner: GitRunner = (args, opts) => {
+      calls.push({ args, ...opts });
+      return Promise.resolve({ stdout: '', stderr: 'fatal: nope', code });
+    };
+    await createGit(runner).clone('https://github.com/o/r.git', '/home/me/repos/r', 5000);
+    expect(calls[0]).toEqual({
+      args: ['clone', '--', 'https://github.com/o/r.git', '/home/me/repos/r'],
+      cwd: '/home/me/repos',
+      timeoutMs: 5000,
+    });
+    code = 128;
+    await expect(createGit(runner).clone('u', '/x/y')).rejects.toThrow(/fatal: nope/);
+  });
 });
