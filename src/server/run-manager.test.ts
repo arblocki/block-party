@@ -85,15 +85,11 @@ function fakePipeline(opts: { recordRow?: boolean } = {}) {
         if (opts.recordRow !== false) createRow();
         input.onStarted?.(RUN_ID);
       }, 5);
-      input.signal!.addEventListener('abort', () =>
-        resolve({
-          runId: RUN_ID,
-          runDir: '/runs/a',
-          stage: input.signal!.reason instanceof ShutdownError ? 'interrupted' : 'cancelled',
-          note: null,
-          prNumber: null,
-        }),
-      );
+      input.signal!.addEventListener('abort', () => {
+        const stage = input.signal!.reason instanceof ShutdownError ? 'interrupted' : 'cancelled';
+        if (store.runs.getRun(RUN_ID)) store.runs.updateRun(RUN_ID, { stage });
+        resolve({ runId: RUN_ID, runDir: '/runs/a', stage, note: null, prNumber: null });
+      });
     });
   };
   return { inputs, startPipeline };
@@ -158,7 +154,7 @@ describe('RunManager.start', () => {
     await expect(m.start({ projectId, baseRef: 'main', planText: PLAN })).rejects.toThrow(
       'no checks: section',
     );
-    expect(m.cancel(RUN_ID)).toBe(false);
+    expect(await m.cancel(RUN_ID)).toBe(false);
   });
 
   it('rejects, and stops the run, when its row was not recorded', async () => {
@@ -210,76 +206,127 @@ describe('RunManager.start', () => {
 });
 
 describe('RunManager.cancel', () => {
-  it('aborts the in-process run with a plain abort', async () => {
+  it('aborts the in-process run with a plain abort and reports it cancelled', async () => {
     const fake = fakePipeline();
     const m = manager({ startPipeline: fake.startPipeline });
     const id = await m.start({ projectId, baseRef: 'main', planText: PLAN });
     const signal = fake.inputs[0]!.signal!;
-    expect(m.cancel(id)).toBe(true);
+    expect(await m.cancel(id)).toBe(true);
     expect(signal.aborted).toBe(true);
     expect(signal.reason).not.toBeInstanceOf(ShutdownError);
-    expect(m.cancel(id)).toBe(false); // already cancelled
+    expect(store.runs.getRun(id)?.stage).toBe('cancelled');
+    // Already over: there is nothing left to cancel.
+    expect(await m.cancel(id)).toBe(false);
   });
 
-  it('returns false for a run it does not own', () => {
-    expect(manager().cancel('r20260102-bbbbbb')).toBe(false);
+  it('returns false for a run it does not own', async () => {
+    expect(await manager().cancel('r20260102-bbbbbb')).toBe(false);
+  });
+
+  it('returns false when the run finished instead of being cancelled', async () => {
+    const m = manager({
+      startPipeline: (input) =>
+        new Promise((resolve) => {
+          createRow();
+          input.onStarted?.(RUN_ID);
+          input.signal!.addEventListener('abort', () => {
+            // Too late: the run just completed.
+            store.runs.updateRun(RUN_ID, { stage: 'complete' });
+            resolve({
+              runId: RUN_ID,
+              runDir: '/runs/a',
+              stage: 'complete',
+              note: null,
+              prNumber: null,
+            });
+          });
+        }),
+    });
+    const id = await m.start({ projectId, baseRef: 'main', planText: PLAN });
+    expect(await m.cancel(id)).toBe(false);
   });
 
   it('forgets a run once its pipeline settles', async () => {
     const fake = fakePipeline();
     const m = manager({ startPipeline: fake.startPipeline });
     const id = await m.start({ projectId, baseRef: 'main', planText: PLAN });
-    m.cancel(id);
+    await m.cancel(id);
     await new Promise((r) => setTimeout(r, 0));
-    expect(m.cancel(id)).toBe(false);
+    store.runs.updateRun(id, { stage: 'complete' });
+    expect(await m.cancel(id)).toBe(false);
   });
 });
 
-describe('RunManager.cancel of a resting run', () => {
-  it('cancels through a held continuation, for either resting stage', async () => {
+describe('RunManager.cancel of a resting or stopped run', () => {
+  /** A continuation that carries out `cancel` by moving the run to cancelled. */
+  const cancelling = (entries: ContinueEntry[]) => async (_id: string, entry: ContinueEntry) => {
+    entries.push(entry);
+    store.runs.updateRun(RUN_ID, { stage: 'cancelled' });
+    return {} as RunOutcome;
+  };
+
+  it('cancels through a held continuation, for resting and stopped stages', async () => {
     createRow();
-    for (const stage of ['awaiting_plan_approval', 'awaiting_review'] as const) {
+    for (const stage of [
+      'awaiting_plan_approval',
+      'awaiting_review',
+      'interrupted',
+      'blocked',
+    ] as const) {
       const entries: ContinueEntry[] = [];
       store.runs.updateRun(RUN_ID, { stage });
-      const m = manager({
-        continuePipeline: async (_id, entry) => {
-          entries.push(entry);
-          return {} as RunOutcome;
-        },
-      });
-      expect(m.cancel(RUN_ID)).toBe(true);
+      const m = manager({ continuePipeline: cancelling(entries) });
+      expect(await m.cancel(RUN_ID)).toBe(true);
       await m.shutdown();
       expect(entries).toEqual([{ kind: 'cancel' }]);
-      store.runs.updateRun(RUN_ID, { stage: 'cancelled' });
     }
   });
 
-  it('refuses while a continuation already holds the run', async () => {
+  it('waits for a continuation that is leaving rest, then cancels it', async () => {
     createRow();
     store.runs.updateRun(RUN_ID, { stage: 'awaiting_review' });
-    const entries: ContinueEntry[] = [];
-    let release!: () => void;
+    const calls: { entry: ContinueEntry; signal: AbortSignal }[] = [];
     const m = manager({
-      continuePipeline: (_id, entry) => {
-        entries.push(entry);
-        return new Promise<RunOutcome>((r) => (release = () => r({} as RunOutcome)));
+      continuePipeline: (_id, entry, signal) => {
+        calls.push({ entry, signal });
+        return new Promise<RunOutcome>((resolve) => {
+          signal.addEventListener('abort', () => {
+            store.runs.updateRun(RUN_ID, { stage: 'cancelled' });
+            resolve({} as RunOutcome);
+          });
+        });
       },
     });
     expect(m.continue(RUN_ID, { kind: 'feedback', text: 'x' })).toBe(true);
-    // The continuation holds the run and it still rests: cancel must not race it.
-    expect(m.cancel(RUN_ID)).toBe(false);
-    expect(entries).toEqual([{ kind: 'feedback', text: 'x' }]);
-    // Once it has left rest, a cancel aborts it like any driven run.
+    const cancelled = m.cancel(RUN_ID);
+    // The continuation holds the run and it still rests: the cancel does not race it.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(calls[0]!.signal.aborted).toBe(false);
+    // Once it has left rest, the cancel aborts it like any driven run.
     store.runs.updateRun(RUN_ID, { stage: 'fixing' });
-    expect(m.cancel(RUN_ID)).toBe(true);
-    release();
-    await m.shutdown();
+    expect(await cancelled).toBe(true);
+    expect(calls[0]!.signal.aborted).toBe(true);
+    expect(calls.map((c) => c.entry.kind)).toEqual(['feedback']);
   });
 
-  it('refuses a run that is not resting', () => {
+  it('returns false when the continuation it waited for completed the run', async () => {
     createRow();
-    store.runs.updateRun(RUN_ID, { stage: 'implementing' });
-    expect(manager().cancel(RUN_ID)).toBe(false);
+    store.runs.updateRun(RUN_ID, { stage: 'awaiting_review' });
+    const m = manager({
+      continuePipeline: async () => {
+        await new Promise((r) => setTimeout(r, 40));
+        store.runs.updateRun(RUN_ID, { stage: 'complete' });
+        return {} as RunOutcome;
+      },
+    });
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(true);
+    expect(await m.cancel(RUN_ID)).toBe(false);
+  });
+
+  it('refuses a run that is not resting or stopped', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'complete' });
+    expect(await manager().cancel(RUN_ID)).toBe(false);
   });
 });
 
@@ -402,7 +449,12 @@ describe('RunManager.continue', () => {
       calls.push({ runId, entry, signal });
       return new Promise<RunOutcome>((resolve) => {
         release = () => resolve(outcome);
-        signal.addEventListener('abort', () => resolve(outcome));
+        signal.addEventListener('abort', () => {
+          if (!(signal.reason instanceof ShutdownError)) {
+            store.runs.updateRun(RUN_ID, { stage: 'cancelled' });
+          }
+          resolve(outcome);
+        });
       });
     };
     return { calls, continuePipeline, release: () => release() };
@@ -456,7 +508,7 @@ describe('RunManager.continue', () => {
     const m = manager({ continuePipeline: fake.continuePipeline });
     m.continue(RUN_ID, { kind: 'approve' });
     store.runs.updateRun(RUN_ID, { stage: 'fixing' }); // the continuation left rest
-    expect(m.cancel(RUN_ID)).toBe(true);
+    expect(await m.cancel(RUN_ID)).toBe(true);
     expect(fake.calls[0]!.signal.aborted).toBe(true);
     await m.shutdown();
   });

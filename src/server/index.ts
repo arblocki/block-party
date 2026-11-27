@@ -7,7 +7,8 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
-import { reconcileRuns, reopenStrandedRests } from './reconcile.js';
+import { reconcileRuns, reopenStrandedRests, resumeOnRestart } from './reconcile.js';
+import { createHerdrHost } from '../core/terminal/index.js';
 import type { RunManager } from './run-manager.js';
 import { generateToken, parseAllowedHosts } from './security.js';
 
@@ -21,7 +22,7 @@ export interface RunningServer {
 const WEB_DIR = resolve(fileURLToPath(import.meta.url), '../../../dist/web');
 
 /** Starts the server on 127.0.0.1. Port 0 picks a random free port. */
-export function startServer(opts: {
+export async function startServer(opts: {
   repo?: RepoRef;
   initialPr?: number;
   port?: number;
@@ -30,8 +31,9 @@ export function startServer(opts: {
   analysis?: AnalysisDeps;
   runManager?: RunManager;
 }): Promise<RunningServer> {
-  // Runs whose driving process died while the server was down are marked interrupted.
-  const reconciled = reconcileRuns({ runs: opts.store.runs });
+  // Runs whose driving process died while the server was down are marked interrupted, after
+  // looking at what is left of them (hook events, agent terminal, report).
+  const reconciled = await reconcileRuns({ runs: opts.store.runs, terminal: createHerdrHost() });
   if (reconciled.length > 0) {
     console.log(`Marked ${reconciled.length} run(s) interrupted: ${reconciled.join(', ')}`);
   }
@@ -59,7 +61,7 @@ export function startServer(opts: {
     webDir: WEB_DIR,
   });
 
-  return new Promise((resolvePromise, reject) => {
+  const running = await new Promise<RunningServer>((resolvePromise, reject) => {
     const server = serve({ fetch: app.fetch, hostname: '127.0.0.1', port }, (info: AddressInfo) => {
       port = info.port;
       resolvePromise({
@@ -70,4 +72,10 @@ export function startServer(opts: {
     });
     server.once('error', reject);
   });
+  // Runs whose config asks for it are picked up again now that the server can run them.
+  if (opts.runManager) {
+    const resumed = resumeOnRestart(opts.store.runs, opts.runManager, reconciled);
+    if (resumed.length > 0) console.log(`Resumed ${resumed.length} run(s): ${resumed.join(', ')}`);
+  }
+  return running;
 }

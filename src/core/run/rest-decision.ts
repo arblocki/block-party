@@ -18,7 +18,7 @@ export const RESUME_CONFLICT_TITLE = 'Check before resuming';
 
 export const RESUME_CONFLICT_OPTIONS: DecisionOption[] = [
   { id: 'keep', label: 'Keep the changes and continue' },
-  { id: 'cancel', label: 'Cancel' },
+  { id: 'cancel', label: 'Cancel the run' },
 ];
 
 export const PLAN_APPROVAL_TITLE = 'Plan ready for your approval';

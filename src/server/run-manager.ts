@@ -68,11 +68,13 @@ export interface RunManager {
    */
   resume(runId: string, opts?: { keep?: boolean }): 'started' | 'busy' | 'not_resumable';
   /**
-   * Cancels a run this process drives, or a run resting for a person (moved to `cancelled`
-   * and its question closed). False when a continuation already holds the run, it is already
-   * cancelled, or it is neither driven here nor resting.
+   * Cancels a run: one that this process drives (aborted at any stage; a continuation that is
+   * still leaving rest is cancelled once it owns the run), one resting for a person, or one
+   * that stopped (`interrupted`, `blocked`). Resolves with the real outcome: true when the run
+   * is (or, past the wait, is being) cancelled, false when it ended some other way, was
+   * already over, or is not a run this can cancel. Worktree, branch and run directory stay.
    */
-  cancel(runId: string): boolean;
+  cancel(runId: string): Promise<boolean>;
   /** Interrupts every run this process drives and waits (bounded) for them to settle. */
   shutdown(timeoutMs?: number): Promise<void>;
 }
@@ -91,6 +93,8 @@ export interface RunManagerOptions {
   plansDir?: string;
   /** How long `start` waits for the run row (default 30 s). */
   startTimeoutMs?: number;
+  /** How long `cancel` waits for the run to settle before answering (default 30 s). */
+  cancelWaitMs?: number;
   /** Errors a run throws after it started (default: printed to stderr). */
   onError?: (runId: string, err: unknown) => void;
 }
@@ -102,6 +106,7 @@ interface Entry {
 
 const MAX_DESCRIPTION = 20_000;
 const DEFAULT_SHUTDOWN_MS = 10_000;
+const DEFAULT_CANCEL_WAIT_MS = 30_000;
 
 export function createRunManager(opts: RunManagerOptions): RunManager {
   const { runs } = opts;
@@ -160,16 +165,16 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     runId: string,
     entry: ContinueEntry,
     startsFrom: (stage: RunStage) => boolean = isResting,
-  ): boolean => {
-    if (stopping || byId.has(runId)) return false;
+  ): Entry | undefined => {
+    if (stopping || byId.has(runId)) return undefined;
     // Checked again here: the caller's view of the run may be stale.
     let stage: string | undefined;
     try {
       stage = runs.getRun(runId)?.stage;
     } catch {
-      return false;
+      return undefined;
     }
-    if (stage === undefined || !startsFrom(stage as RunStage)) return false;
+    if (stage === undefined || !startsFrom(stage as RunStage)) return undefined;
     const ac = new AbortController();
     const entryRec: Entry = { ac, done: Promise.resolve() };
     live.add(entryRec);
@@ -187,7 +192,42 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         if (byId.get(runId) === entryRec) byId.delete(runId);
       }
     })();
-    return true;
+    return entryRec;
+  };
+
+  const stageNow = (id: string): string | undefined => {
+    try {
+      return runs.getRun(id)?.stage;
+    } catch {
+      return undefined;
+    }
+  };
+  const settleWait = (e: Entry, ms: number) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return Promise.race([
+      e.done.then(() => 'done' as const),
+      new Promise<'timeout'>((r) => (timer = setTimeout(() => r('timeout'), ms))),
+    ]).finally(() => clearTimeout(timer));
+  };
+  const cancelWaitMs = opts.cancelWaitMs ?? DEFAULT_CANCEL_WAIT_MS;
+  const resultOf = async (id: string, e: Entry): Promise<boolean> => {
+    // The cancel may take a while (a push in progress finishes first): answer once the run has
+    // settled; past the wait, an abort that was delivered counts as a cancel in progress.
+    if ((await settleWait(e, cancelWaitMs)) === 'timeout') return true;
+    return stageNow(id) === 'cancelled';
+  };
+
+  /**
+   * Not driven here: a resting or stopped run is cancelled by a continuation that holds it,
+   * so it cannot race another one starting.
+   */
+  const cancelIdle = async (runId: string): Promise<boolean> => {
+    const started = continueEntry(
+      runId,
+      { kind: 'cancel' },
+      (stage) => isResting(stage) || canResume(stage),
+    );
+    return started ? resultOf(runId, started) : false;
   };
 
   return {
@@ -282,7 +322,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       });
     },
 
-    continue: (runId, entry) => continueEntry(runId, entry),
+    continue: (runId, entry) => continueEntry(runId, entry) !== undefined,
 
     resume(runId, opts = {}) {
       if (stopping || byId.has(runId)) return 'busy';
@@ -294,19 +334,31 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       return started ? 'started' : 'not_resumable';
     },
 
-    cancel(runId) {
+    async cancel(runId) {
       const entry = byId.get(runId);
       if (entry) {
-        if (entry.ac.signal.aborted) return false;
-        // A continuation that has not left rest yet is starting: cancelling would race it.
-        // Once it moves the run out of rest, a cancel aborts it like any driven run.
-        if (stageOf(runId) === 'resting') return false;
-        entry.ac.abort();
-        return true;
+        // A continuation that has not left rest yet is starting: it is cancelled once it owns
+        // the run (out of rest), or this settles with whatever it ended as (an approval that
+        // completed the run is not a cancel).
+        const deadline = Date.now() + cancelWaitMs;
+        let finished = false;
+        entry.done.then(
+          () => (finished = true),
+          () => (finished = true),
+        );
+        while (!finished && stageOf(runId) === 'resting' && Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        if (!finished && stageOf(runId) === 'resting') return true;
+        if (finished) {
+          // It ended (or came to rest, or stopped): cancel what is left, if anything is.
+          if (stageNow(runId) === 'cancelled') return true;
+          return cancelIdle(runId);
+        }
+        if (!entry.ac.signal.aborted) entry.ac.abort();
+        return resultOf(runId, entry);
       }
-      // Not driven here: a resting run is cancelled by a continuation that holds it, so it
-      // cannot race another one starting.
-      return continueEntry(runId, { kind: 'cancel' });
+      return cancelIdle(runId);
     },
 
     async shutdown(timeoutMs = DEFAULT_SHUTDOWN_MS) {

@@ -84,7 +84,7 @@ function fakeManager(opts: { fail?: Error } = {}) {
       resumed.add(runId);
       return 'started';
     },
-    cancel(id) {
+    async cancel(id) {
       cancels.push(id);
       return id === RUN_A;
     },

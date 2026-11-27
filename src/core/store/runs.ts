@@ -253,6 +253,18 @@ export interface RunStore {
   listEvents(runId: string, opts?: { afterId?: number; limit?: number }): RunEventRow[];
   /** Highest event id over all runs; 0 when there are none. */
   latestEventId(): number;
+  /** Bytes of the run's hook events file already copied into `run_events` (0 if none). */
+  getHookOffset(runId: string): number;
+  /**
+   * Appends `events` and moves the run's hook offset to `nextOffset` in one transaction, so a
+   * crash replays a batch whole or not at all. Does nothing when `nextOffset` is not past the
+   * stored offset.
+   */
+  replayHookEvents(
+    runId: string,
+    events: { ts: string; type: string; payload?: unknown }[],
+    nextOffset: number,
+  ): number;
 
   openDecision(input: {
     runId: string;
@@ -637,6 +649,12 @@ export function createRunStore(db: Database.Database): RunStore {
   const eventsByRun = db.prepare<[string, number, number], EventDb>(
     'SELECT * FROM run_events WHERE run_id = ? AND id > ? ORDER BY id LIMIT ?',
   );
+  const hookOffset = db.prepare<[string], { byte_offset: number }>(
+    'SELECT byte_offset FROM run_hook_offsets WHERE run_id = ?',
+  );
+  const setHookOffset = db.prepare(`
+    INSERT INTO run_hook_offsets (run_id, byte_offset) VALUES (?, ?)
+    ON CONFLICT (run_id) DO UPDATE SET byte_offset = excluded.byte_offset`);
   const maxEventId = db.prepare<[], { id: number | null }>('SELECT max(id) AS id FROM run_events');
 
   const deleteRoundFindings = db.prepare(
@@ -798,6 +816,19 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     latestEventId() {
       return maxEventId.get()?.id ?? 0;
+    },
+    getHookOffset(runId) {
+      return hookOffset.get(runId)?.byte_offset ?? 0;
+    },
+    replayHookEvents(runId, events, nextOffset) {
+      return db
+        .transaction((): number => {
+          if (nextOffset <= (hookOffset.get(runId)?.byte_offset ?? 0)) return 0;
+          for (const e of events) insertEvent.run(runId, null, e.ts, e.type, toJson(e.payload));
+          setHookOffset.run(runId, nextOffset);
+          return events.length;
+        })
+        .immediate();
     },
 
     openDecision({ runId, kind, title, body, attach, options }) {

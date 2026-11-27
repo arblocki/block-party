@@ -241,4 +241,12 @@ export const MIGRATIONS: readonly string[] = [
     UNIQUE (run_id, version)
   );
   `,
+  `
+  -- How far into a run's hook events file (events.jsonl) the server has copied events into
+  -- run_events, so a restart replays only the lines it has not seen.
+  CREATE TABLE run_hook_offsets (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    byte_offset INTEGER NOT NULL
+  );
+  `,
 ];

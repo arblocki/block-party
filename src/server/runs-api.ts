@@ -626,13 +626,13 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
    * one place both `POST /api/inbox/:id/answer` and `POST /api/runs/:id/send-back` go through,
    * so a double submit starts at most one continuation.
    */
-  const answerAndContinue = (
+  const answerAndContinue = async (
     c: Context,
     id: number,
     choice: string,
     note: string | null,
     findingKeys: string[] = [],
-  ): Response => {
+  ): Promise<Response> => {
     const existing = runs.getDecision(id);
     if (!existing) return c.json({ error: 'decision not found' }, 404);
     const isFinalReview = existing.kind === 'final_review';
@@ -642,7 +642,9 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const isResume =
       (choice === 'resume' && ['interrupted', 'blocked', 'cap_reached'].includes(existing.kind)) ||
       (choice === 'keep' && existing.kind === 'resume_conflict');
-    if (isResume && !deps.manager)
+    // Cancelling from the worktree question ends the stopped run (its files stay).
+    const isCancelStopped = choice === 'cancel' && existing.kind === 'resume_conflict';
+    if ((isResume || isCancelStopped) && !deps.manager)
       return c.json({ error: 'this server cannot continue runs' }, 503);
     if (isFinalReview || isPlanApproval) {
       // Checked before answering: an answer that cannot start its continuation would strand the run.
@@ -682,6 +684,13 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         choice === 'approve' ? { kind: 'plan_approve' } : { kind: 'plan_revise', note: note! },
       );
     }
+    if (isCancelStopped) {
+      const cancelled = await deps.manager!.cancel(existing.runId);
+      if (!cancelled) {
+        return c.json({ error: 'The run could not be cancelled: it is no longer stopped.' }, 409);
+      }
+      continued = true;
+    }
     if (isResume) {
       const started = deps.manager!.resume(
         existing.runId,
@@ -708,7 +717,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (!runs.getDecision(id)) return c.json({ error: 'decision not found' }, 404);
     const body = await parseBody(c, answerSchema);
     if ('error' in body) return c.json({ error: body.error }, 400);
-    return answerAndContinue(c, id, body.data.choice, body.data.note?.trim() || null);
+    return await answerAndContinue(c, id, body.data.choice, body.data.note?.trim() || null);
   });
 
   app.get('/api/pr-run', (c) => {
@@ -859,10 +868,10 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     return c.json({ resumed: true }, 202);
   });
 
-  app.post('/api/runs/:id/cancel', (c) => {
+  app.post('/api/runs/:id/cancel', async (c) => {
     const id = c.req.param('id');
     if (!isRunId(id)) return badRequest(c, 'invalid run id');
-    return c.json({ cancelled: deps.manager?.cancel(id) ?? false });
+    return c.json({ cancelled: (await deps.manager?.cancel(id)) ?? false });
   });
 }
 

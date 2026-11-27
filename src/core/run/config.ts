@@ -34,6 +34,8 @@ export const RunConfigSchema = z.object({
       maxFixLinesPerFinding: z.number().int().positive().default(200),
       /** A fix turn that touches more files than this outside the fix set's paths is broad. */
       broadFixFiles: z.number().int().min(0).default(10),
+      /** When the server starts, resume runs whose driving process died (default: ask first). */
+      resumeOnRestart: z.boolean().default(false),
       stageTimeoutMs: z
         .number()
         .int()

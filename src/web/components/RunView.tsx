@@ -377,7 +377,7 @@ export function RunView({ id }: { id: string }) {
         setCancelling(false);
         if (!r.cancelled) {
           setCancelNote(
-            'This run is not running in this server and is not waiting for you, so it cannot be cancelled here.',
+            'This run has already finished or ended another way, so it could not be cancelled.',
           );
         }
         refetchRef.current();
@@ -443,8 +443,14 @@ export function RunView({ id }: { id: string }) {
               {resuming ? 'Resuming…' : 'Resume'}
             </button>
           )}
-          {!isTerminal(run.stage) && (
-            <button type="button" className={linkButton} disabled={cancelling} onClick={cancel}>
+          {(!isTerminal(run.stage) || canResume(run.stage)) && (
+            <button
+              type="button"
+              className={linkButton}
+              disabled={cancelling}
+              onClick={cancel}
+              title="Stops the run for good. Your files and branch are kept."
+            >
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>
           )}
