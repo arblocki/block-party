@@ -722,6 +722,12 @@ export function createRunStore(db: Database.Database): RunStore {
        queued_entry = NULL, queued_at = NULL, updated_at = @updatedAt
      WHERE id = @id AND stage = 'queued'`,
   );
+  const setUnreadableQueued = db.prepare(
+    `UPDATE runs SET stage = 'failed', stage_note = 'Its queued request could not be read',
+       owner_pid = NULL, owner_host = NULL, queued_entry = NULL, queued_at = NULL,
+       updated_at = @updatedAt
+     WHERE id = @id AND stage = 'queued'`,
+  );
   const setRequeuedStart = db.prepare(
     `UPDATE runs SET stage = 'queued', stage_note = @note, owner_pid = NULL, owner_host = NULL,
        updated_at = @updatedAt
@@ -832,8 +838,15 @@ export function createRunStore(db: Database.Database): RunStore {
   const QUEUED_NOTE = 'Waiting for a free slot';
   /** A queued row's stored entry: `{ from, fromNote, entry }` for a continuation, `{ entry }` for a start. */
   type StoredEntry = { from?: RunStage; fromNote?: string | null; entry: unknown };
-  const toQueued = (r: RunDb): QueuedRun => {
-    const stored = JSON.parse(r.queued_entry as string) as StoredEntry;
+  const parseStored = (r: RunDb): StoredEntry | undefined => {
+    try {
+      return JSON.parse(r.queued_entry as string) as StoredEntry;
+    } catch {
+      return undefined;
+    }
+  };
+  const toQueued = (r: RunDb, parsed?: StoredEntry): QueuedRun => {
+    const stored = parsed ?? (JSON.parse(r.queued_entry as string) as StoredEntry);
     return {
       runId: r.id,
       projectId: r.project_id,
@@ -921,16 +934,27 @@ export function createRunStore(db: Database.Database): RunStore {
         .immediate();
     },
     listQueued() {
-      return queuedRows.all().map(toQueued);
+      // A row whose stored request cannot be read is not queued work (claimQueued fails it).
+      return queuedRows.all().flatMap((r) => {
+        const stored = parseStored(r);
+        return stored ? [toQueued(r, stored)] : [];
+      });
     },
     claimQueued({ fits, owner }) {
       return db
         .transaction((): ClaimedRun | undefined => {
           for (const row of queuedRows.all()) {
             if (!fits(row.project_id)) continue;
-            const queued = toQueued(row);
-            const stored = JSON.parse(row.queued_entry as string) as StoredEntry;
+            const stored = parseStored(row);
             const updatedAt = stamp(row.updated_at);
+            if (!stored) {
+              // One unreadable row must not stop the queue: fail that run and move on.
+              assertTransition('queued', 'failed');
+              setUnreadableQueued.run({ id: row.id, updatedAt });
+              continue;
+            }
+            const queued = toQueued(row, stored);
+            if (queued.from !== null) assertTransition('queued', queued.from);
             const changed =
               queued.from === null
                 ? (assertTransition('queued', 'setup'),
@@ -954,6 +978,7 @@ export function createRunStore(db: Database.Database): RunStore {
     requeueStart(runId) {
       const current = runById.get(runId);
       if (!current) return false;
+      assertTransition('setup', 'queued', { requeue: true });
       return (
         setRequeuedStart.run({
           id: runId,
@@ -967,13 +992,15 @@ export function createRunStore(db: Database.Database): RunStore {
         .transaction((): 'cancelled' | 'restored' | undefined => {
           const row = runById.get(runId);
           if (!row || row.stage !== 'queued' || row.queued_entry === null) return undefined;
-          const queued = toQueued(row);
-          const stored = JSON.parse(row.queued_entry) as StoredEntry;
+          const stored = parseStored(row);
           const updatedAt = stamp(row.updated_at);
-          if (queued.from === null) {
+          if (!stored || stored.from === undefined) {
+            assertTransition('queued', 'cancelled');
             setCancelledQueued.run({ id: runId, updatedAt });
             return 'cancelled';
           }
+          const queued = toQueued(row, stored);
+          assertTransition('queued', queued.from as RunStage);
           setClaimedContinue.run({
             id: runId,
             from: queued.from,

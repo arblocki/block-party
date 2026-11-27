@@ -56,18 +56,17 @@ const FROM_RESTING: Record<RestingStage, readonly RunStage[]> = {
   // `queued` is the move of an answer that found no free slot.
   awaiting_plan_approval: ['planning', 'implementing', 'cancelled', 'queued'],
   awaiting_review: ['fixing', 'complete', 'cancelled', 'queued'],
-  // Starts, or continues, once a slot is free. A start begins in `setup`; a continuation goes
-  // where its entry leads (the stage it queued from is restored first, and it moves on from there).
+  // Leaves the queue four ways: a start is claimed into `setup`; a continuation goes back to
+  // the resting or stopped stage it queued from (it moves on from there like any answer); a
+  // cancel; or a row whose stored request cannot be read fails.
   queued: [
     'setup',
-    'planning',
-    'implementing',
-    'fixing',
-    'checking',
-    'reviewing',
-    'publishing',
-    'waiting_ci',
+    'awaiting_plan_approval',
+    'awaiting_review',
+    'interrupted',
+    'blocked',
     'cancelled',
+    'failed',
   ],
 };
 
@@ -112,6 +111,8 @@ export interface TransitionOptions {
   resume?: boolean;
   /** The move is a cancel of a stopped run (`interrupted` or `blocked` to `cancelled`). */
   cancel?: boolean;
+  /** The move puts a start that was claimed (`setup`) back in the queue: its slot went away. */
+  requeue?: boolean;
 }
 
 export function canTransition(from: RunStage, to: RunStage, opts: TransitionOptions = {}): boolean {
@@ -123,6 +124,8 @@ export function canTransition(from: RunStage, to: RunStage, opts: TransitionOpti
   }
   // A resume or a cancel of a stopped run only leaves a stopped run.
   if (opts.resume || opts.cancel) return false;
+  // `setup` goes back to `queued` only as a requeue.
+  if (opts.requeue === true) return from === 'setup' && to === 'queued';
   // Nothing owns a resting run, so it only leaves (no self-moves).
   if (isResting(from)) return FROM_RESTING[from].includes(to);
   // Self-moves update the stage note.

@@ -20,18 +20,16 @@ const FORWARD: [RunStage, RunStage][] = [
   ['awaiting_plan_approval', 'planning'],
   ['awaiting_plan_approval', 'implementing'],
   ['awaiting_plan_approval', 'cancelled'],
-  // A queued run leaves for any stage work starts in, or is cancelled; an answer with no free
-  // slot moves a resting run into the queue.
+  // A queued start is claimed into setup, a queued continuation goes back to the resting or
+  // stopped stage it came from, or the run is cancelled or (unreadable request) failed.
   ['awaiting_plan_approval', 'queued'],
   ['awaiting_review', 'queued'],
   ['queued', 'setup'],
-  ['queued', 'planning'],
-  ['queued', 'implementing'],
-  ['queued', 'fixing'],
-  ['queued', 'checking'],
-  ['queued', 'reviewing'],
-  ['queued', 'publishing'],
-  ['queued', 'waiting_ci'],
+  ['queued', 'awaiting_plan_approval'],
+  ['queued', 'awaiting_review'],
+  ['queued', 'interrupted'],
+  ['queued', 'blocked'],
+  ['queued', 'failed'],
   ['queued', 'cancelled'],
   ['implementing', 'checking'],
   ['checking', 'reviewing'],
@@ -157,7 +155,17 @@ describe('run stage machine', () => {
   describe('queued', () => {
     it('is a resting stage nobody owns, and it cannot be re-queued or finished directly', () => {
       expect(isResting('queued')).toBe(true);
-      for (const to of ['queued', 'complete', 'awaiting_review', 'blocked', 'failed'] as const) {
+      for (const to of [
+        'queued',
+        'complete',
+        'planning',
+        'implementing',
+        'fixing',
+        'checking',
+        'reviewing',
+        'publishing',
+        'waiting_ci',
+      ] as const) {
         expect(canTransition('queued', to), `queued -> ${to}`).toBe(false);
       }
     });
@@ -168,6 +176,13 @@ describe('run stage machine', () => {
       expect(canTransition('interrupted', 'queued')).toBe(false);
       expect(canTransition('interrupted', 'queued', { resume: true })).toBe(true);
       expect(canTransition('failed', 'queued', { resume: true })).toBe(false);
+    });
+
+    it('takes a claimed start back from setup only as a requeue', () => {
+      expect(canTransition('setup', 'queued')).toBe(false);
+      expect(canTransition('setup', 'queued', { requeue: true })).toBe(true);
+      expect(canTransition('planning', 'queued', { requeue: true })).toBe(false);
+      expect(canTransition('setup', 'planning', { requeue: true })).toBe(false);
     });
   });
 

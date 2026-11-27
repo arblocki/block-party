@@ -88,6 +88,34 @@ describe('run store', () => {
       expect(runs.listQueued()).toEqual([]);
     });
 
+    it('fails a queued run whose stored request is unreadable and claims the next one', () => {
+      const db = openDatabase(':memory:');
+      const r = createRunStore(db);
+      const p = r.upsertProject({
+        owner: 'o',
+        repo: 'r',
+        localPath: '/src/r',
+        defaultBase: 'main',
+      }).id;
+      r.createQueuedRun(queuedInput('bad', p, '2026-01-01T00:00:00.000Z'), { id: 'bad' });
+      r.createQueuedRun(queuedInput('good', p, '2026-01-01T00:00:01.000Z'), { id: 'good' });
+      db.prepare("UPDATE runs SET queued_entry = '{not json' WHERE id = 'bad'").run();
+      expect(r.listQueued().map((q) => q.runId)).toEqual(['good']);
+      expect(r.claimQueued({ fits: any, owner })?.runId).toBe('good');
+      expect(r.getRun('bad')).toMatchObject({
+        stage: 'failed',
+        stageNote: 'Its queued request could not be read',
+      });
+      db.close();
+    });
+
+    it('requeues a claimed start only from setup', () => {
+      start('q1');
+      expect(runs.claimQueued({ fits: any, owner })?.runId).toBe('q1');
+      expect(runs.requeueStart('q1')).toBe(true);
+      expect(runs.getRun('q1')?.stage).toBe('queued');
+    });
+
     it('skips a run that does not fit, without losing its place', () => {
       const other = runs.upsertProject({
         owner: 'o',
