@@ -119,13 +119,20 @@ describe('stageNoteLabel', () => {
       ...r('queued', 'Waiting for a free slot', null),
       queue,
     });
-    expect(stageNoteLabel(queued({ position: 2, inUse: 2, max: 3 }))).toBe(
+    expect(stageNoteLabel(queued({ position: 2, inUse: 2, max: 3, perProjectMax: null }))).toBe(
       'Waiting for a free slot (2 of 3 in use)',
     );
-    expect(stageNoteLabel(queued({ position: 1, inUse: null, max: null }))).toBe(
-      'Waiting for a free slot',
-    );
+    expect(
+      stageNoteLabel(queued({ position: 1, inUse: null, max: null, perProjectMax: null })),
+    ).toBe('Waiting for a free slot');
     expect(stageNoteLabel(queued(null))).toBe('Waiting for a free slot');
+    // Held back by its own repository while the machine has room: no contradictory count.
+    expect(stageNoteLabel(queued({ position: 1, inUse: 1, max: 3, perProjectMax: 2 }))).toBe(
+      'Only 2 runs of the same repository go at once.',
+    );
+    expect(stageNoteLabel(queued({ position: 1, inUse: 1, max: 3, perProjectMax: 1 }))).toBe(
+      'Only 1 run of the same repository goes at once.',
+    );
   });
   it('leaves other notes alone', () => {
     expect(stageNoteLabel(r('implementing', 'Plan version 3 ready', 3))).toBe(

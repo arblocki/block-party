@@ -143,7 +143,7 @@ export interface PipelineDeps {
    * Runs `fn` while holding the project's lock: used for git commands that touch the project's
    * main clone (`fetch`, `worktree add`), which must not run at the same time.
    */
-  lockProject?: <T>(fn: () => Promise<T>) => Promise<T>;
+  lockProject?: <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
   git: Pick<
     Git,
     | 'repoRoot'
@@ -488,7 +488,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   }
   const checks = loaded.config;
   const lock = deps.lockProject ?? (<T>(fn: () => Promise<T>) => fn());
-  const base = await lock(() => git.fetchBase(repoPath, input.baseRef));
+  const base = await lock(() => git.fetchBase(repoPath, input.baseRef), input.signal);
   // Stopped while preparing: no run is created (the error goes to the caller).
   throwIfAborted(input.signal);
 
@@ -589,13 +589,15 @@ async function provision(ctx: Ctx): Promise<void> {
   // Aborted as the run was created: end it before any side effect (no worktree).
   throwIfAborted(input.signal);
   const lock = deps.lockProject ?? (<T>(fn: () => Promise<T>) => fn());
-  await lock(() =>
-    deps.git.createWorktree({
-      repo: st.repoPath,
-      path: st.worktreePath,
-      branch: st.branch,
-      baseSha: st.baseSha,
-    }),
+  await lock(
+    () =>
+      deps.git.createWorktree({
+        repo: st.repoPath,
+        path: st.worktreePath,
+        branch: st.branch,
+        baseSha: st.baseSha,
+      }),
+    input.signal,
   );
   if (checks.setup) {
     const logPath = join(runDir, 'logs', 'setup.log');

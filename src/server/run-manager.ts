@@ -71,13 +71,15 @@ export interface SlotStatus {
   inUse: number;
   maxRuns: number;
   maxRunsPerProject: number;
+  /** Slots in use by project id (only projects with a run being driven). */
+  perProject: Record<string, number>;
 }
 
 /** What the manager gives a pipeline so it can share the run slots and the project lock. */
 export interface PipelineHooks {
   slots: SlotHooks;
   /** Serializes git work on the project's main clone with other runs of the same project. */
-  lockProject: <T>(fn: () => Promise<T>) => Promise<T>;
+  lockProject: <T>(fn: () => Promise<T>, signal?: AbortSignal) => Promise<T>;
 }
 
 export interface RunManager {
@@ -160,6 +162,10 @@ interface Entry {
   projectId: string | undefined;
   /** Whether this entry takes up a run slot right now. */
   held: boolean;
+  /** The run this entry drives, once known (a start learns it in `onStarted`). */
+  runId?: string;
+  /** Told how long the entry waited for the project lock (a start's timeout excludes it). */
+  onLockWait?: (ms: number) => void;
 }
 
 /** What a queued start keeps: the pipeline's input without the parts that only live in memory. */
@@ -171,6 +177,8 @@ interface Waiter {
   entry: Entry;
   resolve: () => void;
 }
+
+const WAITING_NOTE = 'Waiting for a free slot';
 
 const MAX_DESCRIPTION = 20_000;
 const DEFAULT_SHUTDOWN_MS = 10_000;
@@ -252,6 +260,8 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   const pump = (): void => {
     if (stopping) return;
     // A run that already started and waits to carry on goes before one that has not begun.
+    // That can keep queued starts waiting while answered runs keep coming back, but each of
+    // those only comes back when a person answers a question, so a human bounds it.
     for (const w of [...waiters]) {
       if (!hasRoom(w.entry.projectId)) continue;
       waiters.splice(waiters.indexOf(w), 1);
@@ -289,10 +299,13 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
             entry.held = true;
             return resolve();
           }
+          // Said where people look: the run was answered, and now waits for a slot.
+          const restore = noteWaiting(entry);
           const waiter: Waiter = {
             entry,
             resolve: () => {
               signal?.removeEventListener('abort', onAbort);
+              restore();
               resolve();
             },
           };
@@ -306,8 +319,36 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         });
       },
     },
-    lockProject: (fn) => withProjectLock(entry.projectId ?? '', fn),
+    lockProject: (fn, signal) => {
+      const asked = Date.now();
+      return withProjectLock(entry.projectId ?? '', () => {
+        entry.onLockWait?.(Date.now() - asked);
+        // Stopped while it waited for its turn: do not touch the clone.
+        if (signal?.aborted) throw signal.reason;
+        return fn();
+      });
+    },
   });
+
+  /** Puts "Waiting for a free slot" on the run's note; the returned function puts the old one back. */
+  function noteWaiting(entry: Entry): () => void {
+    const id = entry.runId;
+    if (id === undefined) return () => undefined;
+    try {
+      const previous = runs.getRun(id)?.stageNote ?? null;
+      runs.updateRun(id, { stageNote: WAITING_NOTE });
+      return () => {
+        try {
+          if (runs.getRun(id)?.stageNote === WAITING_NOTE)
+            runs.updateRun(id, { stageNote: previous });
+        } catch {
+          // The note is informational.
+        }
+      };
+    } catch {
+      return () => undefined;
+    }
+  }
 
   function withProjectLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
     const previous = locks.get(key) ?? Promise.resolve();
@@ -351,18 +392,32 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     entry: ContinueEntry,
     projectId: string | undefined,
     takesSlot: boolean,
+    /** A continuation taken from the queue: its answer goes back if shutdown stops it at rest. */
+    fromQueue?: RunStage,
   ): Entry => {
     const ac = new AbortController();
-    const entryRec: Entry = { ac, done: Promise.resolve(), projectId, held: takesSlot };
+    const entryRec: Entry = { ac, done: Promise.resolve(), projectId, held: takesSlot, runId };
     live.add(entryRec);
     byId.set(runId, entryRec);
+    /** Shutdown came before the continuation moved the run: keep the answer for the next start. */
+    const requeue = (): boolean => {
+      if (fromQueue === undefined || !(ac.signal.reason instanceof ShutdownError)) return false;
+      try {
+        return stageNow(runId) === fromQueue && runs.queueRun(runId, fromQueue, entry);
+      } catch {
+        return false;
+      }
+    };
     entryRec.done = (async () => {
       try {
         await continuePipeline(runId, entry, ac.signal, hooksFor(entryRec));
+        requeue();
       } catch (err) {
         // The answer that started this could not be carried out: offer the review again
         // (a no-op when the pipeline already did, or the run is no longer resting).
-        reopenRestDecision(runs, runId, err instanceof Error ? err.message : String(err));
+        if (!requeue()) {
+          reopenRestDecision(runs, runId, err instanceof Error ? err.message : String(err));
+        }
         onError(runId, err);
       } finally {
         live.delete(entryRec);
@@ -469,12 +524,12 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   const launchClaimed = (claimed: ClaimedRun): void => {
     const { runId, projectId } = claimed;
     if (claimed.from !== null) {
-      launch(runId, claimed.entry as ContinueEntry, projectId, true);
+      launch(runId, claimed.entry as ContinueEntry, projectId, true, claimed.from);
       return;
     }
     const stored = claimed.entry as StoredStart;
     const ac = new AbortController();
-    const entry: Entry = { ac, done: Promise.resolve(), projectId, held: true };
+    const entry: Entry = { ac, done: Promise.resolve(), projectId, held: true, runId };
     live.add(entry);
     byId.set(runId, entry);
     let started = false;
@@ -539,11 +594,20 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
 
   return {
     limits,
-    status: () => ({
-      inUse: held(),
-      maxRuns: limits.maxRuns,
-      maxRunsPerProject: limits.maxRunsPerProject,
-    }),
+    status: () => {
+      const perProject: Record<string, number> = {};
+      for (const e of live) {
+        if (e.held && e.projectId !== undefined) {
+          perProject[e.projectId] = (perProject[e.projectId] ?? 0) + 1;
+        }
+      }
+      return {
+        inUse: held(),
+        maxRuns: limits.maxRuns,
+        maxRunsPerProject: limits.maxRunsPerProject,
+        perProject,
+      };
+    },
     withProjectLock,
     pump,
 
@@ -568,9 +632,43 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       const source: RunSource =
         planFile !== undefined ? { planFile } : { description: description! };
 
-      // Decided before the first await, so two starts cannot both take the last slot.
+      // Tracked from here, so a shutdown that starts meanwhile aborts this start and waits for
+      // its plan file. The plan is written before the slot check: a start that has to queue is
+      // then never overtaken by a later one while its file is being written (first in, first out).
+      const ac = new AbortController();
+      const planWritten =
+        planFile !== undefined ? writePlan(planFile, req.planText!) : Promise.resolve();
+      const entry: Entry = {
+        ac,
+        done: planWritten.then(
+          () => undefined,
+          () => undefined,
+        ),
+        projectId: project.id,
+        held: false,
+      };
+      live.add(entry);
+      try {
+        await planWritten;
+      } catch (err) {
+        live.delete(entry);
+        throw err;
+      }
+      const stoppedError = () =>
+        ac.signal.reason instanceof ShutdownError
+          ? new Error('The server is shutting down')
+          : new Error('The run was cancelled before it started');
+      if (ac.signal.aborted) {
+        live.delete(entry);
+        throw stoppedError();
+      }
+
+      // No `await` may come between this check and taking the slot (`entry.held = true` below,
+      // or the queue row): other starts, continuations and resumes run in the gaps between
+      // awaits, and each of them decides with this same check. An await here would let two of
+      // them both see the last free slot and go over the limit.
       if (!hasRoom(project.id)) {
-        if (planFile !== undefined) await writePlan(planFile, req.planText!);
+        live.delete(entry);
         if (stopping) throw new Error('The server is shutting down');
         const now = new Date();
         const id = newRunId(now);
@@ -610,7 +708,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         return id;
       }
 
-      const ac = new AbortController();
+      entry.held = true;
       let runId: string | undefined;
       return new Promise<string>((resolve, reject) => {
         let settled = false;
@@ -620,24 +718,22 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
           settled = true;
           fn();
         };
-        const timer = setTimeout(() => {
+        const onTimeout = (): void => {
           // Aborting also stops a preflight that has not created the run yet.
           ac.abort();
           settle(() => reject(new Error(`The run did not start within ${startTimeoutMs} ms`)));
-        }, startTimeoutMs);
-
-        // Tracked before the first await, so a shutdown that starts meanwhile aborts and
-        // waits for this start too, and so it holds its slot from the start.
-        const entry: Entry = { ac, done: Promise.resolve(), projectId: project.id, held: true };
-        live.add(entry);
-        const stoppedError = () =>
-          ac.signal.reason instanceof ShutdownError
-            ? new Error('The server is shutting down')
-            : new Error('The run was cancelled before it started');
+        };
+        let timer = setTimeout(onTimeout, startTimeoutMs);
+        // Time spent waiting for another run's git work on the project is not the run's own
+        // slowness: the timeout starts over for it.
+        entry.onLockWait = (ms) => {
+          if (settled || ms <= 0) return;
+          clearTimeout(timer);
+          timer = setTimeout(onTimeout, startTimeoutMs);
+        };
 
         entry.done = (async () => {
           try {
-            if (planFile !== undefined) await writePlan(planFile, req.planText!);
             if (ac.signal.aborted) throw stoppedError();
             const outcome = await startPipeline(
               {
@@ -649,6 +745,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
                 signal: ac.signal,
                 onStarted: (id) => {
                   runId = id;
+                  entry.runId = id;
                   byId.set(id, entry);
                   if (!rowExists(id)) {
                     // The pipeline keeps its files but the server could not show the run:

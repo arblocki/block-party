@@ -1127,6 +1127,203 @@ describe('RunManager limits and queue', () => {
     await m.shutdown();
   });
 
+  it('lets exactly one of a start and a resume take the last slot, in either order', async () => {
+    for (const startFirst of [true, false]) {
+      const fake = controlled();
+      const resumed: string[] = [];
+      const m = manager({
+        startPipeline: fake.startPipeline,
+        continuePipeline: (runId, entry, signal) => {
+          resumed.push(runId);
+          return new Promise((resolve) =>
+            signal.addEventListener('abort', () =>
+              resolve({ runId, runDir: '/r', stage: 'interrupted', note: null, prNumber: null }),
+            ),
+          );
+        },
+        limits: { maxRuns: 2, maxRunsPerProject: 5 },
+      });
+      await m.start(startReq()); // one run already going
+      const stopped = newId();
+      addRun(stopped, 'interrupted');
+      // Neither is awaited before the other decides: the same tick.
+      let starting: Promise<string>;
+      let result: ReturnType<typeof m.resume>;
+      if (startFirst) {
+        starting = m.start(startReq());
+        result = m.resume(stopped);
+      } else {
+        result = m.resume(stopped);
+        starting = m.start(startReq());
+      }
+      const id = await starting;
+      expect(result).toBe('started');
+      expect(m.status().inUse).toBe(2);
+      const startLaunched = stageOf(id) === 'setup';
+      const resumeLaunched = resumed.includes(stopped);
+      expect([startLaunched, resumeLaunched].filter(Boolean)).toHaveLength(1);
+      expect(stageOf(startLaunched ? stopped : id)).toBe('queued');
+      expect(queuedIds()).toContain(startLaunched ? stopped : id);
+      expect(queuedIds()).not.toContain(startLaunched ? id : stopped);
+      for (const x of fake.calls) x.gate.resolve();
+      await m.shutdown();
+    }
+  });
+
+  it('lets exactly one of two simultaneous starts take the last slot', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 2, maxRunsPerProject: 5 },
+    });
+    await m.start(startReq());
+    const [x, y] = await Promise.all([m.start(startReq()), m.start(startReq())]);
+    expect(fake.calls).toHaveLength(2);
+    expect(m.status().inUse).toBe(2);
+    expect([stageOf(x), stageOf(y)].sort()).toEqual(['queued', 'setup']);
+    // Same with a plan to write first: the check comes after the write, never before.
+    const [p, q] = await Promise.all([
+      m.start({ projectId, baseRef: 'main', planText: PLAN }),
+      m.start({ projectId, baseRef: 'main', planText: PLAN }),
+    ]);
+    expect(m.status().inUse).toBe(2);
+    expect(queuedIds()).toHaveLength(3);
+    expect(new Set([p, q, x, y]).size).toBe(4);
+    for (const c of fake.calls) c.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('says on the run that its answer waits for a slot, and puts the old note back', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    const a = await m.start(startReq());
+    const call = fake.calls[0]!;
+    store.runs.updateRun(a, { stageNote: '1 P2 finding to triage' });
+    call.hooks.slots.release();
+    const nextB = fake.nextStart();
+    await m.start(startReq());
+    await nextB;
+    const acquiring = call.hooks.slots.acquire(call.input.signal);
+    expect(store.runs.getRun(a)?.stageNote).toBe('Waiting for a free slot');
+    fake.calls[1]!.gate.resolve();
+    await acquiring;
+    expect(store.runs.getRun(a)?.stageNote).toBe('1 P2 finding to triage');
+    call.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('keeps a claimed answer queued when shutdown stops it before it moved the run', async () => {
+    const fake = controlled();
+    const seen: ContinueEntry[] = [];
+    const m1 = manager({
+      startPipeline: fake.startPipeline,
+      continuePipeline: (runId, entry, signal) => {
+        seen.push(entry);
+        // Stopped at rest: the run never moved, as when the signal is checked on entry.
+        return new Promise((resolve) =>
+          signal.addEventListener('abort', () =>
+            resolve({
+              runId,
+              runDir: '/r',
+              stage: 'awaiting_plan_approval',
+              note: null,
+              prNumber: null,
+            }),
+          ),
+        );
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    const id = newId();
+    addRun(id, 'awaiting_plan_approval');
+    await m1.start(startReq());
+    expect(m1.continue(id, { kind: 'plan_revise', note: 'shorter' })).toBe(true);
+    expect(stageOf(id)).toBe('queued');
+    fake.calls[0]!.gate.resolve();
+    await vi.waitFor(() => expect(seen).toHaveLength(1));
+    expect(stageOf(id)).toBe('awaiting_plan_approval');
+    await m1.shutdown();
+    // The answer was not lost: it is queued again with the same entry.
+    expect(stageOf(id)).toBe('queued');
+    expect(store.runs.listQueued().find((q) => q.runId === id)).toMatchObject({
+      from: 'awaiting_plan_approval',
+      entry: { kind: 'plan_revise', note: 'shorter' },
+    });
+    const again: ContinueEntry[] = [];
+    const m2 = manager({
+      continuePipeline: async (runId, entry) => {
+        again.push(entry);
+        return { runId, runDir: '/r', stage: 'awaiting_plan_approval', note: null, prNumber: null };
+      },
+    });
+    m2.pump();
+    await vi.waitFor(() => expect(again).toEqual([{ kind: 'plan_revise', note: 'shorter' }]));
+    await m2.shutdown();
+  });
+
+  it('skips git work for a run that was stopped while it waited for the project lock', async () => {
+    let ran = false;
+    let failure: unknown;
+    const gate = deferred();
+    const m = manager({
+      startPipeline: async (input, hooks) => {
+        const id = newId();
+        addRun(id, 'setup');
+        input.onStarted?.(id);
+        const holding = m.withProjectLock(projectId, () => gate.promise);
+        const ac = new AbortController();
+        const waiting = hooks
+          .lockProject(async () => {
+            ran = true;
+          }, ac.signal)
+          .catch((e: unknown) => (failure = e));
+        ac.abort(new Error('stopped'));
+        gate.resolve();
+        await holding;
+        await waiting;
+        return { runId: id, runDir: '/r', stage: 'cancelled', note: null, prNumber: null };
+      },
+    });
+    await m.start(startReq());
+    await m.shutdown();
+    expect(ran).toBe(false);
+    expect((failure as Error).message).toBe('stopped');
+  });
+
+  it('does not count time spent waiting for the project lock toward the start timeout', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    try {
+      const gate = deferred();
+      const m = manager({
+        startTimeoutMs: 1000,
+        startPipeline: async (input, hooks) => {
+          await hooks.lockProject(async () => undefined);
+          const id = newId();
+          addRun(id, 'setup');
+          input.onStarted?.(id);
+          return { runId: id, runDir: '/r', stage: 'complete', note: null, prNumber: null };
+        },
+      });
+      void m.withProjectLock(projectId, () => gate.promise);
+      let outcome: string | Error | undefined;
+      void m.start(startReq()).then(
+        (id) => (outcome = id),
+        (e: Error) => (outcome = e),
+      );
+      await vi.advanceTimersByTimeAsync(900);
+      expect(outcome).toBeUndefined();
+      gate.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(typeof outcome).toBe('string');
+      await m.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('shows queued runs their place: the run list reports the position', async () => {
     const fake = controlled();
     const m = manager({

@@ -84,6 +84,10 @@ export function planActions(
 
 /** Why a queued run is not running yet: "Waiting for a free slot (2 of 3 in use)". */
 export function queueLabel(queue: RunSummary['queue']): string {
+  if (queue?.perProjectMax != null) {
+    const n = queue.perProjectMax;
+    return `Only ${n} ${n === 1 ? 'run' : 'runs'} of the same repository ${n === 1 ? 'goes' : 'go'} at once.`;
+  }
   return queue && queue.inUse !== null && queue.max !== null
     ? `Waiting for a free slot (${queue.inUse} of ${queue.max} in use)`
     : 'Waiting for a free slot';

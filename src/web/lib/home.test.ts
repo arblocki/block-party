@@ -63,7 +63,7 @@ describe('orderRuns and queued runs', () => {
   it('lists queued runs after running ones and before runs waiting for you, by queue position', () => {
     const queued = (id: string, position: number, updatedAt: string): RunSummary => ({
       ...run(id, 'queued', updatedAt),
-      queue: { position, inUse: 3, max: 3 },
+      queue: { position, inUse: 3, max: 3, perProjectMax: null },
     });
     const out = orderRuns([
       run('done', 'complete', '2026-01-09T00:00:00Z'),

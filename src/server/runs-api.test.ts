@@ -68,7 +68,7 @@ function fakeManager(opts: { fail?: Error; cancelResult?: boolean | 'pending' } 
   const resumed = new Set<string>();
   const manager: RunManager = {
     limits: { maxRuns: 3, maxRunsPerProject: 2 },
-    status: () => ({ inUse: 1, maxRuns: 3, maxRunsPerProject: 2 }),
+    status: () => ({ inUse: 1, maxRuns: 3, maxRunsPerProject: 2, perProject: {} }),
     withProjectLock: (_key, fn) => fn(),
     pump() {},
     async start(req) {
@@ -329,13 +329,24 @@ describe('JSON endpoints', () => {
       }>;
     const list = await get('/api/runs');
     const byId = new Map(list.runs!.map((r) => [r.id, r.queue]));
-    expect(byId.get('r20260103-cccccc')).toEqual({ position: 1, inUse: 1, max: 3 });
-    expect(byId.get('r20260104-dddddd')).toEqual({ position: 2, inUse: 1, max: 3 });
+    expect(byId.get('r20260103-cccccc')).toEqual({
+      position: 1,
+      inUse: 1,
+      max: 3,
+      perProjectMax: null,
+    });
+    expect(byId.get('r20260104-dddddd')).toEqual({
+      position: 2,
+      inUse: 1,
+      max: 3,
+      perProjectMax: null,
+    });
     expect(byId.get(RUN_B)).toBeNull();
     expect((await get('/api/runs/r20260104-dddddd')).run?.queue).toEqual({
       position: 2,
       inUse: 1,
       max: 3,
+      perProjectMax: null,
     });
   });
 

@@ -146,7 +146,13 @@ export interface RunSummary {
   /** The latest stored plan version, or null. */
   planVersion: number | null;
   /** Where a run waiting for a free slot stands (1 is next); null for any other run. */
-  queue: { position: number; inUse: number | null; max: number | null } | null;
+  queue: {
+    position: number;
+    inUse: number | null;
+    max: number | null;
+    /** Set when the run waits because its repository is full, not the whole machine. */
+    perProjectMax: number | null;
+  } | null;
 }
 
 /** An inbox item (GET /api/inbox) with the run it belongs to. */

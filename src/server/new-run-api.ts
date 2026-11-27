@@ -22,8 +22,10 @@ export interface NewRunApiDeps {
   /** Clock for the clone-list cache (default `Date.now`). */
   now?: () => number;
   /**
-   * Runs git work on a repository's main clone one at a time (the run manager's project lock),
-   * so a clone here never overlaps a run's `fetch` or `worktree add` in the same project.
+   * Runs a clone one at a time per repository (the run manager's lock, keyed `repo:owner/name`),
+   * so two prepares of the same repository never clone it together. The key is not a project
+   * id: a clone creates a new directory, so it has no main clone to share with a run's `fetch`
+   * or `worktree add`.
    */
   lockProject?: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
 }

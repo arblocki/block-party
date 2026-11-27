@@ -58,7 +58,13 @@ export interface RunSummary {
   /** The latest stored plan version, or null when the run has none. */
   planVersion: number | null;
   /** Where a run waiting for a free slot stands; null for any other run. */
-  queue: { position: number; inUse: number | null; max: number | null } | null;
+  queue: {
+    position: number;
+    inUse: number | null;
+    max: number | null;
+    /** Set when the run waits because its repository is full, not the whole machine. */
+    perProjectMax: number | null;
+  } | null;
 }
 
 /** An inbox item with the run it belongs to. */
@@ -250,9 +256,18 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const status = deps.manager?.status();
     return (run) => {
       const at = run.stage === 'queued' ? position.get(run.id) : undefined;
-      return at === undefined
-        ? null
-        : { position: at, inUse: status?.inUse ?? null, max: status?.maxRuns ?? null };
+      if (at === undefined) return null;
+      // Held back by its own repository while the machine has room: the total would mislead.
+      const byProject =
+        status !== undefined &&
+        status.inUse < status.maxRuns &&
+        (status.perProject[run.projectId] ?? 0) >= status.maxRunsPerProject;
+      return {
+        position: at,
+        inUse: status?.inUse ?? null,
+        max: status?.maxRuns ?? null,
+        perProjectMax: byProject ? status.maxRunsPerProject : null,
+      };
     };
   };
 
