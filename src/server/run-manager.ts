@@ -5,7 +5,7 @@ import { dataDir } from '../core/paths.js';
 import { loadRunConfig, RunConfigSchema, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
 import { reopenRestDecision } from '../core/run/rest-decision.js';
-import { isResting } from '../core/run/machine.js';
+import { canResume, isResting, type RunStage } from '../core/run/machine.js';
 import {
   continueRun,
   runPipeline,
@@ -61,6 +61,12 @@ export interface RunManager {
    * this process already drives the run, or it is not resting; nothing is started then.
    */
   continue(runId: string, entry: ContinueEntry): boolean;
+  /**
+   * Resumes an `interrupted` or `blocked` run. One continuation per run: `busy` when this
+   * process already drives it (a double click starts one), `not_resumable` when it is in any
+   * other stage (or unknown). `keep` accepts the worktree as it is, after the owner was asked.
+   */
+  resume(runId: string, opts?: { keep?: boolean }): 'started' | 'busy' | 'not_resumable';
   /**
    * Cancels a run this process drives, or a run resting for a person (moved to `cancelled`
    * and its question closed). False when a continuation already holds the run, it is already
@@ -150,7 +156,11 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     }
   };
 
-  const continueEntry = (runId: string, entry: ContinueEntry): boolean => {
+  const continueEntry = (
+    runId: string,
+    entry: ContinueEntry,
+    startsFrom: (stage: RunStage) => boolean = isResting,
+  ): boolean => {
     if (stopping || byId.has(runId)) return false;
     // Checked again here: the caller's view of the run may be stale.
     let stage: string | undefined;
@@ -159,9 +169,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     } catch {
       return false;
     }
-    if (stage === undefined || !isResting(stage as Parameters<typeof isResting>[0])) {
-      return false;
-    }
+    if (stage === undefined || !startsFrom(stage as RunStage)) return false;
     const ac = new AbortController();
     const entryRec: Entry = { ac, done: Promise.resolve() };
     live.add(entryRec);
@@ -274,7 +282,17 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       });
     },
 
-    continue: continueEntry,
+    continue: (runId, entry) => continueEntry(runId, entry),
+
+    resume(runId, opts = {}) {
+      if (stopping || byId.has(runId)) return 'busy';
+      const started = continueEntry(
+        runId,
+        { kind: 'resume', ...(opts.keep ? { keep: true } : {}) },
+        canResume,
+      );
+      return started ? 'started' : 'not_resumable';
+    },
 
     cancel(runId) {
       const entry = byId.get(runId);

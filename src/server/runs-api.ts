@@ -610,6 +610,17 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     return c.json({ changed: runs.dismissDecision(id) });
   });
 
+  const resumeRefused = (c: Context, why: 'busy' | 'not_resumable'): Response =>
+    c.json(
+      {
+        error:
+          why === 'busy'
+            ? 'This run is already being resumed.'
+            : 'This run is not stopped, so it cannot be resumed.',
+      },
+      409,
+    );
+
   /**
    * Answers a decision and, for the kinds that continue a run, starts that continuation. The
    * one place both `POST /api/inbox/:id/answer` and `POST /api/runs/:id/send-back` go through,
@@ -626,6 +637,13 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (!existing) return c.json({ error: 'decision not found' }, 404);
     const isFinalReview = existing.kind === 'final_review';
     const isPlanApproval = existing.kind === 'plan_approval';
+    // A stopped run's question: answering `resume` (or `keep`, after the worktree question)
+    // resumes the run.
+    const isResume =
+      (choice === 'resume' && ['interrupted', 'blocked', 'cap_reached'].includes(existing.kind)) ||
+      (choice === 'keep' && existing.kind === 'resume_conflict');
+    if (isResume && !deps.manager)
+      return c.json({ error: 'this server cannot continue runs' }, 503);
     if (isFinalReview || isPlanApproval) {
       // Checked before answering: an answer that cannot start its continuation would strand the run.
       if (!deps.manager) return c.json({ error: 'this server cannot continue runs' }, 503);
@@ -654,6 +672,14 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         existing.runId,
         choice === 'approve' ? { kind: 'plan_approve' } : { kind: 'plan_revise', note: note! },
       );
+    }
+    if (isResume) {
+      const started = deps.manager!.resume(
+        existing.runId,
+        choice === 'keep' ? { keep: true } : undefined,
+      );
+      if (started !== 'started') return resumeRefused(c, started);
+      continued = true;
     }
     if (continued === false) {
       // The answer is recorded but nothing carries it out: ask the question again.
@@ -813,6 +839,15 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       if (e instanceof InvalidStartError) return badRequest(c, e.message);
       return c.json({ error: `could not start the run: ${errorMessage(e)}` }, 500);
     }
+  });
+
+  app.post('/api/runs/:id/resume', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    if (!deps.manager) return c.json({ error: 'this server cannot continue runs' }, 503);
+    const result = deps.manager.resume(run.id);
+    if (result !== 'started') return resumeRefused(c, result);
+    return c.json({ resumed: true }, 202);
   });
 
   app.post('/api/runs/:id/cancel', (c) => {

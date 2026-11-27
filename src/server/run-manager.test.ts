@@ -283,6 +283,70 @@ describe('RunManager.cancel of a resting run', () => {
   });
 });
 
+describe('RunManager.resume', () => {
+  it('starts one continuation for a stopped run, and a double resume is busy', async () => {
+    createRow();
+    for (const stage of ['interrupted', 'blocked'] as const) {
+      store.runs.updateRun(RUN_ID, { stage });
+      const entries: ContinueEntry[] = [];
+      let release!: () => void;
+      const m = manager({
+        continuePipeline: (_id, entry) => {
+          entries.push(entry);
+          return new Promise<RunOutcome>((r) => (release = () => r({} as RunOutcome)));
+        },
+      });
+      expect(m.resume(RUN_ID)).toBe('started');
+      expect(m.resume(RUN_ID)).toBe('busy');
+      expect(entries).toEqual([{ kind: 'resume' }]);
+      release();
+      await m.shutdown();
+      store.runs.updateRun(RUN_ID, { stage: 'implementing' });
+    }
+  });
+
+  it('passes keep through', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'interrupted' });
+    const entries: ContinueEntry[] = [];
+    const m = manager({
+      continuePipeline: async (_id, entry) => {
+        entries.push(entry);
+        return {} as RunOutcome;
+      },
+    });
+    expect(m.resume(RUN_ID, { keep: true })).toBe('started');
+    await m.shutdown();
+    expect(entries).toEqual([{ kind: 'resume', keep: true }]);
+  });
+
+  it.each(['complete', 'failed', 'cancelled', 'implementing', 'awaiting_review'] as const)(
+    'refuses a run in %s',
+    (stage) => {
+      createRow();
+      store.runs.updateRun(RUN_ID, { stage });
+      expect(manager().resume(RUN_ID)).toBe('not_resumable');
+    },
+  );
+
+  it('refuses an unknown run', () => {
+    expect(manager().resume('r20260102-bbbbbb')).toBe('not_resumable');
+  });
+
+  it('does not let a resume and a continue both hold a run', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'interrupted' });
+    let release!: () => void;
+    const m = manager({
+      continuePipeline: () => new Promise<RunOutcome>((r) => (release = () => r({} as RunOutcome))),
+    });
+    expect(m.resume(RUN_ID)).toBe('started');
+    expect(m.continue(RUN_ID, { kind: 'approve' })).toBe(false);
+    release();
+    await m.shutdown();
+  });
+});
+
 describe('RunManager.shutdown', () => {
   it('aborts every run with a ShutdownError and waits for them to settle', async () => {
     const fake = fakePipeline();

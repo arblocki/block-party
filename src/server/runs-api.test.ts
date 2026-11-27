@@ -64,6 +64,8 @@ function fakeManager(opts: { fail?: Error } = {}) {
   const starts: StartRunRequest[] = [];
   const cancels: string[] = [];
   const continues: { runId: string; entry: ContinueEntry }[] = [];
+  const resumes: { runId: string; opts?: { keep?: boolean } }[] = [];
+  const resumed = new Set<string>();
   const manager: RunManager = {
     async start(req) {
       starts.push(req);
@@ -74,13 +76,21 @@ function fakeManager(opts: { fail?: Error } = {}) {
       continues.push({ runId, entry });
       return true;
     },
+    resume(runId, opts) {
+      resumes.push({ runId, ...(opts ? { opts } : {}) });
+      const stage = runs.getRun(runId)?.stage;
+      if (resumed.has(runId)) return 'busy';
+      if (stage !== 'interrupted' && stage !== 'blocked') return 'not_resumable';
+      resumed.add(runId);
+      return 'started';
+    },
     cancel(id) {
       cancels.push(id);
       return id === RUN_A;
     },
     async shutdown() {},
   };
-  return { manager, starts, cancels, continues };
+  return { manager, starts, cancels, continues, resumes };
 }
 
 const PLAN = `# Add widgets
@@ -1759,5 +1769,86 @@ describe('closing a stream', () => {
     const atClose = spy.calls();
     await sleep(50);
     expect(spy.calls()).toBe(atClose);
+  });
+});
+
+describe('POST /api/runs/:id/resume', () => {
+  it('answers 202 for a stopped run, and 409 for a double resume', async () => {
+    runs.createRun(runInput(projectId, { stage: 'interrupted' }));
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const first = await post(`/api/runs/${RUN_A}/resume`, {}, a);
+    expect(first.status).toBe(202);
+    const second = await post(`/api/runs/${RUN_A}/resume`, {}, a);
+    expect(second.status).toBe(409);
+    expect(fake.resumes).toHaveLength(2);
+  });
+
+  it.each(['complete', 'failed', 'cancelled', 'implementing'] as const)(
+    'answers 409 for a run in %s',
+    async (stage) => {
+      runs.createRun(runInput(projectId, { stage }));
+      const a = makeApp(runs, fakeManager().manager);
+      const res = await post(`/api/runs/${RUN_A}/resume`, {}, a);
+      expect(res.status).toBe(409);
+    },
+  );
+
+  it('answers 404 for an unknown run, 400 for a bad id and 503 without a manager', async () => {
+    const a = makeApp(runs, fakeManager().manager);
+    expect((await post('/api/runs/r20260102-bbbbbb/resume', {}, a)).status).toBe(404);
+    expect((await post('/api/runs/nope/resume', {}, a)).status).toBe(400);
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    expect((await post(`/api/runs/${RUN_A}/resume`, {}, makeApp(runs))).status).toBe(503);
+  });
+
+  it('resumes when the interrupted question is answered with resume', async () => {
+    runs.createRun(runInput(projectId, { stage: 'interrupted' }));
+    const id = runs.openDecision({
+      runId: RUN_A,
+      kind: 'interrupted',
+      title: 'Run interrupted',
+      body: 'b',
+      options: [
+        { id: 'resume', label: 'Resume' },
+        { id: 'dismiss', label: 'Dismiss' },
+      ],
+    });
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const res = await post(`/api/inbox/${id}/answer`, { choice: 'resume' }, a);
+    expect(res.status).toBe(200);
+    expect(fake.resumes).toEqual([{ runId: RUN_A }]);
+    // A second answer is not open any more: one continuation.
+    expect((await post(`/api/inbox/${id}/answer`, { choice: 'resume' }, a)).status).toBe(409);
+    expect(fake.resumes).toHaveLength(1);
+  });
+
+  it('dismissing does not resume, and keep resumes with keep', async () => {
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    const opts = [
+      { id: 'keep', label: 'Keep the changes and continue' },
+      { id: 'cancel', label: 'Cancel' },
+    ];
+    const fake = fakeManager();
+    const a = makeApp(runs, fake.manager);
+    const q1 = runs.openDecision({
+      runId: RUN_A,
+      kind: 'resume_conflict',
+      title: 't',
+      body: 'b',
+      options: opts,
+    });
+    expect((await post(`/api/inbox/${q1}/answer`, { choice: 'cancel' }, a)).status).toBe(200);
+    expect(fake.resumes).toHaveLength(0);
+    const q2 = runs.openDecision({
+      runId: RUN_A,
+      kind: 'resume_conflict',
+      title: 't',
+      body: 'b',
+      options: opts,
+    });
+    expect((await post(`/api/inbox/${q2}/answer`, { choice: 'keep' }, a)).status).toBe(200);
+    expect(fake.resumes).toEqual([{ runId: RUN_A, opts: { keep: true } }]);
   });
 });
