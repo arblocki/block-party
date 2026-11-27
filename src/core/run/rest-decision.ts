@@ -37,7 +37,7 @@ export interface RestDecision {
   reopenedBody(runTitle: string, reason: string): string;
 }
 
-const REST_DECISIONS: Record<RestingStage, RestDecision> = {
+const REST_DECISIONS: Record<Exclude<RestingStage, 'queued'>, RestDecision> = {
   awaiting_review: {
     kind: 'final_review',
     title: FINAL_REVIEW_TITLE,

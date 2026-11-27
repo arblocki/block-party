@@ -170,12 +170,23 @@ function migrate(db: Database.Database): void {
   }
 }
 
-/** Opens (creating and migrating) the database. Pass ':memory:' for tests. */
-export function openStore(file: string): Store {
+/**
+ * Opens one connection to the database, migrated, in WAL mode and waiting up to 5 s for a
+ * lock (the server and the CLI both write the file) instead of failing with SQLITE_BUSY.
+ * Every connection the app opens goes through here.
+ */
+export function openDatabase(file: string): Database.Database {
   if (file !== ':memory:') mkdirSync(dirname(file), { recursive: true });
   const db = new Database(file);
   db.pragma('journal_mode = WAL');
+  db.pragma('busy_timeout = 5000');
   migrate(db);
+  return db;
+}
+
+/** Opens (creating and migrating) the database. Pass ':memory:' for tests. */
+export function openStore(file: string): Store {
+  const db = openDatabase(file);
 
   const list = db.prepare<[string, number], DraftRow>(
     'SELECT * FROM drafts WHERE repo = ? AND pr = ? ORDER BY path, line, updated_at',

@@ -68,6 +68,12 @@ export async function ensureReviewerCodexHome(opts: EnsureCodexHomeOptions = {})
     if ((await readlink(link)) === userAuth) return dir;
     await unlink(link);
   }
-  await symlink(userAuth, link);
+  try {
+    await symlink(userAuth, link);
+  } catch (e) {
+    // Another run set the home up at the same moment: fine if it made the same link.
+    if ((e as NodeJS.ErrnoException).code !== 'EEXIST') throw e;
+    if ((await readlink(link).catch(() => undefined)) !== userAuth) throw e;
+  }
   return dir;
 }

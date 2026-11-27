@@ -20,6 +20,19 @@ const FORWARD: [RunStage, RunStage][] = [
   ['awaiting_plan_approval', 'planning'],
   ['awaiting_plan_approval', 'implementing'],
   ['awaiting_plan_approval', 'cancelled'],
+  // A queued run leaves for any stage work starts in, or is cancelled; an answer with no free
+  // slot moves a resting run into the queue.
+  ['awaiting_plan_approval', 'queued'],
+  ['awaiting_review', 'queued'],
+  ['queued', 'setup'],
+  ['queued', 'planning'],
+  ['queued', 'implementing'],
+  ['queued', 'fixing'],
+  ['queued', 'checking'],
+  ['queued', 'reviewing'],
+  ['queued', 'publishing'],
+  ['queued', 'waiting_ci'],
+  ['queued', 'cancelled'],
   ['implementing', 'checking'],
   ['checking', 'reviewing'],
   ['checking', 'fixing'],
@@ -51,7 +64,7 @@ describe('run stage machine', () => {
     expect([...RUN_STAGES].sort()).toEqual(
       [...ACTIVE_STAGES, ...RESTING_STAGES, ...TERMINAL_STAGES].sort(),
     );
-    expect(RESTING_STAGES).toEqual(['awaiting_plan_approval', 'awaiting_review']);
+    expect(RESTING_STAGES).toEqual(['awaiting_plan_approval', 'awaiting_review', 'queued']);
     expect(ACTIVE_STAGES).toContain('planning');
     expect(ACTIVE_STAGES).toContain('awaiting_decision');
     for (const s of RESTING_STAGES) {
@@ -141,8 +154,26 @@ describe('run stage machine', () => {
     expect((err as Error).message).toContain(to);
   });
 
+  describe('queued', () => {
+    it('is a resting stage nobody owns, and it cannot be re-queued or finished directly', () => {
+      expect(isResting('queued')).toBe(true);
+      for (const to of ['queued', 'complete', 'awaiting_review', 'blocked', 'failed'] as const) {
+        expect(canTransition('queued', to), `queued -> ${to}`).toBe(false);
+      }
+    });
+
+    it('is entered from rest and from a stopped run only (never from active work)', () => {
+      for (const from of ACTIVE_STAGES) expect(canTransition(from, 'queued')).toBe(false);
+      expect(canTransition('awaiting_review', 'queued')).toBe(true);
+      expect(canTransition('interrupted', 'queued')).toBe(false);
+      expect(canTransition('interrupted', 'queued', { resume: true })).toBe(true);
+      expect(canTransition('failed', 'queued', { resume: true })).toBe(false);
+    });
+  });
+
   describe('resume', () => {
     const TARGETS = [
+      'queued',
       'setup',
       'planning',
       'implementing',

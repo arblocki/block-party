@@ -23,6 +23,16 @@ describe('ensureReviewerCodexHome', () => {
     expect(((await lstat(dir)).mode & 0o777).toString(8)).toBe('700');
   });
 
+  it('lets several runs set the home up at the same moment', async () => {
+    const { user, dir } = await setup();
+    await writeFile(join(user, 'auth.json'), '{}');
+    const dirs = await Promise.all(
+      [1, 2, 3, 4].map(() => ensureReviewerCodexHome({ dir, userCodexHome: user })),
+    );
+    expect(dirs).toEqual([dir, dir, dir, dir]);
+    expect(await readdir(dir)).toEqual(['auth.json']);
+  });
+
   it('throws when the user auth.json is missing', async () => {
     const { user, dir } = await setup();
     await expect(ensureReviewerCodexHome({ dir, userCodexHome: user })).rejects.toThrow(

@@ -15,8 +15,11 @@ export const ACTIVE_STAGES = [
   'awaiting_decision',
 ] as const;
 
-/** Stages where the run waits for a person and no process owns it. */
-export const RESTING_STAGES = ['awaiting_plan_approval', 'awaiting_review'] as const;
+/**
+ * Stages where no process owns the run. Two wait for a person; `queued` waits for a free slot
+ * (the manager starts it when one frees).
+ */
+export const RESTING_STAGES = ['awaiting_plan_approval', 'awaiting_review', 'queued'] as const;
 
 export const TERMINAL_STAGES = [
   'complete',
@@ -50,8 +53,22 @@ const FORWARD: Record<ActiveStage, readonly RunStage[]> = {
 
 /** Moves out of resting stages. */
 const FROM_RESTING: Record<RestingStage, readonly RunStage[]> = {
-  awaiting_plan_approval: ['planning', 'implementing', 'cancelled'],
-  awaiting_review: ['fixing', 'complete', 'cancelled'],
+  // `queued` is the move of an answer that found no free slot.
+  awaiting_plan_approval: ['planning', 'implementing', 'cancelled', 'queued'],
+  awaiting_review: ['fixing', 'complete', 'cancelled', 'queued'],
+  // Starts, or continues, once a slot is free. A start begins in `setup`; a continuation goes
+  // where its entry leads (the stage it queued from is restored first, and it moves on from there).
+  queued: [
+    'setup',
+    'planning',
+    'implementing',
+    'fixing',
+    'checking',
+    'reviewing',
+    'publishing',
+    'waiting_ci',
+    'cancelled',
+  ],
 };
 
 /** Terminal stages every active stage can drop into. */
@@ -71,8 +88,10 @@ export function isTerminal(stage: RunStage): stage is TerminalStage {
 /** Stages a run that stopped can be picked up again from (the run's own evidence decides where). */
 const RESUMABLE_STAGES: readonly RunStage[] = ['interrupted', 'blocked'];
 
-/** Where a resume may re-enter: the active stages a run does work in. */
+/** Where a resume may re-enter: the active stages a run does work in (or the queue). */
 const RESUME_TARGETS: readonly RunStage[] = [
+  // A resume that finds no free slot waits in the queue.
+  'queued',
   'setup',
   'planning',
   'implementing',

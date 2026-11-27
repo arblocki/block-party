@@ -8,6 +8,8 @@ export const RECENT_RUN_LIMIT = 20;
 export type StageTone = 'active' | 'waiting' | 'done' | 'attention' | 'stopped';
 
 export function stageTone(stage: RunStage): StageTone {
+  // A queued run needs nothing from you: it starts by itself when a slot frees.
+  if (stage === 'queued') return 'active';
   if (isResting(stage)) return 'waiting';
   if (!isTerminal(stage)) return 'active';
   switch (stage) {
@@ -25,19 +27,25 @@ const byUpdatedDesc = (a: RunSummary, b: RunSummary): number =>
   a.updatedAt < b.updatedAt ? 1 : a.updatedAt > b.updatedAt ? -1 : 0;
 
 /**
- * Active runs first, then runs resting for a person, then the most recent finished ones
+ * Active runs first, then runs waiting for a free slot, then runs resting for a person, then the most recent finished ones
  * (capped), each group newest-updated first.
  */
 export function orderRuns(runs: readonly RunSummary[], limit = RECENT_RUN_LIMIT): RunSummary[] {
   const active = runs
     .filter((r) => !isTerminal(r.stage) && !isResting(r.stage))
     .sort(byUpdatedDesc);
-  const resting = runs.filter((r) => isResting(r.stage)).sort(byUpdatedDesc);
+  // Runs waiting for a free slot follow the ones running; the queue's own order is by position.
+  const queued = runs
+    .filter((r) => r.stage === 'queued')
+    .sort((a, b) => (a.queue?.position ?? Infinity) - (b.queue?.position ?? Infinity));
+  const resting = runs
+    .filter((r) => isResting(r.stage) && r.stage !== 'queued')
+    .sort(byUpdatedDesc);
   const rest = runs
     .filter((r) => isTerminal(r.stage))
     .sort(byUpdatedDesc)
     .slice(0, limit);
-  return [...active, ...resting, ...rest];
+  return [...active, ...queued, ...resting, ...rest];
 }
 
 const DECISION_LABELS: Record<DecisionKind, string> = {

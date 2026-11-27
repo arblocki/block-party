@@ -11,6 +11,7 @@ describe('stageLabel', () => {
   });
 
   it('uses the wording the brief names', () => {
+    expect(stageLabel('queued')).toBe('Queued');
     expect(stageLabel('awaiting_plan_approval')).toBe('Plan ready for you');
     expect(stageLabel('awaiting_review')).toBe('Ready for your review');
     expect(stageLabel('awaiting_decision')).toBe('Needs your answer');

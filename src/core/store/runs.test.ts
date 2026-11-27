@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { openStore, type Store } from './index.js';
-import type { RunInput, RunStore } from './runs.js';
+import { openDatabase, openStore, type Store } from './index.js';
+import { createRunStore, type RunInput, type RunStore } from './runs.js';
 import { MIGRATIONS } from './schema.js';
 
 function runInput(projectId: string, over: Partial<RunInput> = {}): RunInput {
@@ -49,6 +49,121 @@ describe('run store', () => {
     }).id;
   });
   afterEach(() => store.close());
+
+  describe('queue', () => {
+    const queuedInput = (id: string, projectId: string, at: string): RunInput =>
+      runInput(projectId, {
+        id,
+        stage: 'queued',
+        createdAt: at,
+        updatedAt: at,
+        branch: '',
+        worktreePath: '',
+        baseSha: '',
+      });
+    const start = (id: string, project = projectId, at = '2026-01-01T00:00:00.000Z') =>
+      runs.createQueuedRun(queuedInput(id, project, at), { repo: '/src/r', id });
+    const owner = { pid: 10, host: 'h' };
+    const any = () => true;
+
+    it('stores a queued start durably, in order, with its entry', () => {
+      const row = start('q1');
+      expect(row).toMatchObject({ stage: 'queued', ownerPid: null, ownerHost: null });
+      start('q2');
+      expect(runs.listQueued().map((q) => [q.runId, q.from, q.entry])).toEqual([
+        ['q1', null, { repo: '/src/r', id: 'q1' }],
+        ['q2', null, { repo: '/src/r', id: 'q2' }],
+      ]);
+    });
+
+    it('claims the oldest queued run that fits, once', () => {
+      start('q1');
+      start('q2');
+      const first = runs.claimQueued({ fits: any, owner });
+      expect(first).toMatchObject({ runId: 'q1', from: null });
+      // A claimed start is `setup` and owned, and keeps its entry until it created its files.
+      expect(runs.getRun('q1')).toMatchObject({ stage: 'setup', ownerPid: 10, ownerHost: 'h' });
+      expect(runs.claimQueued({ fits: any, owner })?.runId).toBe('q2');
+      expect(runs.claimQueued({ fits: any, owner })).toBeUndefined();
+      expect(runs.listQueued()).toEqual([]);
+    });
+
+    it('skips a run that does not fit, without losing its place', () => {
+      const other = runs.upsertProject({
+        owner: 'o',
+        repo: 'x',
+        localPath: '/src/x',
+        defaultBase: 'main',
+      }).id;
+      start('q1', projectId);
+      start('q2', other);
+      expect(runs.claimQueued({ fits: (p) => p === other, owner })?.runId).toBe('q2');
+      expect(runs.listQueued().map((q) => q.runId)).toEqual(['q1']);
+      expect(runs.claimQueued({ fits: () => false, owner })).toBeUndefined();
+      expect(runs.claimQueued({ fits: any, owner })?.runId).toBe('q1');
+    });
+
+    it('queues a resting run with its answer and gives it back its stage and note', () => {
+      runs.createRun(
+        runInput(projectId, { id: 'rest', stage: 'awaiting_plan_approval', stageNote: 'v1' }),
+      );
+      expect(runs.queueRun('rest', 'awaiting_plan_approval', { kind: 'plan_approve' })).toBe(true);
+      expect(runs.getRun('rest')).toMatchObject({ stage: 'queued', ownerPid: null });
+      // Not twice, and not from a stage the run is not in.
+      expect(runs.queueRun('rest', 'awaiting_plan_approval', { kind: 'plan_approve' })).toBe(false);
+      const claimed = runs.claimQueued({ fits: any, owner });
+      expect(claimed).toMatchObject({
+        runId: 'rest',
+        from: 'awaiting_plan_approval',
+        entry: { kind: 'plan_approve' },
+      });
+      expect(runs.getRun('rest')).toMatchObject({
+        stage: 'awaiting_plan_approval',
+        stageNote: 'v1',
+      });
+      expect(runs.listQueued()).toEqual([]);
+    });
+
+    it('queues a stopped run for a resume and refuses stages that cannot', () => {
+      runs.createRun(runInput(projectId, { id: 'stopped', stage: 'interrupted' }));
+      runs.createRun(runInput(projectId, { id: 'done', stage: 'complete' }));
+      runs.createRun(runInput(projectId, { id: 'busy', stage: 'implementing' }));
+      expect(runs.queueRun('done', 'complete', {})).toBe(false);
+      expect(runs.queueRun('busy', 'implementing', {})).toBe(false);
+      expect(runs.queueRun('stopped', 'interrupted', { kind: 'resume' })).toBe(true);
+      expect(runs.claimQueued({ fits: any, owner })?.run.stage).toBe('interrupted');
+    });
+
+    it('cancels a queued start, and puts a queued continuation back at rest', () => {
+      start('q1');
+      runs.createRun(runInput(projectId, { id: 'rest', stage: 'awaiting_review' }));
+      runs.queueRun('rest', 'awaiting_review', { kind: 'feedback', text: 't' });
+      expect(runs.cancelQueued('q1')).toBe('cancelled');
+      expect(runs.getRun('q1')?.stage).toBe('cancelled');
+      expect(runs.cancelQueued('rest')).toBe('restored');
+      expect(runs.getRun('rest')?.stage).toBe('awaiting_review');
+      expect(runs.cancelQueued('rest')).toBeUndefined();
+      expect(runs.listQueued()).toEqual([]);
+    });
+
+    it('puts a claimed start that never got going back in the queue, but not a started one', () => {
+      start('q1');
+      runs.claimQueued({ fits: any, owner });
+      expect(runs.requeueStart('q1')).toBe(true);
+      expect(runs.getRun('q1')).toMatchObject({ stage: 'queued', ownerPid: null });
+      runs.claimQueued({ fits: any, owner });
+      runs.finishQueuedStart('q1');
+      expect(runs.requeueStart('q1')).toBe(false);
+    });
+
+    it('keeps a restart-survivor in its original place', () => {
+      start('q1', projectId, '2026-01-01T00:00:00.000Z');
+      start('q2', projectId, '2026-01-01T00:00:01.000Z');
+      runs.claimQueued({ fits: any, owner });
+      runs.requeueStart('q1');
+      expect(runs.listQueued().map((q) => q.runId)).toEqual(['q1', 'q2']);
+    });
+  });
 
   describe('projects', () => {
     it('upserts by local path, keeping the id and updating the other fields', () => {
@@ -629,6 +744,81 @@ describe('run store on a file', () => {
       expect(s.runs.answerDecision(id, { choice: 'ok', note: null })).toBe('answered');
     } finally {
       s.close();
+    }
+  });
+
+  it('lets two handles on one file write interleaved without SQLITE_BUSY', () => {
+    const file = join(dir, 'db.sqlite');
+    const a = openDatabase(file);
+    const b = openDatabase(file);
+    try {
+      expect(a.pragma('journal_mode', { simple: true })).toBe('wal');
+      expect(b.pragma('busy_timeout', { simple: true })).toBe(5000);
+      const sa = createRunStore(a);
+      const sb = createRunStore(b);
+      const p = sa.upsertProject({ owner: 'o', repo: 'r', localPath: '/x', defaultBase: 'main' });
+      // One transaction stays open on `a` while `b` writes, then they swap.
+      for (let i = 0; i < 20; i++) {
+        const idA = `ra${i}`;
+        const idB = `rb${i}`;
+        sa.createRun(runInput(p.id, { id: idA }));
+        sb.createRun(runInput(p.id, { id: idB }));
+        sa.updateRun(idB, { stageNote: `a${i}` });
+        sb.updateRun(idA, { stageNote: `b${i}` });
+        sa.appendEvent({ runId: idA, ts: 't', type: 'x' });
+        sb.appendEvent({ runId: idB, ts: 't', type: 'x' });
+      }
+      expect(sa.listRuns()).toHaveLength(40);
+      expect(sb.getRun('rb19')?.stageNote).toBe('a19');
+      expect(sa.getRun('ra19')?.stageNote).toBe('b19');
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  it('waits for a lock another handle holds, up to the busy timeout, instead of failing', () => {
+    const file = join(dir, 'db.sqlite');
+    const a = openDatabase(file);
+    const b = openDatabase(file);
+    try {
+      b.pragma('busy_timeout = 0');
+      const sa = createRunStore(a);
+      const sb = createRunStore(b);
+      const p = sa.upsertProject({ owner: 'o', repo: 'r', localPath: '/x', defaultBase: 'main' });
+      a.exec('BEGIN IMMEDIATE');
+      // With no wait the second writer gets SQLITE_BUSY: this is what the timeout prevents.
+      expect(() => sb.createRun(runInput(p.id))).toThrow(/locked|busy/i);
+      a.exec('COMMIT');
+      expect(sb.createRun(runInput(p.id)).id).toBe('r1');
+      expect(createRunStore(openDatabase(file)).getRun('r1')?.id).toBe('r1');
+    } finally {
+      a.close();
+      b.close();
+    }
+  });
+
+  it('claims a queued run once even when two handles claim at the same time', () => {
+    const file = join(dir, 'db.sqlite');
+    const a = openDatabase(file);
+    const b = openDatabase(file);
+    try {
+      const sa = createRunStore(a);
+      const sb = createRunStore(b);
+      const p = sa.upsertProject({ owner: 'o', repo: 'r', localPath: '/x', defaultBase: 'main' });
+      sa.createQueuedRun(runInput(p.id, { id: 'q1', stage: 'queued' }), { n: 1 });
+      sa.createQueuedRun(runInput(p.id, { id: 'q2', stage: 'queued' }), { n: 2 });
+      const owner = { pid: 1, host: 'h' };
+      const got = [
+        sa.claimQueued({ fits: () => true, owner }),
+        sb.claimQueued({ fits: () => true, owner }),
+        sa.claimQueued({ fits: () => true, owner }),
+        sb.claimQueued({ fits: () => true, owner }),
+      ].map((c) => c?.runId);
+      expect(got).toEqual(['q1', 'q2', undefined, undefined]);
+    } finally {
+      a.close();
+      b.close();
     }
   });
 

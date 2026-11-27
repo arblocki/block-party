@@ -11,6 +11,7 @@ export const STAGE_LABELS: Record<RunStage, string> = {
   publishing: 'Opening the pull request',
   waiting_ci: 'Waiting for GitHub CI',
   awaiting_decision: 'Needs your answer',
+  queued: 'Queued',
   awaiting_plan_approval: 'Plan ready for you',
   awaiting_review: 'Ready for your review',
   complete: 'Done',

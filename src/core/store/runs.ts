@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   ACTIVE_STAGES,
+  assertTransition,
   canResume,
+  canTransition,
   isTerminal,
   RESTING_STAGES,
   type RunStage,
@@ -206,6 +208,20 @@ export interface FindingInput {
   repeatOf?: string | null;
 }
 
+/** A run waiting for a slot, and what it will do when it gets one. */
+export interface QueuedRun {
+  runId: string;
+  projectId: string;
+  queuedAt: string;
+  /** The stage a continuation queued from; null for a run that has not started yet. */
+  from: RunStage | null;
+  entry: unknown;
+}
+
+export interface ClaimedRun extends QueuedRun {
+  run: RunRow;
+}
+
 export interface RunStore {
   /** Inserts the project for `localPath`, or updates owner, repo and default base if it exists. */
   upsertProject(input: {
@@ -218,6 +234,42 @@ export interface RunStore {
   getProject(id: string): Project | undefined;
 
   createRun(input: RunInput): RunRow;
+  /**
+   * Records a run that starts later: the row is created in `queued` (no owner) with `entry`,
+   * what to do once a slot is free, and when it began to wait. The row is durable when this
+   * returns.
+   */
+  createQueuedRun(
+    input: Omit<RunInput, 'stage' | 'ownerPid' | 'ownerHost'>,
+    entry: unknown,
+  ): RunRow;
+  /**
+   * Moves a resting or stopped run (in stage `from`) to `queued` with the answer it was given;
+   * false (and nothing changed) when the run is not in `from` any more.
+   */
+  queueRun(runId: string, from: RunStage, entry: unknown): boolean;
+  /** Runs waiting for a slot, oldest first (a run keeps its place across restarts). */
+  listQueued(): QueuedRun[];
+  /**
+   * Takes the oldest queued run for which `fits(projectId)` is true, in one transaction, so two
+   * claims never take the same run. A start moves to `setup` and is owned by `owner` (its entry
+   * stays until `finishQueuedStart`); a continuation goes back to the stage it queued from, with
+   * no owner, and its entry is cleared. Undefined when nothing fits.
+   */
+  claimQueued(opts: {
+    fits: (projectId: string) => boolean;
+    owner: { pid: number; host: string };
+  }): ClaimedRun | undefined;
+  /** A claimed start has created its run files: it no longer needs its stored entry. */
+  finishQueuedStart(runId: string): void;
+  /** Puts a claimed start that never got going back at its place in the queue; false if it can't. */
+  requeueStart(runId: string): boolean;
+  /**
+   * Takes a run out of the queue: a queued start becomes `cancelled`; a queued continuation goes
+   * back to the stage it queued from (the caller then cancels it from there). Undefined when
+   * the run is not queued.
+   */
+  cancelQueued(runId: string): 'cancelled' | 'restored' | undefined;
   /** Changes only the given columns and bumps `updatedAt`; undefined if the run doesn't exist. */
   updateRun(id: string, patch: RunPatch): RunRow | undefined;
   getRun(id: string): RunRow | undefined;
@@ -352,6 +404,8 @@ interface RunDb {
   owner_host: string | null;
   created_at: string;
   updated_at: string;
+  queued_entry: string | null;
+  queued_at: string | null;
 }
 
 interface StageDb {
@@ -636,6 +690,39 @@ export function createRunStore(db: Database.Database): RunStore {
      ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
   );
 
+  const queuedRows = db.prepare<[], RunDb>(
+    `SELECT * FROM runs WHERE stage = 'queued' AND queued_entry IS NOT NULL
+     ORDER BY queued_at, rowid`,
+  );
+  const setQueued = db.prepare(
+    `UPDATE runs SET stage = 'queued', stage_note = @note, owner_pid = NULL, owner_host = NULL,
+       queued_entry = @entry, queued_at = @queuedAt, updated_at = @updatedAt
+     WHERE id = @id`,
+  );
+  const setClaimedStart = db.prepare(
+    `UPDATE runs SET stage = 'setup', stage_note = NULL, owner_pid = @pid, owner_host = @host,
+       updated_at = @updatedAt
+     WHERE id = @id AND stage = 'queued'`,
+  );
+  const setClaimedContinue = db.prepare(
+    `UPDATE runs SET stage = @from, stage_note = @note, owner_pid = NULL, owner_host = NULL,
+       queued_entry = NULL, queued_at = NULL, updated_at = @updatedAt
+     WHERE id = @id AND stage = 'queued'`,
+  );
+  const clearQueuedStart = db.prepare(
+    'UPDATE runs SET queued_entry = NULL, queued_at = NULL WHERE id = @id',
+  );
+  const setCancelledQueued = db.prepare(
+    `UPDATE runs SET stage = 'cancelled', stage_note = 'Cancelled while waiting for a free slot',
+       queued_entry = NULL, queued_at = NULL, updated_at = @updatedAt
+     WHERE id = @id AND stage = 'queued'`,
+  );
+  const setRequeuedStart = db.prepare(
+    `UPDATE runs SET stage = 'queued', stage_note = @note, owner_pid = NULL, owner_host = NULL,
+       updated_at = @updatedAt
+     WHERE id = @id AND queued_entry IS NOT NULL AND stage = 'setup'`,
+  );
+
   const insertStage = db.prepare(`
     INSERT INTO stages (run_id, kind, round, state, input_json, started_at)
     VALUES (?, ?, ?, 'running', ?, ?)`);
@@ -730,6 +817,21 @@ export function createRunStore(db: Database.Database): RunStore {
     return row ? toRun(row) : undefined;
   };
 
+  const QUEUED_NOTE = 'Waiting for a free slot';
+  /** A queued row's stored entry: `{ from, fromNote, entry }` for a continuation, `{ entry }` for a start. */
+  type StoredEntry = { from?: RunStage; fromNote?: string | null; entry: unknown };
+  const toQueued = (r: RunDb): QueuedRun => {
+    const stored = JSON.parse(r.queued_entry as string) as StoredEntry;
+    return {
+      runId: r.id,
+      projectId: r.project_id,
+      queuedAt: r.queued_at as string,
+      from: stored.from ?? null,
+      entry: stored.entry,
+    };
+  };
+  const stamp = (previous: string): string => later(now(), previous);
+
   return {
     upsertProject(input) {
       return db
@@ -760,6 +862,113 @@ export function createRunStore(db: Database.Database): RunStore {
         .transaction((): RunRow => {
           insertRun.run(params);
           return getRun(full.id) as RunRow;
+        })
+        .immediate();
+    },
+    createQueuedRun(input, entry) {
+      const at = now();
+      return db
+        .transaction((): RunRow => {
+          const full: RunRow = {
+            ...input,
+            stage: 'queued',
+            stageNote: input.stageNote ?? QUEUED_NOTE,
+            ownerPid: null,
+            ownerHost: null,
+            createdAt: input.createdAt ?? at,
+            updatedAt: input.updatedAt ?? at,
+          };
+          const params: Record<string, unknown> = { id: full.id };
+          for (const f of runFields) params[f] = columnValue(f, full[f]);
+          insertRun.run(params);
+          db.prepare('UPDATE runs SET queued_entry = ?, queued_at = ? WHERE id = ?').run(
+            JSON.stringify({ entry } satisfies StoredEntry),
+            at,
+            full.id,
+          );
+          return getRun(full.id) as RunRow;
+        })
+        .immediate();
+    },
+    queueRun(runId, from, entry) {
+      return db
+        .transaction((): boolean => {
+          const current = runById.get(runId);
+          if (!current || current.stage !== from) return false;
+          if (!canTransition(from, 'queued', { resume: canResume(from) })) return false;
+          const stored: StoredEntry = { from, fromNote: current.stage_note, entry };
+          setQueued.run({
+            id: runId,
+            note: QUEUED_NOTE,
+            entry: JSON.stringify(stored),
+            queuedAt: now(),
+            updatedAt: stamp(current.updated_at),
+          });
+          return true;
+        })
+        .immediate();
+    },
+    listQueued() {
+      return queuedRows.all().map(toQueued);
+    },
+    claimQueued({ fits, owner }) {
+      return db
+        .transaction((): ClaimedRun | undefined => {
+          for (const row of queuedRows.all()) {
+            if (!fits(row.project_id)) continue;
+            const queued = toQueued(row);
+            const stored = JSON.parse(row.queued_entry as string) as StoredEntry;
+            const updatedAt = stamp(row.updated_at);
+            const changed =
+              queued.from === null
+                ? (assertTransition('queued', 'setup'),
+                  setClaimedStart.run({ id: row.id, pid: owner.pid, host: owner.host, updatedAt }))
+                : setClaimedContinue.run({
+                    id: row.id,
+                    from: queued.from,
+                    note: stored.fromNote ?? null,
+                    updatedAt,
+                  });
+            if (changed.changes === 0) continue;
+            return { ...queued, run: getRun(row.id) as RunRow };
+          }
+          return undefined;
+        })
+        .immediate();
+    },
+    finishQueuedStart(runId) {
+      clearQueuedStart.run({ id: runId });
+    },
+    requeueStart(runId) {
+      const current = runById.get(runId);
+      if (!current) return false;
+      return (
+        setRequeuedStart.run({
+          id: runId,
+          note: QUEUED_NOTE,
+          updatedAt: stamp(current.updated_at),
+        }).changes > 0
+      );
+    },
+    cancelQueued(runId) {
+      return db
+        .transaction((): 'cancelled' | 'restored' | undefined => {
+          const row = runById.get(runId);
+          if (!row || row.stage !== 'queued' || row.queued_entry === null) return undefined;
+          const queued = toQueued(row);
+          const stored = JSON.parse(row.queued_entry) as StoredEntry;
+          const updatedAt = stamp(row.updated_at);
+          if (queued.from === null) {
+            setCancelledQueued.run({ id: runId, updatedAt });
+            return 'cancelled';
+          }
+          setClaimedContinue.run({
+            id: runId,
+            from: queued.from,
+            note: stored.fromNote ?? null,
+            updatedAt,
+          });
+          return 'restored';
         })
         .immediate();
     },

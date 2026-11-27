@@ -249,4 +249,11 @@ export const MIGRATIONS: readonly string[] = [
     byte_offset INTEGER NOT NULL
   );
   `,
+  `
+  -- A run waiting for a free slot keeps what it will do once it gets one (a start's input, or
+  -- the answer a resting or stopped run was given), and when it began to wait.
+  ALTER TABLE runs ADD COLUMN queued_entry TEXT;
+  ALTER TABLE runs ADD COLUMN queued_at TEXT;
+  CREATE INDEX runs_by_queue ON runs (queued_at) WHERE queued_entry IS NOT NULL;
+  `,
 ];

@@ -25,6 +25,7 @@ const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSumm
   updatedAt,
   openDecisions: 0,
   planVersion: null,
+  queue: null,
 });
 
 describe('stageTone', () => {
@@ -38,6 +39,7 @@ describe('stageTone', () => {
     waiting_ci: 'active',
     planning: 'active',
     awaiting_decision: 'active',
+    queued: 'active',
     awaiting_plan_approval: 'waiting',
     awaiting_review: 'waiting',
     complete: 'done',
@@ -54,6 +56,23 @@ describe('stageTone', () => {
     expect(stageTone('cancelled')).toBe('stopped');
     expect(stageTone('interrupted')).toBe('stopped');
     expect(stageTone('failed')).toBe('attention');
+  });
+});
+
+describe('orderRuns and queued runs', () => {
+  it('lists queued runs after running ones and before runs waiting for you, by queue position', () => {
+    const queued = (id: string, position: number, updatedAt: string): RunSummary => ({
+      ...run(id, 'queued', updatedAt),
+      queue: { position, inUse: 3, max: 3 },
+    });
+    const out = orderRuns([
+      run('done', 'complete', '2026-01-09T00:00:00Z'),
+      run('rest', 'awaiting_review', '2026-01-08T00:00:00Z'),
+      queued('q2', 2, '2026-01-01T00:00:00Z'),
+      queued('q1', 1, '2026-01-02T00:00:00Z'),
+      run('act', 'implementing', '2026-01-01T00:00:00Z'),
+    ]);
+    expect(out.map((r) => r.id)).toEqual(['act', 'q1', 'q2', 'rest', 'done']);
   });
 });
 
