@@ -3,6 +3,7 @@ import type { RunStage } from '../../core/run/machine';
 import type { StageKind, StageRow, StageState } from '../types';
 import {
   isSandboxed,
+  lastActivityLabel,
   checksBySha,
   isNoisyEvent,
   mayHaveLegacyPlan,
@@ -353,5 +354,30 @@ describe('isSandboxed', () => {
     expect(isSandboxed([{ type: 'run.started', payload: { sandboxed: true } }])).toBe(true);
     expect(isSandboxed([{ type: 'run.started', payload: { branch: 'b' } }])).toBe(false);
     expect(isSandboxed([])).toBe(false);
+  });
+});
+
+describe('stall events and last activity', () => {
+  it('summarizes nudges and stalls in plain words', () => {
+    const sum = (type: string, payload?: unknown) => summarizeEvent({ type, payload });
+    expect(sum('implementer.nudged', { reason: 'silence', minutes: 10 })).toBe(
+      'Agent went quiet for 10 minutes: sent it a nudge asking for a status',
+    );
+    expect(sum('implementer.nudged', { reason: 'requested', minutes: 0 })).toBe(
+      'Sent the agent a nudge, as you asked',
+    );
+    expect(sum('implementer.stalled', { reason: 'idle', minutes: 3 })).toBe(
+      'Agent may be stuck: idle for 3 minutes. Asked you what to do',
+    );
+    expect(sum('implementer.resumed')).toBe('The agent resumed');
+  });
+
+  it('words the time since the newest event', () => {
+    const now = Date.parse('2026-03-10T12:00:00Z');
+    expect(lastActivityLabel([], now)).toBeNull();
+    const at = (iso: string) => [{ ts: '2026-03-10T10:00:00Z' }, { ts: iso }];
+    expect(lastActivityLabel(at('2026-03-10T11:56:00Z'), now)).toBe('Last activity 4 min ago');
+    expect(lastActivityLabel(at('2026-03-10T11:59:50Z'), now)).toBe('Last activity just now');
+    expect(lastActivityLabel(at('2026-03-10T09:00:00Z'), now)).toBe('Last activity 2 h ago');
   });
 });

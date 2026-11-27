@@ -152,6 +152,10 @@ export interface WaitForTurnEndOptions {
    * fires once per blocked episode.
    */
   onPermission?: (message: string) => void;
+  /** Called for every hook line of this session, as it is consumed. */
+  onActivity?: () => void;
+  /** Called with each completed terminal state query. */
+  onAgentState?: (state: AgentState, info: { stopped: boolean }) => void;
 }
 
 const BLOCKED_MS = 3000;
@@ -195,6 +199,7 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
 
     const unsubscribe = watcher.on((ev) => {
       if (ev.session_id !== sessionId) return;
+      opts.onActivity?.();
       if (ev.hook_event_name === 'SessionEnd') {
         finish({ kind: 'exited', reason: ev.reason ?? 'session_end' });
       } else if (
@@ -262,6 +267,7 @@ export function waitForTurnEnd(opts: WaitForTurnEndOptions): Promise<TurnOutcome
           queryInFlight = false;
           lastState = state;
           if (issuedUnder && issuedUnder === stop) issuedUnder.postStopState = state;
+          opts.onAgentState?.(state, { stopped: stop !== undefined });
           evaluate();
         });
     };

@@ -44,6 +44,12 @@ export const RunConfigSchema = z.object({
       broadFixFiles: z.number().int().min(0).default(10),
       /** When the server starts, resume runs whose driving process died (default: ask first). */
       resumeOnRestart: z.boolean().default(false),
+      /** Minutes with no hook or stream event during a turn before the agent counts as stalled. */
+      stallAfterMinutes: z.number().positive().default(10),
+      /** Minutes the terminal reports the agent idle, without a report, before a nudge. */
+      idleNudgeMinutes: z.number().positive().default(3),
+      /** Nudges per turn before a stall is raised as an inbox item. */
+      maxNudges: z.number().int().min(0).default(1),
       /**
        * `on` runs the implementer's shell commands inside Claude Code's sandbox: writes only in
        * the worktree and the repository's .git, network only to package registries.

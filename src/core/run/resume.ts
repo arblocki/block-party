@@ -288,6 +288,7 @@ function closeStoppedQuestions(ctx: Ctx): void {
         const mine =
           d.kind === 'interrupted' ||
           d.kind === 'blocked' ||
+          d.kind === 'stalled' ||
           ((d.kind === 'cap_reached' || d.kind === 'resume_conflict') && d.options !== null);
         if (mine) store.resolveDecision(d.id);
       }

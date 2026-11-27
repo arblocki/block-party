@@ -193,6 +193,22 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return s('notice') ?? s('message') ?? 'Implementer is waiting for you';
     case 'implementer.stop_failed':
       return `Could not stop the implementer${s('error') ? `: ${s('error')}` : ''}`;
+    case 'implementer.nudged':
+      return s('reason') === 'requested'
+        ? 'Sent the agent a nudge, as you asked'
+        : `Agent went quiet${num('minutes') !== null ? ` for ${plural(num('minutes')!, 'minute')}` : ''}: sent it a nudge asking for a status`;
+    case 'implementer.nudge_failed':
+      return `Could not nudge the agent${s('error') ? `: ${s('error')}` : ''}`;
+    case 'implementer.stalled':
+      return `Agent may be stuck: ${
+        s('reason') === 'idle' ? 'idle' : 'no activity'
+      }${num('minutes') !== null ? ` for ${plural(num('minutes')!, 'minute')}` : ''}. Asked you what to do`;
+    case 'implementer.resumed':
+      return 'The agent resumed';
+    case 'implementer.stall_waiting':
+      return 'You chose to keep waiting for the agent';
+    case 'implementer.stall_stopped':
+      return 'You chose to stop the run because the agent went quiet';
     case 'planner.session':
       return 'Planner started';
     case 'planner.waiting_for_human':
@@ -317,4 +333,22 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     default:
       return type;
   }
+}
+
+/** "Last activity 4 min ago" from the newest event; null when there are none. */
+export function lastActivityLabel(
+  events: readonly Pick<RunEvent, 'ts'>[],
+  now = Date.now(),
+): string | null {
+  let latest = Number.NEGATIVE_INFINITY;
+  for (const e of events) {
+    const t = Date.parse(e.ts);
+    if (!Number.isNaN(t) && t > latest) latest = t;
+  }
+  if (latest === Number.NEGATIVE_INFINITY) return null;
+  const minutes = Math.max(0, Math.floor((now - latest) / 60_000));
+  if (minutes < 1) return 'Last activity just now';
+  if (minutes < 60) return `Last activity ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  return `Last activity ${hours} h ago`;
 }

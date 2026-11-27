@@ -104,7 +104,8 @@ export type DecisionKind =
   | 'broad_fix'
   | 'final_review'
   | 'ci_gap'
-  | 'resume_conflict';
+  | 'resume_conflict'
+  | 'stalled';
 export type DecisionStatus = 'open' | 'answered' | 'resolved' | 'dismissed';
 
 /** One choice a decision offers. */

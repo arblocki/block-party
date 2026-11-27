@@ -13,6 +13,7 @@ import type { PipelineDeps, RunInput } from './pipeline.js';
 import { parsePlan, type Plan } from './plan.js';
 import type { FindingRow } from '../store/runs.js';
 import type { ResolutionKind, ReviewRoundInput, TurnReport } from './publish.js';
+import type { StallWatcher } from './stall.js';
 import { RunRecorder } from './recorder.js';
 import { orderTurns, ReportSchema, TURN_KINDS, type Report } from './report.js';
 import { loadRunState, type RunState } from './run-state.js';
@@ -36,6 +37,8 @@ export interface Ctx {
     'stage' | 'round' | 'findingsPath' | 'rulingsPath'
   >;
   session?: ImplementerSession;
+  /** The stall watcher of the turn being awaited, if one is running. */
+  stall?: StallWatcher;
   /** The planner's session (its own conversation, separate from the implementer's). */
   plannerSession?: ImplementerSession;
   rounds: ReviewRoundInput[];
@@ -123,7 +126,10 @@ export function buildCtx(b: BuildCtxInput): Ctx {
           message,
         });
         ctx.rec.permissionWait(message, attach);
+        ctx.stall?.agentState('blocked');
       },
+      onActivity: () => ctx.stall?.activity(),
+      onAgentState: (state, info) => ctx.stall?.agentState(state, info),
       onEvent: (e) => ctx.rec.event(e.type, e.data),
     },
     briefBase: {

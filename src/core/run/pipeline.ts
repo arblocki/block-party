@@ -60,6 +60,8 @@ import {
 } from './rest-decision.js';
 import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
+import { StallStopError, startStallGuard, type NudgeTarget } from './stall-guard.js';
+import type { StallClock } from './stall.js';
 import { closeStaleStages, reopenStopped, resumeRun, type ResumeSteps } from './resume.js';
 import {
   askTriage,
@@ -170,6 +172,8 @@ export interface PipelineDeps {
   /** Run tables to mirror the run into; without one only the run directory files are written. */
   store?: RunStore;
   now?: () => Date;
+  /** Clock and timers for stall detection and its answer polling (tests inject a fake). */
+  stallClock?: StallClock & { answerPollMs?: number };
   paths?: {
     runDir: (runId: string) => string;
     worktreePath: (owner: string, repo: string, runId: string) => string;
@@ -272,10 +276,17 @@ async function inStage<T>(
 }
 
 /** Awaits an implementer turn; its permission decisions are resolved once it ends. */
-async function turnEnded<T>(ctx: Ctx, turn: Promise<T>): Promise<T> {
+async function turnEnded<T>(ctx: Ctx, turn: Promise<T>, nudge?: NudgeTarget): Promise<T> {
+  // Every turn kind waits here, so stall detection covers them all. A person's `stop` on a
+  // stalled agent ends the wait: the run blocks (the agent's session is left as it is).
+  const guard = startStallGuard(ctx, nudge);
   try {
-    return await turn;
+    return await (guard ? Promise.race([turn, guard.stopped]) : turn);
+  } catch (e) {
+    if (e instanceof StallStopError) throw new Halt('blocked', e.message);
+    throw e;
   } finally {
+    guard?.end();
     ctx.rec.resolvePermissions();
   }
 }
@@ -657,6 +668,7 @@ function plannerStart(ctx: Ctx, planPath: string): Omit<ImplementerStartInput, '
         message,
       });
       ctx.rec.permissionWait(message, attach);
+      ctx.stall?.agentState('blocked');
     },
   };
 }
@@ -716,6 +728,7 @@ async function planStep(
     }),
   );
   const start = plannerStart(ctx, planPath);
+  const plannerTarget = (): NudgeTarget => ({ session: ctx.plannerSession, start });
   const onSession = (session: ImplementerSession) => {
     ctx.plannerSession = session;
     ctx.rec.event('planner.session', {
@@ -756,11 +769,13 @@ async function planStep(
           })(),
           input.signal,
         ),
+        plannerTarget(),
       );
     } else {
       const started = await turnEnded(
         ctx,
         abortable(deps.adapter.start({ ...start, prompt, onSession }), input.signal),
+        plannerTarget(),
       );
       if (!ctx.plannerSession) onSession(started.session);
       ctx.plannerSession = started.session;

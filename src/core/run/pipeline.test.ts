@@ -134,6 +134,9 @@ interface Opts {
   section?: unknown;
   noChecksConfig?: boolean;
   hangFirstTurn?: boolean;
+  /** The first turn waits for this before it ends (the agent is silent until then). */
+  holdFirstTurn?: Promise<void>;
+  stallClock?: PipelineDeps['stallClock'];
   permissionPrompts?: number;
   abortInPublish?: AbortController;
   /** Replaces the fake publishRun (e.g. to run the real one against fakes). */
@@ -232,12 +235,15 @@ function harness(o: Opts) {
       o.onStart?.(input);
       for (let i = 0; i < (o.permissionPrompts ?? 0); i++) input.onPermission?.(`approve ${i + 1}`);
       if (o.hangFirstTurn) await new Promise(() => undefined);
+      if (o.holdFirstTurn) await o.holdFirstTurn;
       return { session: mine, outcome: doTurn(input) };
     },
     async send(s, input, message) {
       calls.sends.push(message);
       calls.sendSessions.push(s.sessionId);
       calls.sendInputs.push(input);
+      // A stall nudge only types a message: it is not a turn of its own.
+      if (message.startsWith('Status check from block-party')) return { kind: 'no_report' };
       return doTurn(input);
     },
     async stop(s, stopOpts) {
@@ -382,6 +388,7 @@ function harness(o: Opts) {
     hookArgv: ['node', 'hook'],
     sandboxWritableDirs: () => ['/home/u/.local/share/pnpm/store'],
     ...(o.store ? { store: o.store } : {}),
+    ...(o.stallClock ? { stallClock: o.stallClock } : {}),
     paths: {
       runDir: (id) => join(root, 'runs', id),
       worktreePath: (ow, re, id) => join(root, 'wt', `${ow}__${re}`, id),
@@ -3322,5 +3329,134 @@ describe('run slots and the project lock', () => {
     const out = await h.run(ac.signal);
     expect(out.stage).toBe('cancelled');
     expect(calls).toEqual(['release']);
+  });
+});
+
+/** A clock the test advances by hand; timers fire in order as it passes them. */
+function fakeClock() {
+  let t = 1_000_000;
+  let seq = 0;
+  const timers = new Map<number, { at: number; fn: () => void }>();
+  return {
+    now: () => t,
+    setTimer(fn: () => void, ms: number) {
+      const id = ++seq;
+      timers.set(id, { at: t + ms, fn });
+      return () => void timers.delete(id);
+    },
+    answerPollMs: 1000,
+    advance(ms: number) {
+      const end = t + ms;
+      for (;;) {
+        const next = [...timers.entries()].sort((a, b) => a[1].at - b[1].at)[0];
+        if (!next || next[1].at > end) break;
+        timers.delete(next[0]);
+        t = Math.max(t, next[1].at);
+        next[1].fn();
+      }
+      t = end;
+    },
+  };
+}
+
+describe('stall detection', () => {
+  const MIN = 60_000;
+  const setup = (over: Partial<Opts> = {}) => {
+    const clock = fakeClock();
+    const store = openStore(':memory:').runs;
+    let release!: () => void;
+    const hold = new Promise<void>((r) => (release = r));
+    const h = harness({
+      turns: [{}],
+      pane: true,
+      store,
+      holdFirstTurn: hold,
+      stallClock: clock,
+      ...over,
+    });
+    const open = () => store.listDecisions({ status: 'open' }).filter((d) => d.kind === 'stalled');
+    const events = (type: string) =>
+      store.listDecisions(
+        {},
+      ) // ensure the store is reachable
+      .length >= 0
+        ? readFileSync(
+            join(h.deps.paths!.runDir(store.listRuns()[0]!.id), 'run-events.jsonl'),
+            'utf8',
+          )
+            .split('\n')
+            .filter((l) => l.includes(`"${type}"`))
+        : [];
+    return { clock, store, h, release, open, events };
+  };
+
+  it('nudges a silent agent, then opens a stalled item without leaving the stage', async () => {
+    const { clock, store, h, release, open, events } = setup();
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(h.calls.sends).toHaveLength(1));
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sends[0]).toContain('Status check from block-party');
+    expect(h.calls.sends[0]).toContain(h.calls.startInputs[0]!.reportPath);
+    expect(events('implementer.nudged')).toHaveLength(1);
+    expect(open()).toHaveLength(0);
+
+    clock.advance(10 * MIN);
+    expect(open()).toHaveLength(1);
+    const d = open()[0]!;
+    expect(d.title).toBe('Agent may be stuck');
+    expect(d.options?.map((o) => o.id)).toEqual(['nudge', 'wait', 'stop']);
+    expect(d.body).toContain('attach-cmd');
+    // The turn keeps running in its stage: nothing was moved to awaiting_decision.
+    expect(store.getRun(d.runId)?.stage).toBe('implementing');
+
+    // Any sign of life closes the item.
+    h.calls.startInputs[0]!.onActivity?.();
+    expect(store.getDecision(d.id)?.status).toBe('resolved');
+    expect(events('implementer.resumed')).toHaveLength(1);
+
+    release();
+    const out = await p;
+    expect(out.stage).toBe('awaiting_review');
+  });
+
+  it('blocks the run when the stalled item is answered stop', async () => {
+    const { clock, store, h, open } = setup();
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(20 * MIN);
+    expect(open()).toHaveLength(1);
+    store.answerDecision(open()[0]!.id, { choice: 'stop', note: null });
+    clock.advance(1000);
+    const out = await p;
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('Stopped by you');
+  });
+
+  it('sends the nudge again when the item is answered nudge', async () => {
+    const { clock, store, h, release, open } = setup();
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(20 * MIN);
+    store.answerDecision(open()[0]!.id, { choice: 'nudge', note: null });
+    clock.advance(1000);
+    await vi.waitFor(() => expect(h.calls.sends).toHaveLength(2));
+    expect(h.calls.sends).toHaveLength(2);
+    expect(open()).toHaveLength(0);
+    release();
+    expect((await p).stage).toBe('awaiting_review');
+  });
+
+  it('never nudges a headless agent: silence goes straight to the item', async () => {
+    const { clock, h, release, open } = setup({ pane: false, flags: { mode: 'headless' } });
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(10 * MIN);
+    expect(h.calls.sends).toHaveLength(0);
+    expect(open()).toHaveLength(1);
+    expect(open()[0]!.options?.map((o) => o.id)).toEqual(['wait', 'stop']);
+    release();
+    await p;
   });
 });

@@ -29,6 +29,13 @@ export interface ImplementerStartInput {
    * adapter keeps waiting for the turn to end (until the timeout or abort).
    */
   onPermission?: (message: string) => void;
+  /** Any sign of life during the turn (a hook line, a stream event): feeds stall detection. */
+  onActivity?: () => void;
+  /**
+   * Pane mode only: the terminal's view of the agent. `stopped`: a final Stop was seen, so the
+   * turn is ending and idleness is expected.
+   */
+  onAgentState?: (state: string, info: { stopped: boolean }) => void;
   /** Adapter diagnostics (`agent.*`: pane opened, dialogs answered, start timeouts, …). */
   onEvent?: (event: { type: string; data: Record<string, unknown> }) => void;
 }

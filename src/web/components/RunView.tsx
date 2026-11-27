@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { canResume, isTerminal, type RunStage } from '../../core/run/machine';
+import { canResume, isResting, isTerminal, type RunStage } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { evidenceFor, headLine, staleLines } from '../lib/evidence';
@@ -8,6 +8,7 @@ import { planActions, plannerAttach, stageNoteLabel } from '../lib/plans';
 import {
   isNoisyEvent,
   isSandboxed,
+  lastActivityLabel,
   mayHaveLegacyPlan,
   stageStrip,
   summarizeEvent,
@@ -171,6 +172,12 @@ export function RunView({ id }: { id: string }) {
   const [resuming, setResuming] = useState(false);
   const refetchRef = useRef<() => void>(() => {});
   const [reloadKey, setReloadKey] = useState(0);
+  // Re-renders every 30 s so "Last activity" stays current.
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setClockNow(Date.now()), 30_000);
+    return () => clearInterval(t);
+  }, []);
 
   useEffect(() => {
     const ctrl = new AbortController();
@@ -411,6 +418,8 @@ export function RunView({ id }: { id: string }) {
   }
 
   const project = runProject(run);
+  const working = !isTerminal(run.stage) && !isResting(run.stage);
+  const activity = lastActivityLabel(events, clockNow);
   // The plan panel carries the plan approval's buttons, so the list leaves it out.
   const planDecision = planActions(run, detail.decisions);
   const panelShown = plans !== null && (plans.length > 0 || run.stage === 'planning' || plansError);
@@ -488,6 +497,7 @@ export function RunView({ id }: { id: string }) {
           )}
           <span title={run.createdAt}>created {relativeTime(run.createdAt)}</span>
           <span title={run.updatedAt}>updated {relativeTime(run.updatedAt)}</span>
+          {working && activity && <span>{activity}</span>}
         </div>
       </header>
       <Strip detail={detail} acceptance={acceptance} plans={plans} />

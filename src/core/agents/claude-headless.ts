@@ -107,6 +107,7 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
     const failLog = () =>
       new Error(`failed to write agent stream log ${streamFile}`, { cause: logError });
     const handle = (events: StreamEvent[]) => {
+      if (events.length > 0) input.onActivity?.();
       for (const ev of events) {
         switch (ev.kind) {
           case 'init':

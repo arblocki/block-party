@@ -353,6 +353,8 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       pollMs: t.pollMs,
       timeoutMs: input.timeoutMs,
       signal: input.signal,
+      onActivity: () => input.onActivity?.(),
+      onAgentState: (state, info) => input.onAgentState?.(state, info),
       onPermission: (message) => {
         emit(input, 'agent.permission_wait', { message });
         input.onPermission?.(message);

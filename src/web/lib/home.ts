@@ -61,6 +61,7 @@ const DECISION_LABELS: Record<DecisionKind, string> = {
   final_review: 'Review the PR',
   ci_gap: 'Missing CI check',
   resume_conflict: 'Check before resuming',
+  stalled: 'Agent may be stuck',
 };
 
 export function decisionLabel(kind: DecisionKind): string {
