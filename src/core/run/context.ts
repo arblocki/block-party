@@ -58,7 +58,7 @@ export interface Ctx {
 function toolsLine(allowedTools: string[], runDir: string): string {
   return (
     `- ${shellRules(allowedTools)} ` +
-    `The run directory ${runDir} is readable and writable for you. ` +
+    `The run directory ${runDir} is readable for you; the only file you write there is report.json. ` +
     'Subagents you start get the same rules.'
   );
 }

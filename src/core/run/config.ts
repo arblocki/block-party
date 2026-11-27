@@ -47,6 +47,8 @@ export const RunConfigSchema = z.object({
       /**
        * `on` runs the implementer's shell commands inside Claude Code's sandbox: writes only in
        * the worktree and the repository's .git, network only to package registries.
+       * `off` (the default) has no such limit: the agent's commands can read any file your
+       * user account can read.
        */
       sandbox: z.enum(['off', 'on']).default('off'),
       /** Hosts besides the package registries a sandboxed run may reach. */

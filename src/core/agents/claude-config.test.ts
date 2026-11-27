@@ -197,6 +197,33 @@ describe('implementerPermissions', () => {
     }
   });
 
+  it('protects every run directory path the pipeline reads back', () => {
+    const p = implementerPermissions([], [], scope);
+    const edits = p.disallowedTools.filter((t) => t.startsWith('Edit('));
+    const covered = (rel: string) =>
+      edits.some((t) => {
+        const rule = t.slice('Edit(//data/runs/r1/'.length, -1);
+        return rule.endsWith('/**') ? rel.startsWith(rule.slice(0, -2)) : rel === rule;
+      });
+    for (const rel of [
+      'inputs/rulings.json',
+      'inputs/config.json',
+      'inputs/findings-round-1.json',
+      'reports/implement-1.json',
+      'reviews/round-1/review.json',
+      'plans/v1.md',
+      'run.json',
+      'events.jsonl',
+      'run-events.jsonl',
+      'settings.json',
+      'agents.json',
+    ]) {
+      expect(covered(rel), rel).toBe(true);
+    }
+    // the one file the agent writes is not covered
+    expect(covered('report.json')).toBe(false);
+  });
+
   it('allows no shell read that bypasses the Read denies', () => {
     const p = implementerPermissions(['pnpm test'], [], scope);
     for (const c of ['cat', 'head', 'tail', 'grep', 'wc', 'find', 'node']) {

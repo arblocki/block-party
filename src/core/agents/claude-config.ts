@@ -277,6 +277,8 @@ function worktreeOnly(dir: string): string[] {
 }
 
 /**
+ * RULE: every run-directory path the pipeline reads back must be listed here (the test in
+ * claude-config.test.ts pins it), or an agent could change what the pipeline trusts.
  * Files and directories in the run directory the pipeline owns: an agent must not change its
  * own permissions or hooks (`settings.json`, `agents.json`), the run's state and history, or the
  * briefs, inputs and rulings it is given. Everything is regenerated or rewritten by the
