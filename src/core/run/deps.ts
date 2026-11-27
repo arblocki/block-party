@@ -1,3 +1,4 @@
+import { basename, dirname } from 'node:path';
 import { hookArgv } from '../agents/claude-config.js';
 import { createHeadlessClaude } from '../agents/claude-headless.js';
 import { createPaneClaude } from '../agents/claude-pane.js';
@@ -34,7 +35,18 @@ export async function createRunDeps(opts: CreateRunDepsOptions): Promise<Pipelin
       ? createPaneClaude({
           host: createHerdrHost(),
           claudeBin: 'claude',
-          watcherFactory: (p, off) => new HookWatcher(p, { startOffset: off }),
+          watcherFactory: (p, off) =>
+            new HookWatcher(p, {
+              startOffset: off,
+              // The run's hook offset follows what the live watcher has consumed, so a restart
+              // replays only the lines nobody saw. The run directory is named after the run.
+              ...(opts.store
+                ? {
+                    onAdvance: (next: number) =>
+                      opts.store!.advanceHookOffset(basename(dirname(p)), next),
+                  }
+                : {}),
+            }),
         })
       : createHeadlessClaude();
   const { echo } = opts;

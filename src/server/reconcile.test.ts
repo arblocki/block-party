@@ -79,7 +79,7 @@ describe('reconcileRuns', () => {
         kind: 'interrupted',
         status: 'open',
         title: 'Run interrupted',
-        body: `The run stopped while checking (abc1234): owner process ${DEAD} is gone. The agent had not yet written its report.`,
+        body: `The run stopped while checking (abc1234): owner process ${DEAD} is gone. No report file exists yet.`,
         attach: null,
       }),
     ]);
@@ -99,7 +99,7 @@ describe('reconcileRuns', () => {
     });
     await reconcile();
     expect(store.runs.listDecisions({ runId: 'r20260101-aaaaaa' })[0]).toMatchObject({
-      body: `The run stopped while implementing: owner process ${DEAD} is gone. The agent had not yet written its report.`,
+      body: `The run stopped while implementing: owner process ${DEAD} is gone. No report file exists yet.`,
       attach: 'herdr attach 3 (workspace bp-x-impl)',
     });
   });
@@ -174,28 +174,79 @@ const hook = (name: string) =>
   JSON.stringify({ ts: '2026-01-01T00:00:00.000Z', payload: { hook_event_name: name } });
 
 describe('reconcile evidence', () => {
-  it('replays hook events exactly once across two restarts, picking up later lines', async () => {
-    const dir = runDirWith([hook('SessionStart'), hook('Stop')]);
+  const kinds = (id: string) => store.runs.listEvents(id).map((e) => e.type);
+  const tool = () =>
+    JSON.stringify({ ts: 'x', payload: { hook_event_name: 'PostToolUse', session_id: 's' } });
+
+  it('records only derived events, once across restarts, and never raw hook rows', async () => {
+    const dir = runDirWith([hook('SessionStart'), tool(), tool(), hook('Stop')]);
     addRun('r20260101-aaaaaa', { runDir: dir });
     await reconcile();
-    const hooks = () =>
-      store.runs.listEvents('r20260101-aaaaaa').filter((e) => e.type === 'agent.hook');
-    expect(hooks().map((e) => (e.payload as { event: string }).event)).toEqual([
-      'SessionStart',
-      'Stop',
+    const id = 'r20260101-aaaaaa';
+    const events = store.runs.listEvents(id);
+    expect(events.map((e) => e.type)).toEqual([
+      'reconcile.activity',
+      'reconcile.agent_stopped',
+      'run.interrupted',
     ]);
-    // Second restart (the run was resumed and died again): only the new line is copied.
-    store.runs.updateRun('r20260101-aaaaaa', { stage: 'checking', ownerPid: DEAD });
-    appendFileSync(join(dir, 'events.jsonl'), hook('SessionEnd') + '\n');
+    expect(events[0]!.payload).toEqual({ toolCalls: 2 });
+    // Second restart: only the new lines count (a permission prompt, one more tool call).
+    store.runs.updateRun(id, { stage: 'checking', ownerPid: DEAD });
+    appendFileSync(
+      join(dir, 'events.jsonl'),
+      [
+        tool(),
+        JSON.stringify({
+          ts: 'x',
+          payload: {
+            hook_event_name: 'Notification',
+            notification_type: 'permission_prompt',
+            message: 'ok to run?',
+          },
+        }),
+      ].join('\n') + '\n',
+    );
     await reconcile();
-    // A third pass over an unchanged file copies nothing.
-    store.runs.updateRun('r20260101-aaaaaa', { stage: 'checking', ownerPid: DEAD });
+    // A third pass over an unchanged file adds nothing.
+    store.runs.updateRun(id, { stage: 'checking', ownerPid: DEAD });
     await reconcile();
-    expect(hooks().map((e) => (e.payload as { event: string }).event)).toEqual([
-      'SessionStart',
-      'Stop',
-      'SessionEnd',
+    const all = store.runs.listEvents(id);
+    expect(all.filter((e) => e.type === 'reconcile.activity').map((e) => e.payload)).toEqual([
+      { toolCalls: 2 },
+      { toolCalls: 1 },
     ]);
+    expect(all.find((e) => e.type === 'agent.permission_wait')?.payload).toEqual({
+      message: 'ok to run?',
+    });
+    expect(kinds(id)).not.toContain('agent.hook');
+  });
+
+  it('replays only the tail past what the live watcher consumed', async () => {
+    const lines = [hook('SessionStart'), tool(), tool(), hook('Stop'), tool()];
+    const dir = runDirWith(lines);
+    addRun('r20260101-aaaaaa', { runDir: dir });
+    // The watcher consumed the first four lines before the crash.
+    const consumed = Buffer.byteLength(lines.slice(0, 4).join('\n') + '\n');
+    store.runs.advanceHookOffset('r20260101-aaaaaa', consumed);
+    store.runs.advanceHookOffset('r20260101-aaaaaa', 3); // never moves back
+    expect(store.runs.getHookOffset('r20260101-aaaaaa')).toBe(consumed);
+    await reconcile();
+    const ev = store.runs.listEvents('r20260101-aaaaaa');
+    expect(ev.map((e) => e.type)).toEqual(['reconcile.activity', 'run.interrupted']);
+    expect(ev[0]!.payload).toEqual({ toolCalls: 1 });
+  });
+
+  it('says whether the report is from the current step', async () => {
+    const dir = runDirWith([]);
+    const run = addRun('r20260101-aaaaaa', { runDir: dir });
+    writeFileSync(join(dir, 'report.json'), '{}');
+    // The open step started after the report was written.
+    const stage = store.runs.startStage({ runId: run.id, kind: 'implement', round: 1 });
+    expect(stage).toBeGreaterThan(0);
+    await new Promise((r) => setTimeout(r, 15));
+    store.runs.startStage({ runId: run.id, kind: 'check-fix', round: 1 });
+    await reconcile();
+    expect(store.runs.listDecisions()[0]!.body).toContain('from an earlier step');
   });
 
   it('records pane_alive for a live terminal and says Resume will re-attach', async () => {
@@ -214,10 +265,15 @@ describe('reconcile evidence', () => {
     });
     const events = store.runs.listEvents('r20260101-aaaaaa');
     expect(events.map((e) => e.type)).toEqual(['run.interrupted', 'reconcile.pane_alive']);
-    expect(events[1]!.payload).toEqual({ label: pane.label, state: 'working' });
+    expect(events[1]!.payload).toEqual({
+      label: pane.label,
+      state: 'working',
+      agent: 'implementer',
+    });
     const [d] = store.runs.listDecisions({ runId: 'r20260101-aaaaaa' });
     expect(d!.body).toContain('still running in its terminal; Resume will re-attach to it');
-    expect(d!.body).toContain('had written its report');
+    expect(d!.body).toContain('The implementer is still running');
+    expect(d!.body).toContain('A report file exists');
     expect(store.runs.getRun('r20260101-aaaaaa')?.stage).toBe('interrupted');
   });
 
@@ -322,5 +378,25 @@ describe('reopenStrandedRests', () => {
     expect(reopenStrandedRests(store.runs, opts)).toEqual([]);
     // Once that owner is gone, the run is stranded and gets its question back.
     expect(reopenStrandedRests(store.runs, { ...opts, isAlive: () => false })).toEqual([run.id]);
+  });
+});
+
+describe('reconcile of a planning run', () => {
+  it('names the planner when its terminal is still open', async () => {
+    addRun('r20260101-aaaaaa', { stage: 'planning' });
+    await reconcileRuns({
+      runs: store.runs,
+      hostname: HOST,
+      isAlive: () => false,
+      terminal: {
+        list: async () => [{ session: 's', label: 'bp-r20260101-aaaaaa-plan', cwd: '/wt' }],
+        agentState: async () => 'working',
+      },
+    });
+    expect(store.runs.listDecisions()[0]!.body).toContain('The planner is still running');
+    expect(
+      store.runs.listEvents('r20260101-aaaaaa').find((e) => e.type === 'reconcile.pane_alive')
+        ?.payload,
+    ).toMatchObject({ agent: 'planner' });
   });
 });

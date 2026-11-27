@@ -53,6 +53,9 @@ export class UnknownProjectError extends Error {
   }
 }
 
+/** What a cancel found out: done, not possible, or still stopping. */
+export type CancelResult = boolean | 'pending';
+
 export interface RunManager {
   /** Starts a run in this process; resolves with its id once the run row exists. */
   start(req: StartRunRequest): Promise<string>;
@@ -71,10 +74,11 @@ export interface RunManager {
    * Cancels a run: one that this process drives (aborted at any stage; a continuation that is
    * still leaving rest is cancelled once it owns the run), one resting for a person, or one
    * that stopped (`interrupted`, `blocked`). Resolves with the real outcome: true when the run
-   * is (or, past the wait, is being) cancelled, false when it ended some other way, was
-   * already over, or is not a run this can cancel. Worktree, branch and run directory stay.
+   * is cancelled, false when it ended some other way, was already over, was never aborted, or
+   * is not a run this can cancel, and `'pending'` when it was told to stop but had not settled
+   * within the wait (a push in progress finishes first). Worktree, branch and run directory stay.
    */
-  cancel(runId: string): Promise<boolean>;
+  cancel(runId: string): Promise<CancelResult>;
   /** Interrupts every run this process drives and waits (bounded) for them to settle. */
   shutdown(timeoutMs?: number): Promise<void>;
 }
@@ -210,10 +214,10 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     ]).finally(() => clearTimeout(timer));
   };
   const cancelWaitMs = opts.cancelWaitMs ?? DEFAULT_CANCEL_WAIT_MS;
-  const resultOf = async (id: string, e: Entry): Promise<boolean> => {
+  const resultOf = async (id: string, e: Entry): Promise<CancelResult> => {
     // The cancel may take a while (a push in progress finishes first): answer once the run has
-    // settled; past the wait, an abort that was delivered counts as a cancel in progress.
-    if ((await settleWait(e, cancelWaitMs)) === 'timeout') return true;
+    // settled; past the wait the abort was delivered but the run has not settled: pending.
+    if ((await settleWait(e, cancelWaitMs)) === 'timeout') return 'pending';
     return stageNow(id) === 'cancelled';
   };
 
@@ -221,7 +225,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
    * Not driven here: a resting or stopped run is cancelled by a continuation that holds it,
    * so it cannot race another one starting.
    */
-  const cancelIdle = async (runId: string): Promise<boolean> => {
+  const cancelIdle = async (runId: string): Promise<CancelResult> => {
     const started = continueEntry(
       runId,
       { kind: 'cancel' },
@@ -349,7 +353,8 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         while (!finished && stageOf(runId) === 'resting' && Date.now() < deadline) {
           await new Promise((r) => setTimeout(r, 20));
         }
-        if (!finished && stageOf(runId) === 'resting') return true;
+        // Never aborted: the continuation still holds the run at rest, nothing was cancelled.
+        if (!finished && stageOf(runId) === 'resting') return false;
         if (finished) {
           // It ended (or came to rest, or stopped): cancel what is left, if anything is.
           if (stageNow(runId) === 'cancelled') return true;

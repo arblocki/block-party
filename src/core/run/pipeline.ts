@@ -669,7 +669,12 @@ async function stopPlanner(ctx: Ctx): Promise<void> {
  * retry turn. The version is stored, a `plan_approval` item is opened, the planner is stopped
  * (its session id stays in run.json) and the run rests in `awaiting_plan_approval`.
  */
-async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
+async function planStep(
+  ctx: Ctx,
+  feedback: string | null,
+  /** A resume: a planner still working in its live terminal is waited on, not prompted again. */
+  reattach = false,
+): Promise<void> {
   const { deps, input, runDir } = ctx;
   if (input.description === undefined) throw new Error('This run has no description to plan');
   const n = await nextPlanVersion(runDir);
@@ -727,10 +732,22 @@ async function planStep(ctx: Ctx, feedback: string | null): Promise<void> {
     let outcome: TurnOutcome;
     const headBefore = await deps.git.headSha(ctx.st.worktreePath);
     if (ctx.plannerSession) {
+      const session = ctx.plannerSession;
+      const tryAttach = reattach;
+      reattach = false;
       outcome = await turnEnded(
         ctx,
         abortable(
-          deps.adapter.send(ctx.plannerSession, { ...start, prompt }, prompt),
+          (async () => {
+            const attached = tryAttach
+              ? await deps.adapter.reattach?.(session, { ...start, prompt })
+              : null;
+            if (attached) {
+              ctx.rec.event('resume.reattached', { label: session.paneLabel, agent: 'planner' });
+              return attached;
+            }
+            return deps.adapter.send(session, { ...start, prompt }, prompt);
+          })(),
           input.signal,
         ),
       );

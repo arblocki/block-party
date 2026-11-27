@@ -309,6 +309,27 @@ describe('RunManager.cancel of a resting or stopped run', () => {
     expect(calls.map((c) => c.entry.kind)).toEqual(['feedback']);
   });
 
+  it('returns false when a continuation still holds the run at rest past the wait', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'awaiting_review' });
+    const m = manager({
+      cancelWaitMs: 60,
+      continuePipeline: () => new Promise<RunOutcome>(() => undefined),
+    });
+    expect(m.continue(RUN_ID, { kind: 'feedback', text: 'x' })).toBe(true);
+    expect(await m.cancel(RUN_ID)).toBe(false);
+  });
+
+  it('answers pending when the aborted run has not settled within the wait', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'interrupted' });
+    const m = manager({
+      cancelWaitMs: 60,
+      continuePipeline: () => new Promise<RunOutcome>(() => undefined),
+    });
+    expect(await m.cancel(RUN_ID)).toBe('pending');
+  });
+
   it('returns false when the continuation it waited for completed the run', async () => {
     createRow();
     store.runs.updateRun(RUN_ID, { stage: 'awaiting_review' });

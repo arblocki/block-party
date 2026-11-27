@@ -686,8 +686,27 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     }
     if (isCancelStopped) {
       const cancelled = await deps.manager!.cancel(existing.runId);
-      if (!cancelled) {
-        return c.json({ error: 'The run could not be cancelled: it is no longer stopped.' }, 409);
+      if (cancelled === false) {
+        // Nothing was cancelled: the question is asked again, as for any answer that fails.
+        const reason = 'the run is no longer stopped, or is busy';
+        const open = runs.listDecisions({ runId: existing.runId, status: 'open' });
+        if (!open.some((d) => d.kind === 'resume_conflict')) {
+          runs.openDecision({
+            runId: existing.runId,
+            kind: 'resume_conflict',
+            title: existing.title,
+            body: `${existing.body} Your answer could not be carried out: ${reason}.`,
+            attach: existing.attach,
+            options: existing.options,
+          });
+        }
+        return c.json({ error: `The run could not be cancelled: ${reason}.` }, 409);
+      }
+      if (cancelled === 'pending') {
+        return c.json(
+          { decision: runs.getDecision(id), continued: true, state: 'cancelling' },
+          202,
+        );
       }
       continued = true;
     }
@@ -871,7 +890,10 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   app.post('/api/runs/:id/cancel', async (c) => {
     const id = c.req.param('id');
     if (!isRunId(id)) return badRequest(c, 'invalid run id');
-    return c.json({ cancelled: (await deps.manager?.cancel(id)) ?? false });
+    const result = (await deps.manager?.cancel(id)) ?? false;
+    // Told to stop but not settled yet (a push in progress finishes first).
+    if (result === 'pending') return c.json({ cancelled: false, state: 'cancelling' }, 202);
+    return c.json({ cancelled: result });
   });
 }
 

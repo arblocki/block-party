@@ -1,7 +1,7 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { hostname as osHostname } from 'node:os';
 import { join } from 'node:path';
-import { readHookEvents } from '../core/agents/hook-events.js';
+import { isFinalStop, readHookEvents } from '../core/agents/hook-events.js';
 import { RunConfigSchema } from '../core/run/config.js';
 import { reopenRestDecision, RESUME_OPTIONS } from '../core/run/rest-decision.js';
 import { interruptedBody } from '../core/run/pipeline-helpers.js';
@@ -40,36 +40,56 @@ function sessionAttach(runs: RunStore, runId: string): string | null {
 }
 
 /**
- * Copies hook events the server has not seen from the run's `events.jsonl` into `run_events`
- * as `agent.hook` rows. The byte offset and the rows move together in one transaction, so
- * running this again (or after a crash) never repeats an event. Returns how many were copied.
+ * Reads the hook events past the run's offset (the live watcher advances it as it consumes
+ * lines, so this is only what happened while block-party was down) and records what they mean,
+ * never the raw lines: `reconcile.agent_stopped` when the agent finished a turn or ended its
+ * session, `agent.permission_wait` for a permission prompt (as the live path records it), and
+ * one `reconcile.activity { toolCalls }` counting tool calls. The offset moves with the rows
+ * in one transaction, so running this again never repeats an event. Returns how many events
+ * it recorded.
  */
 export function replayHookEvents(runs: RunStore, run: RunRow, now: () => Date): number {
   const file = join(run.runDir, 'events.jsonl');
   const from = runs.getHookOffset(run.id);
   const { events, nextOffset } = readHookEvents(file, from);
   if (nextOffset <= from) return 0;
-  return runs.replayHookEvents(
-    run.id,
-    events.map((e) => ({
-      ts: e.ts ?? now().toISOString(),
-      type: 'agent.hook',
-      payload: {
-        event: e.hook_event_name,
-        ...(e.session_id ? { session: e.session_id } : {}),
-        ...(e.message ? { message: e.message } : {}),
-        ...(e.reason ? { reason: e.reason } : {}),
-        ...(e.notification_type ? { notification: e.notification_type } : {}),
-        ...(e.agent_type ? { agentType: e.agent_type } : {}),
-      },
-    })),
-    nextOffset,
-  );
+  const at = (e: { ts?: string }) => e.ts ?? now().toISOString();
+  const derived: { ts: string; type: string; payload?: unknown }[] = [];
+  let toolCalls = 0;
+  let stopped: { ts: string; event: string } | undefined;
+  for (const e of events) {
+    if (e.hook_event_name === 'PostToolUse') toolCalls += 1;
+    else if (isFinalStop(e) || e.hook_event_name === 'SessionEnd') {
+      stopped = { ts: at(e), event: e.hook_event_name };
+    } else if (
+      e.hook_event_name === 'Notification' &&
+      e.notification_type === 'permission_prompt'
+    ) {
+      derived.push({
+        ts: at(e),
+        type: 'agent.permission_wait',
+        payload: { message: e.message ?? 'permission prompt' },
+      });
+    }
+  }
+  if (toolCalls > 0) {
+    derived.push({ ts: now().toISOString(), type: 'reconcile.activity', payload: { toolCalls } });
+  }
+  if (stopped) {
+    derived.push({
+      ts: stopped.ts,
+      type: 'reconcile.agent_stopped',
+      payload: { event: stopped.event },
+    });
+  }
+  return runs.replayHookEvents(run.id, derived, nextOffset);
 }
 
 interface PaneEvidence {
   label: string;
   state: AgentState;
+  /** Whose terminal it is: the planner's while the run was planning, else the implementer's. */
+  agent: 'planner' | 'implementer';
 }
 
 /** The run's agent pane, found by label through the terminal host; null when it is gone. */
@@ -77,9 +97,12 @@ async function probePane(
   terminal: ReconcileOptions['terminal'],
   run: RunRow,
 ): Promise<PaneEvidence | null> {
-  if (!terminal || run.implementer?.mode !== 'pane') return null;
+  const planning = run.stage === 'planning';
+  if (!terminal || (!planning && run.implementer?.mode !== 'pane')) return null;
   try {
-    const mine = (await terminal.list()).filter((p) => p.label.startsWith(`bp-${run.id}-`));
+    const mine = (await terminal.list()).filter((p) =>
+      p.label.startsWith(`bp-${run.id}-${planning ? 'plan' : 'impl'}`),
+    );
     const pane = mine.find((p) => p.label === run.implementer?.paneLabel) ?? mine[mine.length - 1];
     if (!pane) return null;
     let state: AgentState = 'unknown';
@@ -88,32 +111,55 @@ async function probePane(
     } catch {
       // The pane exists; its state just could not be read.
     }
-    return { label: pane.label, state };
+    return { label: pane.label, state, agent: planning ? 'planner' : 'implementer' };
   } catch {
     // No herdr server: no terminals are open.
     return null;
   }
 }
 
+/** Whether `report.json` was written during the current turn (null: no turn to compare with). */
+function reportEvidence(runs: RunStore, run: RunRow): 'this_turn' | 'older' | 'none' | 'exists' {
+  let mtime: number;
+  try {
+    mtime = statSync(join(run.runDir, 'report.json')).mtimeMs;
+  } catch {
+    return 'none';
+  }
+  try {
+    const open = runs.listStages(run.id).filter((s) => s.state === 'running');
+    const turn = open.at(-1);
+    if (!turn) return 'exists';
+    return mtime >= Date.parse(turn.startedAt) ? 'this_turn' : 'older';
+  } catch {
+    return 'exists';
+  }
+}
+
 /** What reconciliation found, in the words of the inbox item. */
 function evidenceText(
-  run: RunRow,
-  hasReport: boolean,
+  report: ReturnType<typeof reportEvidence>,
   pane: PaneEvidence | null,
   probed: boolean,
+  paneRun: boolean,
 ): string {
-  const parts = [`The agent ${hasReport ? 'had written' : 'had not yet written'} its report.`];
-  if (probed && run.implementer?.mode === 'pane') {
-    if (!pane) parts.push('Its terminal is no longer open.');
-    else if (pane.state === 'working') {
-      parts.push(
-        'The agent is still running in its terminal; Resume will re-attach to it instead of starting a second one.',
-      );
-    } else {
-      parts.push(
-        'Its terminal is still open (the agent is not working); Resume will pick it up from there.',
-      );
-    }
+  const parts = [
+    {
+      this_turn: 'The agent had written its report for this step.',
+      older: 'The report file is from an earlier step; none was written for this one yet.',
+      none: 'No report file exists yet.',
+      exists: 'A report file exists.',
+    }[report],
+  ];
+  if (pane) {
+    const who = pane.agent === 'planner' ? 'planner' : 'implementer';
+    parts.push(
+      pane.state === 'working'
+        ? `The ${who} is still running in its terminal; Resume will re-attach to it instead of starting a second one.`
+        : `The ${who}'s terminal is still open (it is not working); Resume will pick it up from there.`,
+    );
+  } else if (probed && paneRun) {
+    parts.push('Its terminal is no longer open.');
   }
   return parts.join(' ');
 }
@@ -143,7 +189,7 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
       // Evidence only: a file that cannot be read does not stop the run being marked.
     }
     const pane = await probePane(opts.terminal, run);
-    const hasReport = existsSync(join(run.runDir, 'report.json'));
+    const report = reportEvidence(runs, run);
     runs.updateRun(run.id, { stage: 'interrupted', stageNote: note });
     runs.closeOpenQuestions(run.id);
     runs.appendEvent({
@@ -157,7 +203,7 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
         runId: run.id,
         ts: now().toISOString(),
         type: 'reconcile.pane_alive',
-        payload: { label: pane.label, state: pane.state },
+        payload: { label: pane.label, state: pane.state, agent: pane.agent },
       });
     }
     const attach = run.implementer?.mode === 'pane' ? sessionAttach(runs, run.id) : null;
@@ -165,7 +211,7 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
       runId: run.id,
       kind: 'interrupted',
       title: 'Run interrupted',
-      body: `${interruptedBody(run.stage, run.stageNote, note)} ${evidenceText(run, hasReport, pane, opts.terminal !== undefined)}`,
+      body: `${interruptedBody(run.stage, run.stageNote, note)} ${evidenceText(report, pane, opts.terminal !== undefined, run.implementer?.mode === 'pane')}`,
       attach,
       options: RESUME_OPTIONS,
     });

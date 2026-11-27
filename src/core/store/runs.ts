@@ -255,8 +255,10 @@ export interface RunStore {
   latestEventId(): number;
   /** Bytes of the run's hook events file already copied into `run_events` (0 if none). */
   getHookOffset(runId: string): number;
+  /** Moves the run's hook offset forward to `offset` (never back); the live watcher calls it. */
+  advanceHookOffset(runId: string, offset: number): void;
   /**
-   * Appends `events` and moves the run's hook offset to `nextOffset` in one transaction, so a
+   * Appends `events` (derived ones, never raw hook lines) and moves the run's hook offset to `nextOffset` in one transaction, so a
    * crash replays a batch whole or not at all. Does nothing when `nextOffset` is not past the
    * stored offset.
    */
@@ -652,6 +654,9 @@ export function createRunStore(db: Database.Database): RunStore {
   const hookOffset = db.prepare<[string], { byte_offset: number }>(
     'SELECT byte_offset FROM run_hook_offsets WHERE run_id = ?',
   );
+  const advanceOffset = db.prepare(`
+    INSERT INTO run_hook_offsets (run_id, byte_offset) VALUES (?, ?)
+    ON CONFLICT (run_id) DO UPDATE SET byte_offset = max(byte_offset, excluded.byte_offset)`);
   const setHookOffset = db.prepare(`
     INSERT INTO run_hook_offsets (run_id, byte_offset) VALUES (?, ?)
     ON CONFLICT (run_id) DO UPDATE SET byte_offset = excluded.byte_offset`);
@@ -819,6 +824,9 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     getHookOffset(runId) {
       return hookOffset.get(runId)?.byte_offset ?? 0;
+    },
+    advanceHookOffset(runId, offset) {
+      advanceOffset.run(runId, offset);
     },
     replayHookEvents(runId, events, nextOffset) {
       return db

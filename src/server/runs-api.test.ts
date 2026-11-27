@@ -60,7 +60,7 @@ function makeApp(runStore: RunStore = runs, runManager?: RunManager) {
 }
 
 /** A manager that records calls; `start` resolves with RUN_A unless `fail` is set. */
-function fakeManager(opts: { fail?: Error } = {}) {
+function fakeManager(opts: { fail?: Error; cancelResult?: boolean | 'pending' } = {}) {
   const starts: StartRunRequest[] = [];
   const cancels: string[] = [];
   const continues: { runId: string; entry: ContinueEntry }[] = [];
@@ -86,7 +86,7 @@ function fakeManager(opts: { fail?: Error } = {}) {
     },
     async cancel(id) {
       cancels.push(id);
-      return id === RUN_A;
+      return opts.cancelResult ?? id === RUN_A;
     },
     async shutdown() {},
   };
@@ -1864,6 +1864,7 @@ describe('POST /api/runs/:id/resume', () => {
     });
     expect((await post(`/api/inbox/${q1}/answer`, { choice: 'cancel' }, a)).status).toBe(200);
     expect(fake.resumes).toHaveLength(0);
+    expect(fake.cancels).toEqual([RUN_A]);
     const q2 = runs.openDecision({
       runId: RUN_A,
       kind: 'resume_conflict',
@@ -1873,5 +1874,40 @@ describe('POST /api/runs/:id/resume', () => {
     });
     expect((await post(`/api/inbox/${q2}/answer`, { choice: 'keep' }, a)).status).toBe(200);
     expect(fake.resumes).toEqual([{ runId: RUN_A, opts: { keep: true } }]);
+  });
+
+  it('reopens the worktree question when the cancel could not be carried out', async () => {
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    const fake = fakeManager({ cancelResult: false });
+    const opts = [
+      { id: 'keep', label: 'Keep the changes and continue' },
+      { id: 'cancel', label: 'Cancel the run' },
+    ];
+    const q = runs.openDecision({
+      runId: RUN_A,
+      kind: 'resume_conflict',
+      title: 't',
+      body: 'b',
+      options: opts,
+    });
+    const res = await post(
+      `/api/inbox/${q}/answer`,
+      { choice: 'cancel' },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(409);
+    const open = runs.listDecisions({ runId: RUN_A, status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ kind: 'resume_conflict', options: opts });
+    expect(open[0]!.body).toContain('could not be carried out');
+  });
+
+  it('answers 202 while a cancel is still settling', async () => {
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    const fake = fakeManager({ cancelResult: 'pending' });
+    const a = makeApp(runs, fake.manager);
+    const res = await post(`/api/runs/${RUN_A}/cancel`, {}, a);
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ cancelled: false, state: 'cancelling' });
   });
 });

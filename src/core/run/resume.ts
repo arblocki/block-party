@@ -235,7 +235,7 @@ export function fixBaseOf(stages: StageEvidence[]): Ctx['fixBase'] {
 export interface ResumeSteps {
   setStage(ctx: Ctx, stage: RunStage, note: string | null, resume?: boolean): Promise<void>;
   patchState(ctx: Ctx, patch: Partial<Ctx['st']>): Promise<void>;
-  planStep(ctx: Ctx, feedback: string | null): Promise<void>;
+  planStep(ctx: Ctx, feedback: string | null, reattach?: boolean): Promise<void>;
   implement(ctx: Ctx): Promise<void>;
   judgeTurn(
     ctx: Ctx,
@@ -541,7 +541,7 @@ export async function resumeRun(
 
   switch (point.kind) {
     case 'plan':
-      await steps.planStep(ctx, point.feedback);
+      await steps.planStep(ctx, point.feedback, true);
       return;
     case 'turn':
       await resumeTurn(ctx, point, steps, from === 'blocked' ? stageNote : null);

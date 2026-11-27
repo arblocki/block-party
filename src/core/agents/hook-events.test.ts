@@ -327,3 +327,32 @@ describe('waitForTurnEnd', () => {
     expect(await p).toEqual({ kind: 'exited', reason: 'aborted' });
   });
 });
+
+describe('HookWatcher offset reporting', () => {
+  it('reports the offset reached once per batch of consumed lines, never for a partial line', () => {
+    const reached: number[] = [];
+    const watcher = new HookWatcher(eventsPath, { onAdvance: (n) => reached.push(n) });
+    watcher.poll();
+    expect(reached).toEqual([]);
+    add({ hook_event_name: 'PostToolUse', session_id: 's' });
+    add({ hook_event_name: 'Stop', session_id: 's' });
+    const size = Buffer.byteLength(
+      line({ hook_event_name: 'PostToolUse', session_id: 's' }) +
+        line({ hook_event_name: 'Stop', session_id: 's' }),
+    );
+    appendFileSync(eventsPath, '{"partial":');
+    watcher.poll();
+    watcher.poll();
+    expect(reached).toEqual([size]);
+  });
+
+  it('survives a failing offset callback', () => {
+    const watcher = new HookWatcher(eventsPath, {
+      onAdvance: () => {
+        throw new Error('db locked');
+      },
+    });
+    add({ hook_event_name: 'Stop', session_id: 's' });
+    expect(() => watcher.poll()).not.toThrow();
+  });
+});

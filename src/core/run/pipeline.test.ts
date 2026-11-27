@@ -3055,6 +3055,31 @@ describe('cancel at any stage', () => {
   });
 });
 
+describe('resume of a planner whose agent is still alive', () => {
+  it('waits on the working planner and judges its turn before prompting again', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({
+      store,
+      turns: [{}],
+      hangFirstTurn: true,
+      pane: true,
+      description: 'Add widgets',
+      reattach: 'working',
+    });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    expect(out.stage).toBe('interrupted');
+    const next = await continueRun(out.runId, { kind: 'resume' }, h.deps);
+    expect(next.stage).toBe('awaiting_plan_approval');
+    expect(h.calls.reattaches).toEqual(['planner-1']);
+    expect(h.calls.sends).toHaveLength(0);
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('resume.reattached');
+  });
+});
+
 describe('resume of a pane whose agent is still alive', () => {
   async function interrupted(o: Partial<Opts>) {
     const store = openStore(':memory:').runs;

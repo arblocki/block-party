@@ -297,9 +297,11 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     case 'resume.reattached':
     case 'agent.reattached':
       return 'Re-attached to the agent that was still running';
-    case 'agent.hook': {
-      const what = s('event');
-      return what ? `Agent activity recorded (${what})` : 'Agent activity recorded';
+    case 'reconcile.agent_stopped':
+      return 'The agent finished its turn while block-party was down';
+    case 'reconcile.activity': {
+      const n = num('toolCalls');
+      return n !== null ? `${plural(n, 'tool call')} while block-party was down` : type;
     }
     default:
       return type;

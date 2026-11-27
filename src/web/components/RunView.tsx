@@ -372,10 +372,12 @@ export function RunView({ id }: { id: string }) {
   const cancel = () => {
     setCancelling(true);
     setCancelNote(null);
-    api<{ cancelled: boolean }>(`/api/runs/${id}/cancel`, { method: 'POST' }).then(
+    api<{ cancelled: boolean; state?: string }>(`/api/runs/${id}/cancel`, { method: 'POST' }).then(
       (r) => {
         setCancelling(false);
-        if (!r.cancelled) {
+        if (r.state === 'cancelling') {
+          setCancelNote('Cancelling — this can take a moment while a push finishes.');
+        } else if (!r.cancelled) {
           setCancelNote(
             'This run has already finished or ended another way, so it could not be cancelled.',
           );

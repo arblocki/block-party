@@ -81,12 +81,19 @@ export class HookWatcher {
 
   private listeners = new Set<HookListener>();
   private readonly intervalMs: number;
+  private readonly onAdvance: ((nextOffset: number) => void) | undefined;
 
   constructor(
     private readonly path: string,
-    opts: { startOffset?: number; intervalMs?: number } = {},
+    opts: {
+      startOffset?: number;
+      intervalMs?: number;
+      /** Called after each poll that consumed lines, with the offset reached (one call per batch). */
+      onAdvance?: (nextOffset: number) => void;
+    } = {},
   ) {
     this.offset = opts.startOffset ?? 0;
+    this.onAdvance = opts.onAdvance;
     this.intervalMs = opts.intervalMs ?? 250;
   }
 
@@ -98,8 +105,16 @@ export class HookWatcher {
   /** One poll; also callable directly. */
   poll(): void {
     const { events, nextOffset } = readHookEvents(this.path, this.offset);
+    const advanced = nextOffset > this.offset;
     this.offset = nextOffset;
     for (const ev of events) for (const l of [...this.listeners]) l(ev);
+    if (advanced) {
+      try {
+        this.onAdvance?.(nextOffset);
+      } catch {
+        // Bookkeeping only: never let it break the wait for the turn.
+      }
+    }
   }
 
   get running(): boolean {

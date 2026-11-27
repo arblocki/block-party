@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HerdrError } from '../terminal/herdr-client.js';
 import type { AgentState, PaneRef, TerminalHost } from '../terminal/types.js';
 import { createPaneClaude } from './claude-pane.js';
+import { ShutdownError } from '../run/pipeline-helpers.js';
 import { HookWatcher } from './hook-events.js';
 import type { ImplementerStartInput } from './types.js';
 
@@ -645,6 +646,28 @@ describe('createPaneClaude', () => {
     await sent;
     expect(host.opens).toEqual([]);
     expect(host.texts).toEqual(['carry on']);
+  });
+
+  it('closes a pane that opened after a cancel, and leaves it after a shutdown', async () => {
+    for (const [reason, closed] of [
+      [undefined, ['bp-r1-impl']],
+      [new ShutdownError(), []],
+    ] as const) {
+      host = new FakeHost();
+      host.cwd = input.cwd;
+      host.paneText = 'opened late';
+      const ac = new AbortController();
+      // The abort lands while the host is still opening the pane.
+      host.onOpen = () => ac.abort(reason);
+      const a = adapter();
+      const { outcome } = await a.start({ ...input, signal: ac.signal });
+      expect(outcome).toEqual({ kind: 'exited', reason: 'aborted' });
+      expect(host.closed).toEqual(closed);
+      expect(host.texts).toEqual([]);
+    }
+    expect(readFileSync(path.join(input.runDir, 'logs', 'bp-r1-impl-final.txt'), 'utf8')).toBe(
+      'opened late',
+    );
   });
 
   it('describe includes attach command and label', async () => {

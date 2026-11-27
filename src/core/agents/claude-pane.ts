@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { worktreesRoot } from '../run/paths.js';
+import { ShutdownError } from '../run/pipeline-helpers.js';
 import { HerdrError } from '../terminal/herdr-client.js';
 import type { PaneRef, TerminalHost } from '../terminal/types.js';
 import { scrubbedEnv } from '../process/env.js';
@@ -238,6 +239,26 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     if (st) st.pane = pane;
     onOpened?.(pane);
     emit(input, 'agent.pane_opened', { label, sessionId });
+    // A cancel that arrived while the pane was opening: nothing is waiting for this agent, so
+    // close it (a server shutdown leaves it running, for a resume to find).
+    if (input.signal?.aborted && !(input.signal.reason instanceof ShutdownError)) {
+      await saveFinal(
+        st ?? {
+          pane,
+          runId: input.runId,
+          runDir: input.runDir,
+          eventsPath: input.eventsPath,
+          resumes: 1,
+          role: input.role ?? 'impl',
+        },
+      );
+      try {
+        await host.close(pane);
+      } catch {
+        // already gone
+      }
+      return { pane, outcome: { kind: 'exited', reason: 'aborted' } };
+    }
 
     // Startup dialogs: folder trust for the worktree, then (Claude Code ≥ 2.1.328) one "Adding a
     // new directory" confirmation for the --add-dir run directory. A key press sent before the
