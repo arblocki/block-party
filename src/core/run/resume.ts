@@ -12,7 +12,7 @@ import type { ChecksRunResult } from '../checks/run.js';
 import type { RunStage } from './machine.js';
 import type { StageKind, StageRow } from '../store/runs.js';
 import type { Ctx } from './context.js';
-import { abortable, throwIfAborted } from './pipeline-helpers.js';
+import { throwIfAborted } from './pipeline-helpers.js';
 import { RESUME_CONFLICT_OPTIONS, RESUME_CONFLICT_TITLE, RESUME_OPTIONS } from './rest-decision.js';
 import type { Report } from './report.js';
 import {
@@ -258,7 +258,7 @@ export interface ResumeSteps {
       output?: unknown;
     },
   ): Promise<T>;
-  turnEnded<T>(ctx: Ctx, turn: Promise<T>): Promise<T>;
+  turnEnded<T>(ctx: Ctx, makeTurn: (signal: AbortSignal) => Promise<T>): Promise<T>;
   verifyLoop(ctx: Ctx, opts?: { skipChecks?: boolean }): Promise<void>;
   finishRun(ctx: Ctx): Promise<void>;
   publishAndWait(ctx: Ctx, opts?: { startAtCi?: boolean }): Promise<void>;
@@ -657,7 +657,7 @@ export async function resumeTurn(
     await steps.implement(ctx);
     return;
   }
-  const { deps, st, input } = ctx;
+  const { deps, st } = ctx;
   const settling = kind === 'resume-commit';
   const brief = settling
     ? (
@@ -700,24 +700,18 @@ export async function resumeTurn(
     async () => {
       const outcome: TurnOutcome = point.reportPending
         ? { kind: 'report' }
-        : await steps.turnEnded(
-            ctx,
-            abortable(
-              (async () => {
-                // The agent may still be working in its own terminal (the server died, the
-                // terminal did not): wait for that turn instead of sending on top of it.
-                // `send` also prefers a live pane to starting a second session.
-                const input2 = { ...ctx.start, prompt: message };
-                const attached = await deps.adapter.reattach?.(session, input2);
-                if (attached) {
-                  ctx.rec.event('resume.reattached', { label: session.paneLabel });
-                  return attached;
-                }
-                return deps.adapter.send(session, input2, message);
-              })(),
-              input.signal,
-            ),
-          );
+        : await steps.turnEnded(ctx, async (signal) => {
+            // The agent may still be working in its own terminal (the server died, the
+            // terminal did not): wait for that turn instead of sending on top of it.
+            // `send` also prefers a live pane to starting a second session.
+            const input2 = { ...ctx.start, prompt: message, signal };
+            const attached = await deps.adapter.reattach?.(session, input2);
+            if (attached) {
+              ctx.rec.event('resume.reattached', { label: session.paneLabel });
+              return attached;
+            }
+            return deps.adapter.send(session, input2, message);
+          });
       // A pane resume may have relaunched under a new label.
       if (session.paneLabel !== undefined && st.implementer?.paneLabel !== session.paneLabel) {
         await steps.patchState(ctx, {

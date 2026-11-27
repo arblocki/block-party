@@ -158,6 +158,10 @@ interface Opts {
   pane?: boolean;
   /** Never answer these calls (until the run is aborted, which stops waiting for them). */
   hang?: ('checks' | 'review' | 'ci')[];
+  /** A fix turn finds the pane dead and relaunches it under this label (reported by onSession). */
+  relaunchLabel?: string;
+  /** The agent's terminal has closed: `isAlive` says no. */
+  terminalClosed?: boolean;
   /** What a resume's `reattach` finds: an agent still working in its pane, or nothing. */
   reattach?: 'working' | 'none';
 }
@@ -177,8 +181,10 @@ function harness(o: Opts) {
     sendInputs: [] as ImplementerStartInput[],
     stops: 0,
     stoppedSessions: [] as string[],
+    stoppedLabels: [] as (string | undefined)[],
     stopOpts: [] as unknown[],
     reattaches: [] as string[],
+    reattachLabels: [] as (string | undefined)[],
     reviews: [] as {
       round: number;
       prior: number;
@@ -190,6 +196,8 @@ function harness(o: Opts) {
     ciWaits: [] as string[],
     checks: 0,
     setup: 0,
+    setupEnvs: [] as (NodeJS.ProcessEnv | undefined)[],
+    checkEnvs: [] as (NodeJS.ProcessEnv | undefined)[],
     worktrees: 0,
   };
   let turnIdx = 0;
@@ -253,17 +261,24 @@ function harness(o: Opts) {
         input.onMessageSent?.();
         return { kind: 'no_report' };
       }
+      if (o.relaunchLabel) {
+        s.paneLabel = o.relaunchLabel;
+        input.onSession?.({ ...s });
+      }
       return doTurn(input);
     },
+    ...(o.terminalClosed !== undefined ? { isAlive: async () => !o.terminalClosed } : {}),
     async stop(s, stopOpts) {
       calls.stops++;
       calls.stoppedSessions.push(s.sessionId);
+      calls.stoppedLabels.push(s.paneLabel);
       calls.stopOpts.push(stopOpts);
     },
     ...(o.reattach !== undefined
       ? {
           async reattach(s: ImplementerSession, input: ImplementerStartInput) {
             calls.reattaches.push(s.sessionId);
+            calls.reattachLabels.push(s.paneLabel);
             return o.reattach === 'working' ? doTurn(input) : null;
           },
         }
@@ -294,8 +309,9 @@ function harness(o: Opts) {
       pushBranch: async () => undefined,
       remoteBranchSha: async () => git.head,
     },
-    runShell: async () => {
+    runShell: async (shell) => {
       calls.setup++;
+      calls.setupEnvs.push(shell.env);
       if (o.abortAt?.step === 'setup') {
         o.abortAt.ac.abort();
         return { code: null, signal: 'SIGTERM', durationMs: 1, timedOut: false };
@@ -304,6 +320,7 @@ function harness(o: Opts) {
     },
     runChecks: async (opts): Promise<ChecksRunResult> => {
       calls.checks++;
+      calls.checkEnvs.push(opts.env);
       if (o.hang?.includes('checks')) await new Promise(() => undefined);
       let passed = checkPlan.length ? checkPlan.shift()! : true;
       if (o.abortAt?.step === 'checks') {
@@ -3203,6 +3220,51 @@ describe('resume of a pane whose agent is still alive', () => {
   });
 });
 
+describe('relaunched pane labels', () => {
+  it('records the relaunched label after a fix turn, so a cancel closes that pane', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, {}],
+      checks: [false, true],
+      pane: true,
+      relaunchLabel: 'bp-pane-r2',
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    const saved = JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')) as {
+      implementer: { paneLabel: string };
+    };
+    expect(saved.implementer.paneLabel).toBe('bp-pane-r2');
+    expect(store.getRun(out.runId)?.implementer?.paneLabel).toBe('bp-pane-r2');
+    const attach = store
+      .listEvents(out.runId)
+      .filter((e) => e.type === 'implementer.session')
+      .map((e) => JSON.stringify(e.data));
+    expect(attach).toHaveLength(2);
+    // Cancelling the stopped run stops the live (r2) pane, not the original label.
+    const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
+    expect(next.stage).toBe('cancelled');
+    expect(h.calls.stoppedLabels.at(-1)).toBe('bp-pane-r2');
+  });
+});
+
+describe('check and setup environment', () => {
+  it('runs setup and checks without credentials the agent was denied', async () => {
+    vi.stubEnv('STRIPE_API_KEY', 'sk_secret');
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_secret');
+    try {
+      const h = harness({ turns: [{}] });
+      await h.run();
+      const setupEnv = h.calls.setupEnvs[0]!;
+      expect(setupEnv?.STRIPE_API_KEY).toBeUndefined();
+      expect(setupEnv?.GITHUB_TOKEN).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
+
 describe('run slots and the project lock', () => {
   const two = [finding('f_1_1', 'P1', 'Null deref'), finding('f_1_2', 'P2', 'Missing test')];
 
@@ -3436,6 +3498,8 @@ describe('stall detection', () => {
     // The agent itself is stopped for good, not just abandoned.
     expect(h.calls.stoppedSessions).toEqual(['s1']);
     expect(h.calls.stopOpts[0]).toMatchObject({ force: true, runDir: out.runDir });
+    // The abandoned turn's own signal is aborted, so its watcher and polling end.
+    expect(h.calls.startInputs[0]!.signal?.aborted).toBe(true);
     // The abandoned wait cannot open a permission item for the blocked run.
     h.calls.startInputs[0]!.onPermission?.('late prompt');
     expect(store.listDecisions({}).filter((d) => d.kind === 'permission')).toHaveLength(0);
@@ -3492,6 +3556,23 @@ describe('stall detection', () => {
     expect(open()).toHaveLength(0);
     clock.advance(10 * MIN);
     await vi.waitFor(() => expect(h.calls.sends).toHaveLength(3));
+    release();
+    await p;
+  });
+
+  it('does not nudge a closed terminal, and does not count it against the limit', async () => {
+    const { clock, h, release, open, events } = setup({ terminalClosed: true });
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(events('implementer.nudge_skipped')).toHaveLength(1));
+    expect(events('implementer.nudge_skipped')[0]).toContain("the agent's terminal has closed");
+    expect(h.calls.sends).toHaveLength(0);
+    expect(events('implementer.nudged')).toHaveLength(0);
+    // The skipped nudge was not used up: the next silence tries again instead of stalling.
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(events('implementer.nudge_skipped')).toHaveLength(2));
+    expect(open()).toHaveLength(0);
     release();
     await p;
   });

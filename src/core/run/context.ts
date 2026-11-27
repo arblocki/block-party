@@ -16,7 +16,7 @@ import type { ResolutionKind, ReviewRoundInput, TurnReport } from './publish.js'
 import type { StallWatcher } from './stall.js';
 import { RunRecorder } from './recorder.js';
 import { orderTurns, ReportSchema, TURN_KINDS, type Report } from './report.js';
-import { loadRunState, type RunState } from './run-state.js';
+import { loadRunState, saveRunState, type RunState } from './run-state.js';
 import { parseRulings, type Ruling } from './triage.js';
 
 /** Everything one pass of the pipeline works with; rebuilt from the run directory on resume. */
@@ -66,6 +66,34 @@ function toolsLine(allowedTools: string[], runDir: string): string {
     `The run directory ${runDir} is readable for you; the only file you write there is report.json. ` +
     'Subagents you start get the same rules.'
   );
+}
+
+/**
+ * Keeps the current session of an agent in memory, in `run.json` and in the event log. The
+ * adapter reports every launch and relaunch here, so the recorded pane label is always the live
+ * one (a resume, a cancel and the embedded terminal all look the pane up by it).
+ */
+export function recordSession(
+  ctx: Ctx,
+  role: 'implementer' | 'planner',
+  session: ImplementerSession,
+): void {
+  if (role === 'implementer') ctx.session = session;
+  else ctx.plannerSession = session;
+  ctx.rec.event(`${role === 'implementer' ? 'implementer' : 'planner'}.session`, {
+    mode: session.mode,
+    attach: ctx.deps.adapter.describe(session),
+  });
+  ctx.pending = ctx.pending.then(async () => {
+    const recorded = {
+      mode: session.mode,
+      sessionId: session.sessionId,
+      paneLabel: session.paneLabel ?? null,
+    };
+    ctx.st = { ...ctx.st, [role]: recorded };
+    await saveRunState(ctx.runDir, ctx.st);
+    ctx.rec.state(ctx.st);
+  });
 }
 
 /** The command that attaches to the implementer's session, if there is one. */
@@ -131,6 +159,7 @@ export function buildCtx(b: BuildCtxInput): Ctx {
         ctx.rec.permissionWait(message, attach);
         ctx.stall?.agentState('blocked');
       },
+      onSession: (session) => recordSession(ctx, 'implementer', session),
       onActivity: () => ctx.stall?.activity(),
       onAgentState: (state, info) => ctx.stall?.agentState(state, info),
       onEvent: (e) => ctx.rec.event(e.type, e.data),

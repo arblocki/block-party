@@ -75,5 +75,7 @@ export interface ImplementerAdapter {
    * the agent is not working: the caller then sends as usual (which also uses a live pane).
    */
   reattach?(session: ImplementerSession, input: ImplementerStartInput): Promise<TurnOutcome | null>;
+  /** Pane mode: whether the session's terminal is still open (a nudge must not reopen it). */
+  isAlive?(session: ImplementerSession): Promise<boolean>;
   describe(session: ImplementerSession): string; // e.g. attach command or log path
 }

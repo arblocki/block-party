@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { scrubbedEnv } from '../process/env.js';
+import { agentEnv } from '../agents/env.js';
 import { mkdir, readFile, readdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { plannerPermissions } from '../agents/claude-config.js';
@@ -58,7 +58,14 @@ import {
   RESUME_OPTIONS,
   restDecisionFor,
 } from './rest-decision.js';
-import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from './context.js';
+import {
+  attachCommand,
+  buildCtx,
+  loadContext,
+  recordSession,
+  unapprovedPlan,
+  type Ctx,
+} from './context.js';
 import { RunRecorder } from './recorder.js';
 import { StallStopError, startStallGuard, type NudgeTarget } from './stall-guard.js';
 import type { StallClock } from './stall.js';
@@ -295,8 +302,22 @@ async function stopAgentSession(
   }
 }
 
-/** Awaits an implementer turn; its permission decisions are resolved once it ends. */
-async function turnEnded<T>(ctx: Ctx, turn: Promise<T>, nudge?: NudgeTarget): Promise<T> {
+/**
+ * Awaits an implementer turn; its permission decisions are resolved once it ends. The turn gets
+ * its own abort signal, linked to the run's, so a stalled turn that the person stopped can be
+ * abandoned for real (its hook watcher and terminal polling end) while the run lives on.
+ */
+async function turnEnded<T>(
+  ctx: Ctx,
+  makeTurn: (signal: AbortSignal) => Promise<T>,
+  nudge?: NudgeTarget,
+): Promise<T> {
+  const runSignal = ctx.input.signal;
+  const turnAc = new AbortController();
+  const linkAbort = () => turnAc.abort(runSignal?.reason);
+  if (runSignal?.aborted) linkAbort();
+  else runSignal?.addEventListener('abort', linkAbort, { once: true });
+  const turn = abortable(makeTurn(turnAc.signal), turnAc.signal);
   // Every turn kind waits here, so stall detection covers them all. A person's `stop` on a
   // stalled agent ends the wait: its session is stopped and the run blocks.
   const guard = startStallGuard(ctx, nudge);
@@ -306,12 +327,15 @@ async function turnEnded<T>(ctx: Ctx, turn: Promise<T>, nudge?: NudgeTarget): Pr
     if (e instanceof StallStopError) {
       // The abandoned wait must not record anything more for a run that is blocked.
       ctx.abandoned = true;
+      turnAc.abort(e);
+      turn.catch(() => undefined);
       const session = nudge ? nudge.session() : ctx.session;
       if (session) await stopAgentSession(ctx, session, nudge ? 'planner' : 'implementer');
       throw new Halt('blocked', e.message);
     }
     throw e;
   } finally {
+    runSignal?.removeEventListener('abort', linkAbort);
     guard?.end();
     ctx.rec.resolvePermissions();
   }
@@ -654,7 +678,7 @@ async function provision(ctx: Ctx): Promise<void> {
       logPath,
       timeoutMs: input.config.policy.checkTimeoutMs,
       signal: input.signal,
-      env: scrubbedEnv(),
+      env: agentEnv(),
     });
     if (r.code !== 0 || r.timedOut) throw new Halt('failed', `Setup failed (see ${logPath})`);
   }
@@ -754,24 +778,12 @@ async function planStep(
       previousPlanPath: previous,
     }),
   );
-  const start = plannerStart(ctx, planPath);
-  const plannerTarget = (): NudgeTarget => ({ session: () => ctx.plannerSession, start });
-  const onSession = (session: ImplementerSession) => {
-    ctx.plannerSession = session;
-    ctx.rec.event('planner.session', {
-      mode: session.mode,
-      attach: deps.adapter.describe(session),
-    });
-    ctx.pending = ctx.pending.then(() =>
-      patchState(ctx, {
-        planner: {
-          mode: session.mode,
-          sessionId: session.sessionId,
-          paneLabel: session.paneLabel ?? null,
-        },
-      }),
-    );
+  const start = {
+    ...plannerStart(ctx, planPath),
+    onSession: (session: ImplementerSession) => recordSession(ctx, 'planner', session),
   };
+  const plannerTarget = (): NudgeTarget => ({ session: () => ctx.plannerSession, start });
+  const onSession = (session: ImplementerSession) => recordSession(ctx, 'planner', session);
   // One planner turn: the first starts the session, later ones continue it.
   const turn = async (prompt: string, kind: string) => {
     await writePlannerFiles(ctx);
@@ -783,25 +795,22 @@ async function planStep(
       reattach = false;
       outcome = await turnEnded(
         ctx,
-        abortable(
-          (async () => {
-            const attached = tryAttach
-              ? await deps.adapter.reattach?.(session, { ...start, prompt })
-              : null;
-            if (attached) {
-              ctx.rec.event('resume.reattached', { label: session.paneLabel, agent: 'planner' });
-              return attached;
-            }
-            return deps.adapter.send(session, { ...start, prompt }, prompt);
-          })(),
-          input.signal,
-        ),
+        async (signal) => {
+          const attached = tryAttach
+            ? await deps.adapter.reattach?.(session, { ...start, prompt, signal })
+            : null;
+          if (attached) {
+            ctx.rec.event('resume.reattached', { label: session.paneLabel, agent: 'planner' });
+            return attached;
+          }
+          return deps.adapter.send(session, { ...start, prompt, signal }, prompt);
+        },
         plannerTarget(),
       );
     } else {
       const started = await turnEnded(
         ctx,
-        abortable(deps.adapter.start({ ...start, prompt, onSession }), input.signal),
+        (signal) => deps.adapter.start({ ...start, prompt, onSession, signal }),
         plannerTarget(),
       );
       if (!ctx.plannerSession) onSession(started.session);
@@ -903,7 +912,7 @@ async function approvePlanStep(ctx: Ctx): Promise<void> {
 
 /** Step 3: write the implement brief and run the first turn. */
 async function implement(ctx: Ctx): Promise<void> {
-  const { deps, st, input } = ctx;
+  const { deps, st } = ctx;
   // An approved plan's continuation has already moved the run here.
   if (ctx.st.stage !== 'implementing') await setStage(ctx, 'implementing');
   const brief = await writeArtifact(
@@ -914,34 +923,20 @@ async function implement(ctx: Ctx): Promise<void> {
   await writeRulings(ctx);
   await writeImplementerFiles(ctx);
   const prevHead = await deps.git.headSha(st.worktreePath);
-  const onSession = (session: ImplementerSession) => {
-    ctx.session = session;
-    ctx.rec.event('implementer.session', {
-      mode: session.mode,
-      attach: deps.adapter.describe(session),
-    });
-    ctx.pending = ctx.pending.then(() =>
-      patchState(ctx, {
-        implementer: {
-          mode: session.mode,
-          sessionId: session.sessionId,
-          paneLabel: session.paneLabel ?? null,
-        },
-      }),
-    );
-  };
+  const onSession = (session: ImplementerSession) => recordSession(ctx, 'implementer', session);
   await inStage(
     ctx,
     'implement',
     1,
     turnInput(ctx, brief.path),
     async () => {
-      const { session, outcome } = await turnEnded(
-        ctx,
-        abortable(
-          deps.adapter.start({ ...ctx.start, prompt: PROMPT_IMPLEMENT(brief.path), onSession }),
-          input.signal,
-        ),
+      const { session, outcome } = await turnEnded(ctx, (signal) =>
+        deps.adapter.start({
+          ...ctx.start,
+          prompt: PROMPT_IMPLEMENT(brief.path),
+          onSession,
+          signal,
+        }),
       );
       if (!ctx.session) onSession(session);
       ctx.session = session;
@@ -1062,7 +1057,7 @@ async function fixTurn(
   findingsPath: string,
   extra: TurnChecks,
 ): Promise<Report> {
-  const { deps, st, input } = ctx;
+  const { deps, st } = ctx;
   const rulingsPath = await writeRulings(ctx);
   await writeImplementerFiles(ctx);
   const brief = await writeArtifact(
@@ -1078,15 +1073,11 @@ async function fixTurn(
     n,
     turnInput(ctx, brief.path),
     async () => {
-      const outcome = await turnEnded(
-        ctx,
-        abortable(
-          deps.adapter.send(
-            ctx.session!,
-            { ...ctx.start, prompt: PROMPT_FIX(brief.path) },
-            PROMPT_FIX(brief.path),
-          ),
-          input.signal,
+      const outcome = await turnEnded(ctx, (signal) =>
+        deps.adapter.send(
+          ctx.session!,
+          { ...ctx.start, prompt: PROMPT_FIX(brief.path), signal },
+          PROMPT_FIX(brief.path),
         ),
       );
       return judgeTurn(ctx, outcome, kind, n, prevHead, extra);

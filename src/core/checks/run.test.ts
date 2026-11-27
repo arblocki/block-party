@@ -33,6 +33,25 @@ describe('runChecks', () => {
     }
   });
 
+  it('gives a check the agent environment: no other API keys, no GitHub token', async () => {
+    vi.stubEnv('STRIPE_API_KEY', 'sk_secret');
+    vi.stubEnv('GITHUB_TOKEN', 'ghp_secret');
+    vi.stubEnv('ANTHROPIC_API_KEY', 'kept');
+    try {
+      const res = await runChecks({
+        cwd: tmp(),
+        logDir: join(tmp(), 'logs'),
+        headSha: 'abc',
+        checks: [
+          { name: 'env', run: 'echo "s=$STRIPE_API_KEY g=$GITHUB_TOKEN a=$ANTHROPIC_API_KEY"' },
+        ],
+      });
+      expect(readFileSync(res.results[0]!.logPath, 'utf8')).toBe('s= g= a=kept\n');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('kills a running check promptly when aborted and skips the rest', async () => {
     const cwd = tmp();
     const ac = new AbortController();

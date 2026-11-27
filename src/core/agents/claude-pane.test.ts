@@ -654,6 +654,71 @@ describe('createPaneClaude', () => {
     expect(host.texts).toEqual(['carry on']);
   });
 
+  it('reports a relaunched pane through onSession, with a label no live pane has', async () => {
+    const { a, session } = await started();
+    host.aliveLabels.clear();
+    host.aliveLabels.add('bp-r1-impl-r4');
+    host.onOpen = () => {
+      emitEvent('SessionStart', { source: 'resume' });
+      emitEvent('Stop', { background_tasks: [] });
+    };
+    const seen: (string | undefined)[] = [];
+    await a.send(session, { ...input, onSession: (s) => seen.push(s.paneLabel) }, 'next');
+    expect(host.opens[0]!.label).toBe('bp-r1-impl-r5');
+    expect(seen).toEqual(['bp-r1-impl-r5']);
+  });
+
+  it('send with an unknown session and a stale label uses the newest live pane', async () => {
+    host.aliveLabels.add('bp-r1-impl-r2');
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    emitEvent('UserPromptSubmit');
+    const sent = adapter().send(session, input, 'carry on');
+    emitEvent('Stop');
+    await sent;
+    expect(host.opens).toEqual([]);
+    expect(host.texts).toEqual(['carry on']);
+  });
+
+  it('reattach falls back to the newest live pane and reports its label', async () => {
+    host.aliveLabels.add('bp-r1-impl-r2');
+    host.state = 'working';
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    const seen: (string | undefined)[] = [];
+    const turn = adapter().reattach!(session, {
+      ...input,
+      onSession: (s) => seen.push(s.paneLabel),
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(input.reportPath, '{}');
+    emitEvent('Stop');
+    host.state = 'idle';
+    await expect(turn).resolves.toEqual({ kind: 'report' });
+    expect(seen).toEqual(['bp-r1-impl-r2']);
+    expect(host.opens).toEqual([]);
+  });
+
+  it('isAlive tells whether the session terminal is open', async () => {
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    expect(await adapter().isAlive!(session)).toBe(false);
+    host.aliveLabels.add('bp-r1-impl');
+    expect(await adapter().isAlive!(session)).toBe(true);
+  });
+
   it('closes a pane that opened after a cancel, and leaves it after a shutdown', async () => {
     for (const [reason, closed] of [
       [undefined, ['bp-r1-impl']],

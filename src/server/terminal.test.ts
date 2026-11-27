@@ -349,6 +349,17 @@ describe('terminal websocket: which runs have a terminal', () => {
     expect(ptys).toEqual([]);
   });
 
+  it('shows a relaunched (r2) pane when run.json records it', async () => {
+    seedRun();
+    state = runState({
+      implementer: { mode: 'pane', sessionId: 's', paneLabel: 'bp-impl-r2' },
+    });
+    const c = await ready();
+    expect(ptys[0]?.args).toContain('term-of-bp-impl-r2');
+    c.ws.close();
+    await c.closed;
+  });
+
   it('shows the planner while planning and the implementer otherwise', async () => {
     seedRun({ stage: 'planning' });
     const c = await ready();

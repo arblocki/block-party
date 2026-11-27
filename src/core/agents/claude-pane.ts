@@ -150,6 +150,62 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     return undefined;
   }
 
+  /**
+   * The newest pane of this run's agent (`bp-<id>-<role>` or `bp-<id>-<role>-rN`) whose folder is
+   * `cwd`: where a relaunch left the agent when the recorded label is stale or missing.
+   */
+  async function findNewestPane(
+    runId: string,
+    role: 'impl' | 'plan',
+    cwd: string,
+  ): Promise<PaneRef | undefined> {
+    try {
+      const want = await real(cwd);
+      const prefix = `bp-${runId}-${role}`;
+      let best: { pane: PaneRef; n: number } | undefined;
+      for (const p of await host.list()) {
+        const m = p.label === prefix ? [] : /^-r(\d+)$/.exec(p.label.slice(prefix.length));
+        if (!p.label.startsWith(prefix) || !m) continue;
+        if ((await real(p.cwd)) !== want) continue;
+        const n = m.length ? Number(m[1]) : 1;
+        if (!best || n >= best.n) best = { pane: p, n };
+      }
+      return best?.pane;
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** The highest `rN` among the run's open panes of this role (1 when there are none). */
+  async function takenResumes(runId: string, role: 'impl' | 'plan'): Promise<number> {
+    let max = 1;
+    try {
+      const prefix = `bp-${runId}-${role}-r`;
+      for (const p of await host.list()) {
+        if (!p.label.startsWith(prefix)) continue;
+        const n = Number(p.label.slice(prefix.length));
+        if (Number.isInteger(n) && n > max) max = n;
+      }
+    } catch {
+      // server down: nothing is open
+    }
+    return max;
+  }
+
+  /** The recorded label's pane, else the newest live one of the run's agent. */
+  async function locatePane(
+    label: string,
+    runId: string,
+    role: 'impl' | 'plan',
+    cwd: string,
+  ): Promise<PaneRef | undefined> {
+    const exact = await findPane(label, cwd);
+    if (exact && (await alive(exact))) return exact;
+    const newest = await findNewestPane(runId, role, cwd);
+    if (newest && (await alive(newest))) return newest;
+    return exact;
+  }
+
   async function flags(input: ImplementerStartInput): Promise<string[]> {
     // Interactive claude takes --agents as inline JSON only (a file path works with --print).
     let agents = input.agentsPath;
@@ -443,13 +499,14 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         const role = input.role ?? 'impl';
         const label = session.paneLabel ?? `bp-${input.runId}-${role}`;
         const m = /-r(\d+)$/.exec(label);
-        const found = await findPane(label, session.cwd);
+        const found = await locatePane(label, input.runId, role, session.cwd);
+        const fm = found ? /-r(\d+)$/.exec(found.label) : null;
         st = {
           pane: found ?? { session: '', label, cwd: session.cwd },
           runId: input.runId,
           runDir: input.runDir,
           eventsPath: input.eventsPath,
-          resumes: m ? Number(m[1]) : 1,
+          resumes: fm ? Number(fm[1]) : m ? Number(m[1]) : 1,
           role,
           known: found !== undefined,
         };
@@ -462,7 +519,9 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       const dead = !st.known || !(await alive(st.pane));
       if (input.signal?.aborted) return aborted;
       if (dead) {
-        st.resumes += 1;
+        // Never a label a live pane of this run already has.
+        const taken = await takenResumes(st.runId, st.role);
+        st.resumes = Math.max(st.resumes, taken) + 1;
         st.known = true;
         input.onMessageSent?.();
         const label = `bp-${st.runId}-${st.role}-r${st.resumes}`;
@@ -473,6 +532,11 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
           label,
           ['--resume', session.sessionId],
           message,
+          (opened) => {
+            st.pane = opened;
+            session.paneLabel = opened.label;
+            input.onSession?.({ ...session });
+          },
         );
         session.paneLabel = label;
         return outcome;
@@ -510,10 +574,16 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
     },
 
     async reattach(session, input) {
-      const label = session.paneLabel ?? `bp-${input.runId}-${input.role ?? 'impl'}`;
-      const found = await findPane(label, session.cwd);
+      const role = input.role ?? 'impl';
+      const recorded = session.paneLabel ?? `bp-${input.runId}-${role}`;
+      const found = await locatePane(recorded, input.runId, role, session.cwd);
       if (!found || !(await alive(found))) return null;
       if ((await host.agentState(found)) !== 'working') return null;
+      const label = found.label;
+      if (session.paneLabel !== label) {
+        session.paneLabel = label;
+        input.onSession?.({ ...session });
+      }
       const m = /-r(\d+)$/.exec(label);
       sessions.set(session.sessionId, {
         pane: found,
@@ -574,6 +644,14 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       } catch (e) {
         if (!(e instanceof HerdrError && e.code === 'pane_not_found')) throw e;
       }
+    },
+
+    async isAlive(session) {
+      const st = sessions.get(session.sessionId);
+      if (st) return st.known === false ? false : alive(st.pane);
+      if (session.paneLabel === undefined) return false;
+      const found = await findPane(session.paneLabel, session.cwd);
+      return found !== undefined && (await alive(found));
     },
 
     describe(session) {

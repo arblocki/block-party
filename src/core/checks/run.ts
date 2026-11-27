@@ -5,7 +5,7 @@ import {
   type RunShellOptions,
   type RunShellResult,
 } from '../process/run-shell.js';
-import { scrubbedEnv } from '../process/env.js';
+import { agentEnv } from '../agents/env.js';
 import type { CheckConfig } from './config.js';
 
 export interface CheckResult {
@@ -76,7 +76,7 @@ export async function runChecks(opts: RunChecksOptions): Promise<ChecksRunResult
         cwd,
         logPath,
         timeoutMs: opts.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS,
-        env: opts.env ?? scrubbedEnv(),
+        env: opts.env ?? agentEnv(),
         ...(opts.signal ? { signal: opts.signal } : {}),
       });
       results.push({

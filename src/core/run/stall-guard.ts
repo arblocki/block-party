@@ -100,10 +100,20 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
     };
     // The turn already being awaited sees the agent's reply; this send only types the message.
     void Promise.resolve()
-      .then(() =>
-        ctx.deps.adapter.send(session, { ...start, prompt: message, onMessageSent }, message),
-      )
+      .then(async () => {
+        // A closed terminal is not woken by a nudge: `send` would relaunch it.
+        if (ctx.deps.adapter.isAlive && !(await ctx.deps.adapter.isAlive(session))) {
+          skip("the agent's terminal has closed");
+          return undefined;
+        }
+        return ctx.deps.adapter.send(
+          session,
+          { ...start, prompt: message, onMessageSent },
+          message,
+        );
+      })
       .then((outcome) => {
+        if (!outcome) return;
         // Settled without the message going in (the agent stayed busy, or it was not submitted).
         if (!typed && !ended) skip(outcome.kind === 'timeout' ? 'busy' : 'not submitted');
       })
