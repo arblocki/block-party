@@ -15,7 +15,7 @@ import type { AnalysisDeps } from './analysis.js';
 import { registerApi, upstreamError } from './api.js';
 import type { RunManager } from './run-manager.js';
 import { registerNewRunApi, type NewRunApiDeps } from './new-run-api.js';
-import { registerRunsApi, type RunsApiDeps } from './runs-api.js';
+import { registerRunsApi } from './runs-api.js';
 import { hostGuard, SESSION_COOKIE, tokenGuard, tokensMatch } from './security.js';
 
 export interface AppOptions {
