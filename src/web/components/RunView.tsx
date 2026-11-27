@@ -7,6 +7,7 @@ import { prHref, relativeTime } from '../lib/route';
 import { planActions, plannerAttach, stageNoteLabel } from '../lib/plans';
 import {
   isNoisyEvent,
+  isSandboxed,
   mayHaveLegacyPlan,
   stageStrip,
   summarizeEvent,
@@ -472,6 +473,11 @@ export function RunView({ id }: { id: string }) {
             </span>
           )}
           <span className="font-mono text-xs">{run.branch}</span>
+          {isSandboxed(events) && (
+            <span title="The agent's shell commands run in a restricted sandbox: they can only change this run's files and reach package registries">
+              Sandboxed
+            </span>
+          )}
           {project && run.prNumber !== null && (
             <a href={prHref(project, run.prNumber)} className="text-accent hover:underline">
               PR #{run.prNumber}

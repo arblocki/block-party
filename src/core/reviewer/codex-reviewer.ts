@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { scrubbedEnv } from '../process/env.js';
+import { agentEnv } from '../agents/env.js';
 import { createGit, type Git } from '../git/index.js';
 import { stripMcpNoise } from '../llm/codex-cli.js';
 import { DEFAULT_MAX_BYTES, spawnCli, type SpawnFn } from '../llm/spawn-cli.js';
@@ -137,7 +137,7 @@ async function runAttempt(
     ...(opts.model ? ['-m', opts.model] : []),
     '-',
   ];
-  const env = { ...scrubbedEnv(), CODEX_HOME: opts.codexHome };
+  const env = { ...agentEnv(), CODEX_HOME: opts.codexHome };
   let result;
   let out = '';
   let err = '';

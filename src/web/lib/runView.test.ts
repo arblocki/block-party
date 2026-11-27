@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RunStage } from '../../core/run/machine';
 import type { StageKind, StageRow, StageState } from '../types';
 import {
+  isSandboxed,
   checksBySha,
   isNoisyEvent,
   mayHaveLegacyPlan,
@@ -344,5 +345,13 @@ describe('stageStrip met criteria', () => {
       total: 0,
     });
     expect(strip.every((i) => i.met === undefined)).toBe(true);
+  });
+});
+
+describe('isSandboxed', () => {
+  it('is true only when run.started says so', () => {
+    expect(isSandboxed([{ type: 'run.started', payload: { sandboxed: true } }])).toBe(true);
+    expect(isSandboxed([{ type: 'run.started', payload: { branch: 'b' } }])).toBe(false);
+    expect(isSandboxed([])).toBe(false);
   });
 });

@@ -156,6 +156,10 @@ export function checksBySha(stages: readonly StageRow[]): ShaChecks[] {
 }
 
 /** `agent.*` events: one per tool call or turn, collapsed in the feed by default. */
+/** Whether the run's agent works in Claude Code's sandbox (`run.started` says so). */
+export const isSandboxed = (events: readonly Pick<RunEvent, 'type' | 'payload'>[]): boolean =>
+  events.some((e) => e.type === 'run.started' && record(e.payload).sandboxed === true);
+
 export const isNoisyEvent = (type: string): boolean => type.startsWith('agent.');
 
 const isRunStage = (v: string): v is RunStage => (RUN_STAGES as readonly string[]).includes(v);

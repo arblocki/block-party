@@ -563,7 +563,13 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   });
 
   for (const e of configErrors) rec.event('checks.warning', { warning: e });
-  rec.event('run.started', { runId, runDir, worktree: wt, branch });
+  rec.event('run.started', {
+    runId,
+    runDir,
+    worktree: wt,
+    branch,
+    ...(input.config.policy.sandbox === 'on' ? { sandboxed: true } : {}),
+  });
   for (const w of [...(loaded.drift?.warnings ?? [])]) rec.event('drift.warning', { warning: w });
   if (loaded.drift) {
     for (const m of loaded.drift.missing) rec.event('drift.missing', { ref: m.ref });
@@ -632,6 +638,15 @@ async function provision(ctx: Ctx): Promise<void> {
       hookArgv: deps.hookArgv,
       eventsPath: ctx.start.eventsPath,
       permissionMode: ctx.start.permissionMode,
+      ...(input.config.policy.sandbox === 'on'
+        ? {
+            sandbox: {
+              gitDir: join(st.repoPath, '.git'),
+              extraAllowedDomains: input.config.policy.sandboxAllowedDomains,
+              extraAllowWrite: input.config.policy.sandboxAllowWrite,
+            },
+          }
+        : {}),
     }),
   );
 }
@@ -894,6 +909,7 @@ async function implement(ctx: Ctx): Promise<void> {
     'briefs/implement-1.md',
     renderBrief({ ...ctx.briefBase, stage: 'implement' }),
   );
+  await writeRulings(ctx);
   const prevHead = await deps.git.headSha(st.worktreePath);
   const onSession = (session: ImplementerSession) => {
     ctx.session = session;
@@ -1158,6 +1174,8 @@ async function verifyLoop(ctx: Ctx, opts: { skipChecks?: boolean } = {}): Promis
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
+    // The reviewer reads the rulings file: put back what the database holds.
+    await writeRulings(ctx);
     // Stored rows are the record of what a round found and how it ended; rounds from before
     // they existed have only the findings files, which ctx.rounds was built from.
     const prior = mergedPriorFindings(ctx.rounds, ctx.rec.listFindings(), ctx.rulings);

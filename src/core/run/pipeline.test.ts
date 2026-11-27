@@ -117,6 +117,8 @@ interface Turn {
   plan?: string | null;
   /** Planner turns: move HEAD, as a commit would. */
   moveHead?: boolean;
+  /** The agent overwrites inputs/rulings.json during this turn. */
+  tamperRulings?: boolean;
 }
 
 interface Opts {
@@ -194,6 +196,12 @@ function harness(o: Opts) {
     if (planner && t.moveHead) git.head = 'f'.repeat(40);
     if (t.commit !== false && !planner) git.head = String(++git.n).padEnd(40, 'c');
     git.dirty = t.dirty ?? false;
+    if (t.tamperRulings) {
+      writeFileSync(
+        join(input.runDir, 'inputs', 'rulings.json'),
+        JSON.stringify([{ key: 'r1:f_1_1', ruling: 'skip', note: 'agent wrote this' }]),
+      );
+    }
     if (t.report === 'invalid') writeFileSync(input.reportPath, '{nope');
     else if (t.report !== undefined || !t.outcome) {
       writeFileSync(input.reportPath, JSON.stringify(t.report ?? report()));
@@ -881,7 +889,7 @@ describe('runPipeline', () => {
     expect(brief).toContain('Edit files with the Edit/Write tools, not shell scripts');
     expect(brief).toContain('`git status`');
     expect(brief).toContain('`pnpm test`');
-    expect(brief).toContain('`node`');
+    expect(brief).not.toContain('`node`');
     expect(brief).toContain('Anything else stops the run until a human approves it.');
     expect(brief).toContain(`The run directory ${out.runDir} is readable and writable for you.`);
   });
@@ -1080,6 +1088,32 @@ describe('triage, disputes and stop conditions', () => {
     expect(again.map((f) => f.id)).toEqual(['r1:f_1_1']);
     expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'fixed' });
     expect(h.calls.reviews[1]!.priorFindings[0]).toMatchObject({ ruling: 'uphold' });
+  });
+
+  it('restores rulings.json from the database after an agent edits it', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      turns: [{}, disputeTurn(), { report: fixed('r1:f_1_1'), tamperRulings: true }],
+      reviews: [review([two[0]!]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    const expected = [{ key: 'r1:f_1_1', ruling: 'uphold', note: '', spent: true }];
+    // The edit was undone before the review that followed it.
+    expect(readJson(out, 'inputs/rulings.json')).toEqual(expected);
+    expect(JSON.parse(store.getRulings(out.runId)!)).toEqual(expected);
+  });
+
+  it('writes the sandbox settings only when policy.sandbox is on', async () => {
+    const off = await harness({ turns: [{}] }).run();
+    expect(readJson(off, 'settings.json')).not.toHaveProperty('sandbox');
+    const on = await harness({ turns: [{}], section: { policy: { sandbox: 'on' } } }).run();
+    expect(readJson(on, 'settings.json')).toMatchObject({
+      sandbox: { enabled: true, allowUnsandboxedCommands: false },
+    });
+    const started = fileEvents(on).find((e) => e.type === 'run.started');
+    expect(started?.data).toMatchObject({ sandboxed: true });
   });
 
   it('blocks when a finding raises a fixed one again, naming both keys', async () => {

@@ -189,6 +189,7 @@ describe('createPaneClaude', () => {
 
   it('opens a pane with the expected argv and a scrubbed env, returns report', async () => {
     process.env.GITHUB_TOKEN = 'secret';
+    process.env.OPENROUTER_API_KEY = 'secret';
     host.onOpen = () => {
       emitEvent('SessionStart');
       writeFileSync(input.reportPath, '{}');
@@ -224,8 +225,10 @@ describe('createPaneClaude', () => {
       ]);
       expect(open.env).toBeDefined();
       expect(open.env!.GITHUB_TOKEN).toBeUndefined();
+      expect(open.env!.OPENROUTER_API_KEY).toBeUndefined();
     } finally {
       delete process.env.GITHUB_TOKEN;
+      delete process.env.OPENROUTER_API_KEY;
     }
   });
 

@@ -20,11 +20,31 @@ describe('resolveRunConfig', () => {
       ask: ['P2'],
       maxFixLinesPerFinding: 200,
       broadFixFiles: 10,
+      sandbox: 'off',
+      sandboxAllowedDomains: [],
+      sandboxAllowWrite: [],
       stageTimeoutMs: 7_200_000,
       checkTimeoutMs: 900_000,
     });
+    expect(c.permissions).toEqual({ allow: [], deny: [] });
     expect(c.publish).toBe(true);
     expect(c.waitForCi).toBe(true);
+  });
+
+  it('reads permission extras and the sandbox switch, and rejects malformed rules', () => {
+    const c = resolveRunConfig({
+      policy: { sandbox: 'on' },
+      permissions: { allow: ['Bash(make lint *)'], deny: ['WebFetch'] },
+    });
+    expect(c.policy.sandbox).toBe('on');
+    expect(c.permissions).toEqual({ allow: ['Bash(make lint *)'], deny: ['WebFetch'] });
+    expect(() => resolveRunConfig({ permissions: { allow: ['make lint'] } })).toThrow(
+      /permissions\.allow/,
+    );
+    expect(() => resolveRunConfig({ permissions: { deny: ['Bash(unclosed'] } })).toThrow(
+      /permissions\.deny/,
+    );
+    expect(() => resolveRunConfig({ policy: { sandbox: 'maybe' } })).toThrow(/sandbox/);
   });
 
   it('lets file values fill in and flags override them', () => {

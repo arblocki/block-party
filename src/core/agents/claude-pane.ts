@@ -6,7 +6,7 @@ import { worktreesRoot } from '../run/paths.js';
 import { ShutdownError } from '../run/pipeline-helpers.js';
 import { HerdrError } from '../terminal/herdr-client.js';
 import type { PaneRef, TerminalHost } from '../terminal/types.js';
-import { scrubbedEnv } from '../process/env.js';
+import { agentEnv } from './env.js';
 import { readHookEvents, waitForTurnEnd, type HookWatcher } from './hook-events.js';
 import type {
   ImplementerAdapter,
@@ -105,7 +105,7 @@ function namesDir(text: string, dirs: string[]): boolean {
 
 function stringEnv(): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [k, v] of Object.entries(scrubbedEnv())) if (v !== undefined) out[k] = v;
+  for (const [k, v] of Object.entries(agentEnv())) if (v !== undefined) out[k] = v;
   return out;
 }
 

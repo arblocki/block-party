@@ -82,6 +82,9 @@ describe('createHeadlessClaude', () => {
     vi.stubEnv('GH_TOKEN', 'x');
     vi.stubEnv('BLOCK_PARTY_TOKEN', 'x');
     vi.stubEnv('KEEP_ME', 'y');
+    vi.stubEnv('GH_ENTERPRISE_TOKEN', 'x');
+    vi.stubEnv('OPENROUTER_API_KEY', 'x');
+    vi.stubEnv('BLOCK_PARTY_HOME', '/data');
     const { adapter, calls } = make({ stdout: init + result() });
     const { session } = await adapter.start(input);
     expect(session).toEqual({ mode: 'headless', sessionId: 'uuid-1', cwd: '/work' });
@@ -117,6 +120,9 @@ describe('createHeadlessClaude', () => {
     expect(c.env?.GITHUB_TOKEN).toBeUndefined();
     expect(c.env?.GH_TOKEN).toBeUndefined();
     expect(c.env?.BLOCK_PARTY_TOKEN).toBeUndefined();
+    expect(c.env?.GH_ENTERPRISE_TOKEN).toBeUndefined();
+    expect(c.env?.OPENROUTER_API_KEY).toBeUndefined();
+    expect(c.env?.BLOCK_PARTY_HOME).toBe('/data');
     expect(c.env?.KEEP_ME).toBe('y');
   });
 

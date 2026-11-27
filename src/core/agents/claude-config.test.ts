@@ -81,29 +81,137 @@ describe('buildSettings', () => {
 });
 
 describe('implementerPermissions', () => {
-  it('lists the specific check commands and denies dangerous commands', () => {
+  const scope = { worktree: '/work/wt', runDir: '/data/runs/r1' };
+
+  it('lists the specific check commands exactly and denies dangerous commands', () => {
     const p = implementerPermissions(['pnpm test', 'pnpm lint']);
-    expect(p.allowedTools).toContain('Bash(pnpm test:*)');
-    expect(p.allowedTools).toContain('Bash(pnpm lint:*)');
+    for (const c of ['pnpm test', 'pnpm lint']) {
+      expect(p.allowedTools).toContain(`Bash(${c})`);
+      expect(p.allowedTools).toContain(`Bash(${c} *)`);
+      expect(p.allowedTools).not.toContain(`Bash(${c}:*)`);
+    }
     expect(p.allowedTools).toContain('Bash(pnpm install --frozen-lockfile)');
     expect(p.allowedTools).not.toContain('Bash(pnpm:*)');
-    for (const c of [
-      'node',
-      'git show',
-      'git rev-parse',
-      'ls',
-      'cat',
-      'grep',
-      'find',
-      'head',
-      'tail',
-      'wc',
-    ]) {
+    for (const c of ['git show', 'git rev-parse', 'ls', 'cat', 'grep', 'head', 'tail', 'wc']) {
       expect(p.allowedTools).toContain(`Bash(${c}:*)`);
     }
-    for (const d of ['git push', 'curl', 'wget', 'rm -rf', 'pnpm add', 'npm install', 'gh']) {
+    for (const d of [
+      'git push',
+      'git config',
+      'git remote',
+      'git reset --hard',
+      'git clean',
+      'git checkout --',
+      'git worktree',
+      'curl',
+      'wget',
+      'rm -rf',
+      'pnpm add',
+      'npm install',
+      'gh',
+    ]) {
       expect(p.disallowedTools).toContain(`Bash(${d}:*)`);
     }
+  });
+
+  it('allows no command that runs arbitrary programs', () => {
+    const p = implementerPermissions(['pnpm test'], [], scope);
+    expect(p.allowedTools.filter((t) => /^Bash\((node|find|sh|bash|python|npx)\b/.test(t))).toEqual(
+      [],
+    );
+  });
+
+  it('allows what a normal turn needs without prompts', () => {
+    const p = implementerPermissions(['pnpm typecheck', 'pnpm test'], ['pnpm format'], scope);
+    expect(p.allowedTools).toEqual(
+      expect.arrayContaining([
+        'Read(//work/wt/**)',
+        'Edit(//work/wt/**)',
+        // reports and briefs live in the run directory
+        'Edit(//data/runs/r1/**)',
+        'Bash(git status:*)',
+        'Bash(git diff:*)',
+        'Bash(git add:*)',
+        'Bash(git commit:*)',
+        'Bash(pnpm test)',
+        'Bash(pnpm typecheck *)',
+        'Bash(pnpm format)',
+      ]),
+    );
+    // nothing a turn needs is also denied
+    for (const rule of p.allowedTools) expect(p.disallowedTools).not.toContain(rule);
+  });
+
+  it('scopes file rules to the worktree and keeps secrets and inputs off limits', () => {
+    const p = implementerPermissions([], [], scope);
+    expect(p.allowedTools).not.toContain('Read');
+    expect(p.allowedTools).not.toContain('Edit');
+    expect(p.allowedTools).not.toContain('Write');
+    expect(p.disallowedTools).toEqual(
+      expect.arrayContaining([
+        'Read(~/.ssh/**)',
+        'Read(~/.aws/**)',
+        'Read(~/.config/gh/**)',
+        'Edit(//data/runs/r1/inputs/**)',
+      ]),
+    );
+  });
+
+  it('appends project extras and lets deny win', () => {
+    const p = implementerPermissions([], [], {
+      ...scope,
+      extra: {
+        allow: ['Bash(make lint *)', 'Bash(make deploy *)', 'Bash(git push *)'],
+        deny: ['Bash(make deploy *)'],
+      },
+    });
+    expect(p.allowedTools).toContain('Bash(make lint *)');
+    expect(p.allowedTools).not.toContain('Bash(make deploy *)');
+    expect(p.disallowedTools).toContain('Bash(make deploy *)');
+    // a project cannot allow what the profile denies
+    expect(p.allowedTools).not.toContain('Bash(git push:*)');
+    expect(p.disallowedTools).toContain('Bash(git push:*)');
+  });
+});
+
+describe('shellRules with exact rules', () => {
+  it('names each command once', () => {
+    const rules = shellRules(['Bash(pnpm test)', 'Bash(pnpm test *)', 'Bash(git status:*)']);
+    expect(rules.match(/`pnpm test`/g)).toHaveLength(1);
+    expect(rules).toContain('`git status`');
+  });
+});
+
+describe('buildSettings sandbox', () => {
+  const base = {
+    hookArgv: ['x', 'hook'],
+    eventsPath: '/e/events.jsonl',
+    permissionMode: 'default',
+  };
+
+  it('has no sandbox section by default', () => {
+    expect(buildSettings(base)).not.toHaveProperty('sandbox');
+  });
+
+  it('writes the sandbox settings when asked', () => {
+    const s = buildSettings({
+      ...base,
+      sandbox: { gitDir: '/repo/.git', extraAllowedDomains: ['example.org'] },
+    });
+    expect(s.sandbox).toEqual({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { allowWrite: ['/repo/.git'] },
+      network: {
+        allowedDomains: [
+          'registry.npmjs.org',
+          '*.npmjs.org',
+          'registry.yarnpkg.com',
+          'example.org',
+        ],
+      },
+    });
   });
 });
 
@@ -139,8 +247,9 @@ describe('plannerPermissions', () => {
 describe('implementerPermissions fix commands', () => {
   it('allows the checks.fix commands too', () => {
     const p = implementerPermissions(['pnpm test'], ['pnpm format', ' ']);
-    expect(p.allowedTools).toContain('Bash(pnpm format:*)');
-    expect(p.allowedTools).not.toContain('Bash(:*)');
+    expect(p.allowedTools).toContain('Bash(pnpm format)');
+    expect(p.allowedTools).toContain('Bash(pnpm format *)');
+    expect(p.allowedTools).not.toContain('Bash( *)');
   });
 });
 

@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
 import { appendFile, mkdir, readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
+import { agentEnv } from './env.js';
 import { scrubbedEnv } from '../process/env.js';
 import { LlmError } from '../llm/types.js';
 import { spawnCli, type SpawnFn } from '../llm/spawn-cli.js';
@@ -147,7 +148,7 @@ export function createHeadlessClaude(opts: HeadlessClaudeOptions = {}): Implemen
         command: claudeBin,
         args,
         cwd: input.cwd,
-        env: scrubbedEnv(),
+        env: agentEnv(),
         timeoutMs: input.timeoutMs,
         signal: ctl.signal,
         spawnFn: opts.spawnFn,

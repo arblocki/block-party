@@ -4,6 +4,14 @@ import { parse as parseYaml } from 'yaml';
 import { z } from 'zod';
 import { REPO_CONFIG_FILES } from '../risk/repo-config.js';
 
+/** `Tool` or `Tool(specifier)`, as Claude Code reads permission rules (`Bash(pnpm test *)`). */
+const PERMISSION_RULE = /^[A-Za-z][A-Za-z0-9_.-]*(\(.+\))?$/;
+
+const PermissionRuleSchema = z
+  .string()
+  .trim()
+  .regex(PERMISSION_RULE, 'must look like Tool or Tool(specifier), e.g. Bash(make lint *)');
+
 const SeveritySchema = z.enum(['P0', 'P1', 'P2', 'P3']);
 
 export const RunConfigSchema = z.object({
@@ -36,6 +44,15 @@ export const RunConfigSchema = z.object({
       broadFixFiles: z.number().int().min(0).default(10),
       /** When the server starts, resume runs whose driving process died (default: ask first). */
       resumeOnRestart: z.boolean().default(false),
+      /**
+       * `on` runs the implementer's shell commands inside Claude Code's sandbox: writes only in
+       * the worktree and the repository's .git, network only to package registries.
+       */
+      sandbox: z.enum(['off', 'on']).default('off'),
+      /** Hosts besides the package registries a sandboxed run may reach. */
+      sandboxAllowedDomains: z.array(z.string().min(1)).default([]),
+      /** Directories besides the worktree and .git a sandboxed run may write (e.g. a pnpm store). */
+      sandboxAllowWrite: z.array(z.string().min(1)).default([]),
       stageTimeoutMs: z
         .number()
         .int()
@@ -46,6 +63,13 @@ export const RunConfigSchema = z.object({
         .int()
         .positive()
         .default(15 * 60 * 1000),
+    })
+    .prefault({}),
+  /** Extra implementer permission rules; `deny` wins over every allow rule. */
+  permissions: z
+    .object({
+      allow: z.array(PermissionRuleSchema).default([]),
+      deny: z.array(PermissionRuleSchema).default([]),
     })
     .prefault({}),
   publish: z.boolean().default(true),

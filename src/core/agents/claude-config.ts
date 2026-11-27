@@ -44,10 +44,11 @@ const READ_ONLY_TOOLS = ['Read', 'Glob', 'Grep'];
 export function shellRules(allowedTools: string[]): string {
   const prefixes = allowedTools
     .filter((t) => t.startsWith('Bash(') && t.endsWith(')'))
-    .map((t) => `\`${t.slice(5, -1).replace(/:\*$/, '')}\``);
+    .map((t) => t.slice(5, -1).replace(/( \*|:\*)$/, ''));
+  const unique = [...new Set(prefixes)].map((p) => `\`${p}\``);
   return (
     'Edit files with the Edit/Write tools, not shell scripts (python/sed/heredocs). ' +
-    `Shell commands you may run without approval: ${prefixes.join(', ')}. ` +
+    `Shell commands you may run without approval: ${unique.join(', ')}. ` +
     'A chain or pipe (`;`, `&&`, `|`) runs without approval only if every command in it is ' +
     'on that list, so prefer one command per Bash call. Anything else stops the run until a ' +
     'human approves it.'
@@ -89,6 +90,28 @@ export function shellQuote(s: string): string {
 export interface Settings {
   hooks: Record<string, { hooks: { type: 'command'; command: string; timeout: number }[] }[]>;
   permissions: { defaultMode: string };
+  /** Claude Code's sandbox (see `policy.sandbox`); absent when off. */
+  sandbox?: {
+    enabled: true;
+    failIfUnavailable: true;
+    allowUnsandboxedCommands: false;
+    filesystem: { allowWrite: string[] };
+    network: { allowedDomains: string[] };
+  };
+}
+
+/** Hosts a package install needs; `policy.sandboxAllowedDomains` adds more. */
+export const SANDBOX_REGISTRY_DOMAINS = [
+  'registry.npmjs.org',
+  '*.npmjs.org',
+  'registry.yarnpkg.com',
+];
+
+export interface SandboxOptions {
+  /** The main repository's `.git` directory: a worktree's commits write into it. */
+  gitDir: string;
+  extraAllowedDomains?: string[];
+  extraAllowWrite?: string[];
 }
 
 /** The object serialized to `settings.json` for `claude --settings`. */
@@ -96,26 +119,72 @@ export function buildSettings(opts: {
   hookArgv: string[];
   eventsPath: string;
   permissionMode: string;
+  sandbox?: SandboxOptions;
 }): Settings {
   const command = [...opts.hookArgv, opts.eventsPath].map(shellQuote).join(' ');
   const hooks: Settings['hooks'] = {};
   for (const ev of HOOK_EVENT_NAMES) {
     hooks[ev] = [{ hooks: [{ type: 'command', command, timeout: 10 }] }];
   }
-  return { hooks, permissions: { defaultMode: opts.permissionMode } };
+  const settings: Settings = { hooks, permissions: { defaultMode: opts.permissionMode } };
+  if (opts.sandbox) {
+    // Names from https://code.claude.com/docs/en/sandboxing: shell commands run under the OS
+    // sandbox (writes confined to the working directory plus `allowWrite`, network to
+    // `allowedDomains`). `allowUnsandboxedCommands: false` removes the retry outside it and
+    // `failIfUnavailable` stops the session instead of running unsandboxed.
+    settings.sandbox = {
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      filesystem: { allowWrite: [opts.sandbox.gitDir, ...(opts.sandbox.extraAllowWrite ?? [])] },
+      network: {
+        allowedDomains: [...SANDBOX_REGISTRY_DOMAINS, ...(opts.sandbox.extraAllowedDomains ?? [])],
+      },
+    };
+  }
+  return settings;
+}
+
+/** Where the implementer works, so its file rules can be scoped to it. */
+export interface ImplementerScope {
+  /** Absolute path of the run's worktree. */
+  worktree: string;
+  /** Absolute path of the run directory (briefs, reports and, read-only, inputs). */
+  runDir: string;
+  /** Project extras from `.block-party.yaml` `run.permissions`; `deny` always wins. */
+  extra?: { allow?: string[]; deny?: string[] };
+}
+
+/** Claude Code's absolute-path rule form: a leading `//` (a single `/` anchors at the settings file). */
+const absoluteRule = (p: string) => `//${p.replace(/^\/+/, '')}`;
+
+/**
+ * Bash rules that allow exactly `cmd` and `cmd` followed by arguments. Claude Code's
+ * `Bash(cmd *)` matches `cmd` itself too, and (per its permissions docs) splits `&&`, `||`,
+ * `;`, `|`, `&` and newlines so each part of a compound command needs its own allowance:
+ * neither form lets `cmd; anything` through. The bare `Bash(cmd)` is listed as well so the
+ * exact command stays allowed whichever way a version reads the trailing wildcard.
+ */
+export function exactBashRules(cmd: string): string[] {
+  return [`Bash(${cmd})`, `Bash(${cmd} *)`];
 }
 
 /**
- * Permission profile for the implementer (docs/spikes/claude-headless.md), with the specific
- * check commands allowed instead of `Bash(pnpm:*)` (which would allow `pnpm dlx`/`pnpm exec`).
- */
-/**
+ * Permission profile for the implementer (docs/spikes/claude-headless.md). It can edit in its
+ * worktree and run directory, run the project's checks and read-only git/file commands, and
+ * commit. It has no `node`, `find` or other command that runs arbitrary programs, cannot
+ * change `inputs/` (the pipeline's copy of its briefs and rulings), and cannot push, change
+ * git config or remotes, or discard work.
+ *
  * `checkCommands` are the project's required checks; `fixCommands` its `checks.fix` commands
- * (formatters and the like). Both may be run without approval.
+ * (formatters and the like). Each is allowed exactly (see exactBashRules), not as a prefix
+ * (which would allow `pnpm dlx`/`pnpm exec` for `pnpm`). Without `scope` the file rules are
+ * the bare tool names.
  */
 export function implementerPermissions(
   checkCommands: string[],
   fixCommands: string[] = [],
+  scope?: ImplementerScope,
 ): {
   allowedTools: string[];
   disallowedTools: string[];
@@ -123,13 +192,14 @@ export function implementerPermissions(
   const checks = [...checkCommands, ...fixCommands]
     .map((c) => c.trim())
     .filter((c) => c.length > 0);
-  // This allowlist is not a sandbox: check commands (and `node`) already run arbitrary repo
-  // code. Its job is to keep the agent off the network, away from publishing, and from
-  // changing dependencies, and to avoid approval prompts for routine read-only commands.
+  // This allowlist is not a sandbox (see the `policy.sandbox` option): check commands already
+  // run arbitrary repo code. Its job is to keep the agent off the network, away from
+  // publishing, secrets and changing dependencies, and to avoid approval prompts.
+  const fileRules = scope
+    ? [worktreeOnly(scope.worktree), worktreeOnly(scope.runDir)].flat()
+    : ['Read', 'Edit', 'Write'];
   const allowedTools = [
-    'Read',
-    'Edit',
-    'Write',
+    ...fileRules,
     'Glob',
     'Grep',
     'Bash(git status:*)',
@@ -140,26 +210,52 @@ export function implementerPermissions(
     'Bash(git add:*)',
     'Bash(git commit:*)',
     'Bash(pnpm install --frozen-lockfile)',
-    'Bash(node:*)',
     'Bash(ls:*)',
     'Bash(cat:*)',
     'Bash(grep:*)',
-    'Bash(find:*)',
     'Bash(head:*)',
     'Bash(tail:*)',
     'Bash(wc:*)',
-    ...checks.map((c) => `Bash(${c}:*)`),
+    ...checks.flatMap(exactBashRules),
   ];
   const disallowedTools = [
     'Bash(git push:*)',
+    'Bash(git config:*)',
+    'Bash(git remote:*)',
+    'Bash(git reset --hard:*)',
+    'Bash(git clean:*)',
+    'Bash(git checkout --:*)',
+    'Bash(git worktree:*)',
     'Bash(curl:*)',
     'Bash(wget:*)',
     'Bash(rm -rf:*)',
     'Bash(pnpm add:*)',
     'Bash(npm install:*)',
     'Bash(gh:*)',
+    'Read(~/.ssh/**)',
+    'Read(~/.aws/**)',
+    'Read(~/.config/gh/**)',
+    ...(scope ? inputsDeny(scope.runDir) : []),
   ];
-  return { allowedTools: [...new Set(allowedTools)], disallowedTools };
+  const extraDeny = scope?.extra?.deny ?? [];
+  const extraAllow = (scope?.extra?.allow ?? []).filter((r) => !extraDeny.includes(r));
+  return {
+    allowedTools: [...new Set([...allowedTools, ...extraAllow])].filter(
+      (r) => !disallowedTools.includes(r) && !extraDeny.includes(r),
+    ),
+    disallowedTools: [...new Set([...disallowedTools, ...extraDeny])],
+  };
+}
+
+/** Read and edit anywhere under `dir` (`Edit` rules cover the Write tool too). */
+function worktreeOnly(dir: string): string[] {
+  return [`Read(${absoluteRule(dir)}/**)`, `Edit(${absoluteRule(dir)}/**)`];
+}
+
+/** The pipeline owns `<runDir>/inputs`: the agent reads it but cannot change it. */
+function inputsDeny(runDir: string): string[] {
+  const dir = `${absoluteRule(runDir)}/inputs/**`;
+  return [`Edit(${dir})`];
 }
 
 /**
