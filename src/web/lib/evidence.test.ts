@@ -45,7 +45,9 @@ describe('evidenceFor', () => {
       ci: 'pending',
       stale: {},
     });
-    expect(headLine(ev)).toBe('abc1234 · local CI passed · review r2 clean · GitHub CI pending');
+    expect(headLine(ev)).toBe(
+      'Latest commit abc1234: local checks passed · review clean · GitHub CI pending',
+    );
   });
 
   it('counts open findings of the round when findings are given', () => {
@@ -63,7 +65,7 @@ describe('evidenceFor', () => {
     ] as never;
     const ev = evidenceFor(HEAD, [review(HEAD, 1, 2)], rounds);
     expect(ev.review).toEqual({ round: 1, blocking: 2, open: 1 });
-    expect(headLine(ev)).toContain('review r1 1 open');
+    expect(headLine(ev)).toContain('review: 1 open finding');
   });
 
   it('reports a review on an older head as stale', () => {
@@ -78,7 +80,9 @@ describe('evidenceFor', () => {
   it('has nothing for a run with no checks yet', () => {
     const ev = evidenceFor(HEAD, [stage('checks', 'running', { headSha: HEAD }, null)]);
     expect(ev).toEqual({ head: HEAD, checks: 'none', review: null, ci: 'none', stale: {} });
-    expect(headLine(ev)).toBe('abc1234 · no local CI · not reviewed · not published');
+    expect(headLine(ev)).toBe(
+      'Latest commit abc1234: local checks not run · not reviewed · not published',
+    );
     expect(staleLines(ev)).toEqual([]);
   });
 

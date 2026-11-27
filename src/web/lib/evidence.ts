@@ -123,17 +123,19 @@ const CI_TEXT: Record<HeadEvidence['ci'], string> = {
   none: 'not published',
 };
 
-/** `abc1234 · local CI passed · review r2 clean · GitHub CI pending` */
+/** `Latest commit abc1234: local checks passed · review clean · GitHub CI pending` */
 export function headLine(ev: HeadEvidence): string {
+  if (!ev.head) return 'Nothing built yet.';
   const parts = [
-    ev.head ? short(ev.head) : 'no head yet',
-    ev.checks === 'none' ? 'no local CI' : `local CI ${ev.checks}`,
+    ev.checks === 'none' ? 'local checks not run' : `local checks ${ev.checks}`,
     ev.review
-      ? `review r${ev.review.round} ${ev.review.open === 0 ? 'clean' : `${ev.review.open} open`}`
+      ? ev.review.open === 0
+        ? 'review clean'
+        : `review: ${ev.review.open} open finding${ev.review.open === 1 ? '' : 's'}`
       : 'not reviewed',
     CI_TEXT[ev.ci],
   ];
-  return parts.join(' · ');
+  return `Latest commit ${short(ev.head)}: ${parts.join(' · ')}`;
 }
 
 /** Lines for evidence that belongs to older heads only. */
@@ -142,7 +144,7 @@ export function staleLines(ev: HeadEvidence): string[] {
   const { checks, review, ci } = ev.stale;
   if (checks) {
     lines.push(
-      `local CI ${checks.passed ? 'passed' : 'failed'} on ${short(checks.sha)}, not the current head`,
+      `local checks ${checks.passed ? 'passed' : 'failed'} on ${short(checks.sha)}, not the current head`,
     );
   }
   if (review) {

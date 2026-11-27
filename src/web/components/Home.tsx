@@ -31,7 +31,7 @@ function RunRow({ run }: { run: RunSummary }) {
       </div>
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-muted">
         {repoLabel && <span>{repoLabel}</span>}
-        {run.stageNote && <span>{stageNoteLabel(run)}</span>}
+        {stageNoteLabel(run) && <span>{stageNoteLabel(run)}</span>}
         {project && run.prNumber !== null && (
           <a
             href={prHref(project, run.prNumber)}
@@ -46,7 +46,7 @@ function RunRow({ run }: { run: RunSummary }) {
 }
 
 const STEPS = [
-  'Describe a change and pick a repo.',
+  'Pick a repo and describe the change.',
   'An agent writes a plan. You read it and approve it.',
   'It builds the change, runs the tests and gets a second review. Then you review the pull request.',
 ];

@@ -3,12 +3,22 @@ import { stageLabel } from './stageLabel';
 import type { RunEvent, RunSummary, StageKind, StageRow } from '../types';
 
 export type StripState =
-  'pending' | 'running' | 'done' | 'failed' | 'blocked' | 'cancelled' | 'stopped' | 'skipped';
+  | 'pending'
+  | 'running'
+  | 'waiting'
+  | 'done'
+  | 'failed'
+  | 'blocked'
+  | 'cancelled'
+  | 'stopped'
+  | 'skipped';
 
 export interface StripItem {
-  key: 'implement' | 'checks' | 'review' | 'fix' | 'publish' | 'ci';
+  key: 'plan' | 'implement' | 'checks' | 'review' | 'fix' | 'publish' | 'ci';
   label: string;
   state: StripState;
+  /** What to show instead of the state word, e.g. "ready for you". */
+  text?: string;
   /** How many times this stage ran (fix rounds, repeated CI runs, ...). */
   count: number;
   /** Acceptance criteria met, on the cells that produce implementer reports (Implement, Fix). */
@@ -42,7 +52,7 @@ export function stageStrip(
     stages.some((s) => STRIP.find((x) => x.key === key)!.kinds.includes(s.kind));
   const metKey =
     met && met.total > 0 ? (ran('fix') ? 'fix' : ran('implement') ? 'implement' : null) : null;
-  return STRIP.map(({ key, label, kinds }) => {
+  const items = STRIP.map(({ key, label, kinds }) => {
     const execs = stages.filter((s) => kinds.includes(s.kind));
     const last = execs.at(-1);
     let state: StripState;
@@ -59,6 +69,22 @@ export function stageStrip(
       ...(ciFixes > 0 ? { ciFixes } : {}),
     };
   });
+  return [planItem(stages, run), ...items];
+}
+
+/** The Plan step: writing, ready for you, or approved; stopped when the run ended before one. */
+function planItem(stages: readonly StageRow[], run: Pick<RunSummary, 'stage'>): StripItem {
+  const base = { key: 'plan' as const, label: 'Plan', count: 0 };
+  if (run.stage === 'setup' || run.stage === 'planning') {
+    return { ...base, state: 'running', text: 'writing' };
+  }
+  if (run.stage === 'awaiting_plan_approval') {
+    return { ...base, state: 'waiting', text: 'ready for you' };
+  }
+  if (isTerminal(run.stage) && run.stage !== 'complete' && stages.length === 0) {
+    return { ...base, state: 'stopped', text: 'stopped' };
+  }
+  return { ...base, state: 'done', text: 'approved' };
 }
 
 export interface CheckResult {
@@ -115,6 +141,9 @@ export const isNoisyEvent = (type: string): boolean => type.startsWith('agent.')
 
 const isRunStage = (v: string): v is RunStage => (RUN_STAGES as readonly string[]).includes(v);
 
+const sameWords = (a: string, b: string): boolean =>
+  a.replaceAll('_', ' ').toLowerCase() === b.replaceAll('_', ' ').toLowerCase();
+
 const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
 
 /** One line for the activity feed. Unknown types, and known ones missing data, show the type. */
@@ -129,7 +158,11 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     case 'stage': {
       const stage = s('stage');
       if (!stage) return type;
-      return `${isRunStage(stage) ? stageLabel(stage) : stage}${s('note') ? `: ${s('note')}` : ''}`;
+      const label = isRunStage(stage) ? stageLabel(stage) : stage;
+      const note = s('note');
+      return note && !sameWords(note, label) && !sameWords(note, stage)
+        ? `${label}: ${note}`
+        : label;
     }
     case 'implementer.session':
       return 'Implementer started';

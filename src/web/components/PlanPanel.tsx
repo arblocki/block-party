@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, jsonBody } from '../api';
 import { defaultVersion, lineDiff, planActions, plannerAttach } from '../lib/plans';
 import type { PlanVersion, RunDecision, RunDetail, RunEvent } from '../types';
+import { AttachCommand } from './AttachCommand';
 import { headingText, sectionHeading } from './AppShell';
 
 const NOTE_MAX = 4000;
@@ -21,14 +22,6 @@ const DIFF_CLASS = {
   del: 'bg-error-soft text-error',
 } as const;
 const DIFF_MARK = { same: ' ', add: '+', del: '-' } as const;
-
-function Attach({ command }: { command: string }) {
-  return (
-    <code className="mt-1 block overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs">
-      {command}
-    </code>
-  );
-}
 
 /** Approve, or request changes with a required note, on the open plan_approval decision. */
 function ApprovalControls({
@@ -182,7 +175,7 @@ export function PlanPanel({
           role="status"
         >
           <p className="text-info">The planner is writing v{(latest?.version ?? 0) + 1}…</p>
-          {attach && <Attach command={attach} />}
+          {attach && <AttachCommand command={attach} />}
         </div>
       )}
       {error && <p className="text-sm text-muted">The plans could not be loaded: {error}</p>}

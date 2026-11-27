@@ -3,7 +3,7 @@ import type { Finding } from '../reviewer/findings.js';
 import type { FindingRow } from '../store/runs.js';
 import type { ReviewRoundInput } from './publish.js';
 import type { CheckResult } from '../checks/run.js';
-import { mergedPriorFindings, renderCiFailures } from './pipeline-helpers.js';
+import { mergedPriorFindings, renderCiFailures, titleFromDescription } from './pipeline-helpers.js';
 
 const finding = (id: string): Finding => ({
   id,
@@ -110,5 +110,28 @@ describe('renderCiFailures', () => {
     expect(out).toContain('- typecheck: `pnpm typecheck`');
     expect(out).not.toContain('pnpm test');
     expect(out).toContain('parity gap');
+  });
+});
+
+describe('titleFromDescription', () => {
+  it('uses the first sentence', () => {
+    expect(titleFromDescription('Add a login page. It should use OAuth.')).toBe('Add a login page');
+    expect(titleFromDescription('\n\nFix the bug!  Then more.')).toBe('Fix the bug!');
+  });
+  it('keeps a short description whole, and names an empty one', () => {
+    expect(titleFromDescription('Add v1.2 support')).toBe('Add v1.2 support');
+    expect(titleFromDescription('   ')).toBe('Untitled run');
+  });
+  it('cuts a long sentence at a word boundary within 60 characters, with an ellipsis', () => {
+    const t = titleFromDescription(
+      'Make the settings page remember which tab was open between visits to the app',
+    );
+    expect(t.length).toBeLessThanOrEqual(60);
+    expect(t.endsWith('…')).toBe(true);
+    expect(t).toBe('Make the settings page remember which tab was open between…');
+  });
+  it('cuts a single huge word hard', () => {
+    const t = titleFromDescription('x'.repeat(100));
+    expect(t).toBe(`${'x'.repeat(59)}…`);
   });
 });

@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { api, ApiError, jsonBody } from '../api';
-import { cloneState, filterNewRunRepos } from '../lib/newRunRepos';
+import { chosenCopy, cloneState, filterNewRunRepos, shouldRepick } from '../lib/newRunRepos';
 import { relativeTime } from '../lib/route';
 import type { NewRunRepo, Project } from '../types';
 import { useListNav } from '../useListNav';
@@ -28,20 +28,20 @@ export function RepoChooser({ onReady }: { onReady(project: Project | null): voi
   const { data, error, loading, reload } = useLoader(fetcher);
   const [query, setQuery] = useState('');
   const [prep, setPrep] = useState<Prep>({ state: 'idle' });
-  // The copy chosen for a repo that has several.
   // Only the latest pick may report back.
   const latest = useRef(0);
+  // The copy chosen for each repo that has several.
   const [copies, setCopies] = useState<Record<string, string>>({});
 
   const entries = useMemo(() => filterNewRunRepos(data?.repos ?? [], query), [data, query]);
   const idOf = (r: NewRunRepo) => `${r.owner}/${r.repo}`;
 
-  const pick = async (repo: NewRunRepo) => {
+  const pick = async (repo: NewRunRepo, copy = chosenCopy(repo, copies)) => {
     const mine = ++latest.current;
     onReady(null);
     setPrep({ state: 'working', repo, cloning: repo.clones.length === 0 });
     try {
-      const clonePath = repo.clones.length > 1 ? (copies[idOf(repo)] ?? repo.clones[0]) : undefined;
+      const clonePath = copy;
       const { project } = await api<{ project: Project }>('/api/new-run/prepare', {
         method: 'POST',
         ...jsonBody({ owner: repo.owner, repo: repo.repo, ...(clonePath ? { clonePath } : {}) }),
@@ -135,8 +135,11 @@ export function RepoChooser({ onReady }: { onReady(project: Project | null): voi
                     <select
                       id={`copy-${idOf(r)}`}
                       className="rounded-md border border-line bg-surface px-2 py-0.5 text-sm"
-                      value={copies[idOf(r)] ?? r.clones[0]}
-                      onChange={(e) => setCopies({ ...copies, [idOf(r)]: e.target.value })}
+                      value={chosenCopy(r, copies)}
+                      onChange={(e) => {
+                        setCopies({ ...copies, [idOf(r)]: e.target.value });
+                        if (shouldRepick(chosen, r)) void pick(r, e.target.value);
+                      }}
                     >
                       {r.clones.map((c) => (
                         <option key={c} value={c}>

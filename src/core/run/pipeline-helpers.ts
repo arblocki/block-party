@@ -175,10 +175,19 @@ export function mergedPriorFindings(
     });
 }
 
-const MAX_TITLE_CHARS = 72;
+const MAX_TITLE_CHARS = 60;
 
-/** A run's title from its description: the first non-empty line, cut to 72 characters. */
+/**
+ * A run's title from its description: the first sentence of the first non-empty line, at most
+ * 60 characters, cut at a word boundary with an ellipsis when it is longer.
+ */
 export function titleFromDescription(description: string): string {
-  const line = description.split(/\r?\n/).find((l) => l.trim() !== '') ?? '';
-  return line.trim().slice(0, MAX_TITLE_CHARS).trim() || 'Untitled run';
+  const line = (description.split(/\r?\n/).find((l) => l.trim() !== '') ?? '').trim();
+  const sentence = (/^.*?[.!?](?=\s|$)/.exec(line)?.[0] ?? line).replace(/[.]$/, '').trim();
+  if (sentence.length <= MAX_TITLE_CHARS) return sentence || 'Untitled run';
+  // Leave room for the ellipsis; cut at the last space, unless that would leave almost nothing.
+  const room = sentence.slice(0, MAX_TITLE_CHARS - 1);
+  const space = room.lastIndexOf(' ');
+  const cut = space >= MAX_TITLE_CHARS / 3 ? room.slice(0, space) : room;
+  return `${cut.replace(/[\s,;:.-]+$/, '')}…`;
 }

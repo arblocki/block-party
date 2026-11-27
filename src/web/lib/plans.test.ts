@@ -121,6 +121,13 @@ describe('stageNoteLabel', () => {
     expect(stageNoteLabel(r('awaiting_plan_approval', 'n', null))).toBe('n');
     expect(stageNoteLabel(r('planning', null, null))).toBeNull();
   });
+  it('drops a note that is empty or only repeats the stage', () => {
+    expect(stageNoteLabel(r('cancelled', 'cancelled', null))).toBeNull();
+    expect(stageNoteLabel(r('cancelled', 'Cancelled', null))).toBeNull();
+    expect(stageNoteLabel(r('waiting_ci', 'waiting ci', null))).toBeNull();
+    expect(stageNoteLabel(r('failed', '  ', null))).toBeNull();
+    expect(stageNoteLabel(r('cancelled', 'Cancelled by you', null))).toBe('Cancelled by you');
+  });
 });
 
 describe('plannerAttach', () => {

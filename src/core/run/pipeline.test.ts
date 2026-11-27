@@ -2305,11 +2305,11 @@ describe('planning', () => {
     ]);
   });
 
-  it('cuts the title from a long first line', async () => {
+  it('cuts the title from a long first line to 60 characters', async () => {
     const h = harness({ description: 'x'.repeat(100), turns: [{}] });
     const out = await h.run();
     expect(JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')).title).toBe(
-      'x'.repeat(72),
+      `${'x'.repeat(59)}…`,
     );
   });
 

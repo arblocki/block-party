@@ -19,3 +19,20 @@ export function cloneState(repo: NewRunRepo, cloneRoot: string): string {
     ? 'on this computer'
     : `will be cloned to ${tildify(cloneRoot)}/${repo.repo}`;
 }
+
+const idOf = (r: Pick<NewRunRepo, 'owner' | 'repo'>): string => `${r.owner}/${r.repo}`;
+
+/** The copy to use for a repo: the one picked in "Which copy?", else the first (the registered one). */
+export function chosenCopy(repo: NewRunRepo, picked: Record<string, string>): string | undefined {
+  if (repo.clones.length < 2) return undefined;
+  const mine = picked[idOf(repo)];
+  return mine && repo.clones.includes(mine) ? mine : repo.clones[0];
+}
+
+/** Changing the copy of the repo that is already chosen means getting the new copy ready. */
+export function shouldRepick(
+  chosen: Pick<NewRunRepo, 'owner' | 'repo'> | null,
+  changed: NewRunRepo,
+): boolean {
+  return chosen !== null && idOf(chosen) === idOf(changed);
+}

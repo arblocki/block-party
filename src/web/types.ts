@@ -256,4 +256,4 @@ export interface StartRunRequest {
 }
 
 /** GET /api/new-run/repos */
-export type { NewRunRepo } from '../server/new-run-api';
+export type { NewRunRepo } from '../core/new-run-types';

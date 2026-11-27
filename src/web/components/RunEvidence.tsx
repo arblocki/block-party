@@ -3,6 +3,7 @@ import { findingHistory } from '../lib/findings';
 import { checksBySha } from '../lib/runView';
 import type { AcceptanceItem, ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
 import { sectionHeading } from './AppShell';
+import { AttachCommand } from './AttachCommand';
 import { listClass } from './PickerShell';
 
 export const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
@@ -19,12 +20,15 @@ export function PlanSection({
   plan,
   error,
   planning = false,
+  ended = false,
   attach = null,
 }: {
   plan: RunPlan | null;
   error: string | null;
   /** The run is in setup or planning: no plan exists yet, which is not an error. */
   planning?: boolean;
+  /** The run is over, so a missing plan means none was ever written. */
+  ended?: boolean;
   attach?: string | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -36,13 +40,10 @@ export function PlanSection({
       {!plan && planning ? (
         <div className="rounded-md border border-info bg-info-soft px-3 py-2 text-sm" role="status">
           <p className="text-info">The planner is writing the plan…</p>
-          {attach && <p className="mt-1 text-muted">To watch it work, run this in a terminal:</p>}
-          {attach && (
-            <code className="mt-1 block overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs">
-              {attach}
-            </code>
-          )}
+          {attach && <AttachCommand command={attach} />}
         </div>
+      ) : error && ended && /not found/i.test(error) ? (
+        <p className="text-sm text-muted">No plan was written.</p>
       ) : error ? (
         <p className="text-sm text-muted">The plan could not be loaded: {error}</p>
       ) : !plan ? (
@@ -230,7 +231,7 @@ export function EvidenceSection({
         Evidence
       </h2>
       <p className="mb-1 text-sm font-medium" data-testid="head-line">
-        Current head: <span className="font-mono">{headSummary.line}</span>
+        {headSummary.line}
       </p>
       {headSummary.stale.length > 0 && (
         <ul className="mb-3 space-y-0.5 text-xs text-muted">
@@ -241,7 +242,7 @@ export function EvidenceSection({
       )}
       <h3 className="mb-1 mt-3 text-sm font-medium">Local checks</h3>
       {shas.length === 0 ? (
-        <p className="mb-4 text-sm text-muted">No local CI yet.</p>
+        <p className="mb-4 text-sm text-muted">No checks run yet.</p>
       ) : (
         <ul className={`${listClass} mb-4`}>
           {shas.map((g) => (
@@ -280,6 +281,9 @@ export function EvidenceSection({
         </ul>
       )}
       <h3 className="mb-1 text-sm font-medium">Codex review</h3>
+      <p className="mb-2 text-xs text-muted">
+        A second AI model (OpenAI Codex) reviews each change before you see it.
+      </p>
       {findingsError ? (
         <p className="text-sm text-muted">Findings could not be loaded: {findingsError}</p>
       ) : rounds === null ? (

@@ -1,4 +1,5 @@
 import type { PlanVersion, RunDecision, RunDetail, RunEvent, RunSummary } from '../types';
+import { stageLabel } from './stageLabel';
 
 export interface DiffLine {
   kind: 'same' | 'add' | 'del';
@@ -88,7 +89,13 @@ export function stageNoteLabel(
   if (run.stage === 'awaiting_plan_approval' && run.planVersion !== null) {
     return `Plan v${run.planVersion} ready`;
   }
-  return run.stageNote;
+  const note = run.stageNote?.trim();
+  if (!note) return null;
+  // A note that only repeats the stage ("cancelled" on a cancelled run) adds nothing.
+  return note.toLowerCase() === stageLabel(run.stage).toLowerCase() ||
+    note.toLowerCase() === run.stage.replaceAll('_', ' ')
+    ? null
+    : note;
 }
 
 /** The attach command of the planner's latest session, else null. */

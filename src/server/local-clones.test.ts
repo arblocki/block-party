@@ -86,6 +86,11 @@ describe('cloneRoots', () => {
     expect(r.cloneRoot).toBe(join(home, 'code'));
   });
 
+  it('never scans the home directory itself', () => {
+    const home = tmp();
+    expect(cloneRoots([join(home, 'loose-project')], home).roots).toEqual([]);
+  });
+
   it('falls back to ~/repos for cloning when no default folder exists', () => {
     const home = tmp();
     expect(cloneRoots([], home)).toEqual({ roots: [], cloneRoot: join(home, 'repos') });

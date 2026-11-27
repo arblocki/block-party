@@ -121,7 +121,13 @@ export function NewRun() {
       >
         <section className={section}>
           <h2 className={sectionHeading}>Which repo?</h2>
-          <RepoChooser onReady={setProject} />
+          <RepoChooser
+            onReady={(p) => {
+              // A branch typed for one repo means nothing for another.
+              if (p?.id !== project?.id) setBaseRef('');
+              setProject(p);
+            }}
+          />
         </section>
 
         <section className={section}>

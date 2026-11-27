@@ -23,6 +23,21 @@ const run = (stage: RunStage) => ({ stage });
 const states = (items: ReturnType<typeof stageStrip>) =>
   Object.fromEntries(items.map((i) => [i.key, i.state]));
 
+describe('stageStrip plan step', () => {
+  const plan = (stage: RunStage, stages: never[] = []) => stageStrip(stages, run(stage))[0]!;
+  it('is first and follows the plan through writing, ready and approved', () => {
+    expect(plan('planning')).toMatchObject({ key: 'plan', state: 'running', text: 'writing' });
+    expect(plan('awaiting_plan_approval')).toMatchObject({
+      state: 'waiting',
+      text: 'ready for you',
+    });
+    expect(plan('implementing')).toMatchObject({ state: 'done', text: 'approved' });
+  });
+  it('is stopped when the run ended before any work', () => {
+    expect(plan('cancelled')).toMatchObject({ state: 'stopped' });
+  });
+});
+
 describe('stageStrip', () => {
   it('shows a completed run with every step done', () => {
     const stages = [
@@ -36,6 +51,7 @@ describe('stageStrip', () => {
     ];
     const strip = stageStrip(stages, run('complete'));
     expect(strip.map((i) => i.label)).toEqual([
+      'Plan',
       'Build',
       'Local checks',
       'Codex review',
@@ -44,6 +60,7 @@ describe('stageStrip', () => {
       'GitHub CI',
     ]);
     expect(states(strip)).toEqual({
+      plan: 'done',
       implement: 'done',
       checks: 'done',
       review: 'done',
@@ -92,6 +109,7 @@ describe('stageStrip', () => {
       stage('check-fix', 'blocked'),
     ];
     expect(states(stageStrip(stages, run('blocked')))).toEqual({
+      plan: 'done',
       implement: 'done',
       checks: 'failed',
       review: 'pending',
@@ -104,6 +122,7 @@ describe('stageStrip', () => {
   it('shows a run in progress with the open stage running', () => {
     const stages = [stage('implement', 'succeeded'), stage('checks', 'running')];
     expect(states(stageStrip(stages, run('checking')))).toEqual({
+      plan: 'done',
       implement: 'done',
       checks: 'running',
       review: 'pending',
@@ -115,11 +134,15 @@ describe('stageStrip', () => {
 
   it('treats a stage left running in a finished run as stopped', () => {
     const strip = stageStrip([stage('implement', 'running')], run('interrupted'));
-    expect(strip[0]!.state).toBe('stopped');
+    expect(strip.find((i) => i.key === 'implement')!.state).toBe('stopped');
   });
 
   it('is all pending for a run that has not started a stage', () => {
-    expect(stageStrip([], run('setup')).every((i) => i.state === 'pending')).toBe(true);
+    expect(
+      stageStrip([], run('setup'))
+        .filter((i) => i.key !== 'plan')
+        .every((i) => i.state === 'pending'),
+    ).toBe(true);
   });
 });
 
@@ -193,6 +216,10 @@ describe('summarizeEvent', () => {
       'Waiting for GitHub CI: PR #4',
     );
     expect(sum('stage', { stage: 'implementing' })).toBe('Building');
+    expect(sum('stage', { stage: 'cancelled', note: 'cancelled' })).toBe('Cancelled');
+    expect(sum('stage', { stage: 'cancelled', note: 'Cancelled by you' })).toBe(
+      'Cancelled: Cancelled by you',
+    );
     expect(sum('implementer.session', { mode: 'pane', attach: 'x' })).toBe('Implementer started');
     expect(sum('implementer.waiting_for_human', { notice: 'Needs approval' })).toBe(
       'Needs approval',

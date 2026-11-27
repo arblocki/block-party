@@ -42,6 +42,7 @@ const STRIP_CLASS: Record<StripState, string> = {
   pending: 'border-line text-muted',
   skipped: 'border-line text-muted opacity-60',
   running: 'border-info bg-info-soft text-info',
+  waiting: 'border-warning bg-warning-soft text-warning',
   done: 'border-success bg-success-soft text-success',
   failed: 'border-error bg-error-soft text-error',
   blocked: 'border-error bg-error-soft text-error',
@@ -85,7 +86,7 @@ function Strip({
         >
           <span className="font-medium">{i.label}</span>{' '}
           <span className="text-xs">
-            {i.state}
+            {i.text ?? i.state}
             {i.count > 1 ? ` x${i.count}` : ''}
             {i.ciFixes ? ` · ${i.ciFixes} CI fix${i.ciFixes === 1 ? '' : 'es'}` : ''}
             {i.met ? ` · criteria ${i.met.met}/${i.met.total}` : ''}
@@ -127,12 +128,12 @@ function Activity({ events }: { events: RunEvent[] }) {
           {shown.map((e) => (
             <li
               key={e.id}
+              title={e.type}
               className={`flex flex-wrap items-baseline gap-x-3 px-3 py-1 text-sm ${isNoisyEvent(e.type) ? 'text-muted' : ''}`}
             >
               <time className="font-mono text-xs text-muted" dateTime={e.ts} title={e.ts}>
                 {clock(e.ts)}
               </time>
-              <span className="font-mono text-xs text-muted">{e.type}</span>
               <span className="min-w-0 break-words">{summarizeEvent(e)}</span>
             </li>
           ))}
@@ -406,7 +407,7 @@ export function RunView({ id }: { id: string }) {
             </button>
           )}
         </div>
-        {run.stageNote && <p className="mt-1 text-sm text-muted">{stageNoteLabel(run)}</p>}
+        {stageNoteLabel(run) && <p className="mt-1 text-sm text-muted">{stageNoteLabel(run)}</p>}
         {cancelNote && <p className="mt-1 text-sm text-warning">{cancelNote}</p>}
         <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-muted">
           {project && (
@@ -469,6 +470,7 @@ export function RunView({ id }: { id: string }) {
           plan={plan}
           error={planError}
           planning={run.stage === 'setup' || run.stage === 'planning'}
+          ended={isTerminal(run.stage)}
           attach={plannerAttach(events)}
         />
       )}

@@ -29,6 +29,7 @@ let home: string;
 let origins: Map<string, string>;
 let cloned: { url: string; dest: string }[];
 let cloneFails: boolean;
+let wrongOrigin: string | null;
 let github: ReturnType<typeof fakeGitHub>;
 let app: ReturnType<typeof createApp>;
 
@@ -51,9 +52,12 @@ const git: NonNullable<NewRunApiDeps['git']> = {
     if (cloneFails) throw new Error('fatal: could not read from remote');
     mkdirSync(join(dest, '.git'), { recursive: true });
     const m = /github\.com\/([^/]+\/[^/]+)\.git$/.exec(url)!;
-    origins.set(realpathSync(dest), m[1]!);
+    origins.set(realpathSync(dest), wrongOrigin ?? m[1]!);
   },
 };
+
+const defaultBranch0 = git.defaultBranch;
+const clone0 = git.clone;
 
 /** A directory under the fake home that looks like a clone of `origin`. */
 function makeClone(path: string, origin: string): string {
@@ -69,6 +73,9 @@ beforeEach(() => {
   origins = new Map();
   cloned = [];
   cloneFails = false;
+  wrongOrigin = null;
+  git.defaultBranch = defaultBranch0;
+  git.clone = clone0;
   github = fakeGitHub();
   app = createApp({
     token: TOKEN,
@@ -131,6 +138,17 @@ describe('GET /api/new-run/repos', () => {
     expect(r.repos.find((x) => x.repo === 'a')?.clones).toEqual([path]);
     expect(r.repos.find((x) => x.repo === 'b')?.clones).toEqual([]);
     expect(r.repos.map((x) => x.repo)).not.toContain('else');
+  });
+
+  it('puts the registered copy first among several', async () => {
+    mkdirSync(join(home, 'repos'));
+    makeClone(join(home, 'repos', 'a1'), 'me/a');
+    const second = makeClone(join(home, 'repos', 'a2'), 'me/a');
+    github.repos = [summary('me', 'a')];
+    store.runs.upsertProject({ owner: 'me', repo: 'a', localPath: second, defaultBase: 'main' });
+    const row = (await list()).repos[0]!;
+    expect(row.clones).toHaveLength(2);
+    expect(row.clones[0]).toBe(second);
   });
 
   it('keeps registered projects that GitHub does not list', async () => {
@@ -222,19 +240,41 @@ describe('POST /api/new-run/prepare', () => {
     github.repos = [summary('me', 'a')];
   });
 
-  it('returns the existing project without touching GitHub or git', async () => {
+  it('returns the existing project when the viewer can access the repo', async () => {
     const p = store.runs.upsertProject({
       owner: 'Me',
       repo: 'A',
       localPath: '/p/a',
       defaultBase: 'main',
     });
-    github.listRepos = async () => {
-      throw new Error('should not be called');
-    };
     const res = await prepare({ owner: 'me', repo: 'a' });
     expect((await asProject(res)).id).toBe(p.id);
     expect(cloned).toEqual([]);
+  });
+
+  it('still returns an existing project when GitHub cannot be reached', async () => {
+    const p = store.runs.upsertProject({
+      owner: 'me',
+      repo: 'a',
+      localPath: '/p/a',
+      defaultBase: 'main',
+    });
+    github.listRepos = async () => {
+      throw new Error('offline');
+    };
+    expect((await asProject(await prepare({ owner: 'me', repo: 'a' }))).id).toBe(p.id);
+    // Without a project there is nothing to fall back on.
+    expect((await prepare({ owner: 'me', repo: 'other' })).status).toBe(502);
+  });
+
+  it('checks access before returning an existing project', async () => {
+    store.runs.upsertProject({
+      owner: 'gone',
+      repo: 'x',
+      localPath: '/p/x',
+      defaultBase: 'main',
+    });
+    expect((await prepare({ owner: 'gone', repo: 'x' })).status).toBe(403);
   });
 
   it('registers the only clone on this computer', async () => {
@@ -295,6 +335,55 @@ describe('POST /api/new-run/prepare', () => {
     expect(body.error).toContain('could not read from remote');
     expect(body.command).toBe(`git clone https://github.com/me/a.git ${join(home, 'repos', 'a')}`);
     expect(store.runs.listProjects()).toEqual([]);
+  });
+
+  it('rejects a clone whose origin is another repo, and registers nothing', async () => {
+    wrongOrigin = 'someone/else';
+    const res = await prepare({ owner: 'me', repo: 'a' });
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { error: string }).error).toContain('does not point at');
+    expect(store.runs.listProjects()).toEqual([]);
+  });
+
+  it('reports a setup failure after a good clone without a clone command', async () => {
+    git.defaultBranch = async () => {
+      throw new Error('broken repo');
+    };
+    const res = await prepare({ owner: 'me', repo: 'a' });
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as { error: string; command?: string };
+    expect(body.error).toMatch(/cloned me\/a but could not set it up: broken repo/);
+    expect(body.command).toBeUndefined();
+  });
+
+  it('quotes paths with spaces in the hand-run command', async () => {
+    cloneFails = true;
+    const spaced = join(home, 'my code');
+    mkdirSync(spaced);
+    app = createApp({ token: TOKEN, port: () => 4321, github, store, git, homeDir: spaced });
+    const body = (await (await prepare({ owner: 'me', repo: 'a' })).json()) as { command: string };
+    expect(body.command).toBe(
+      `git clone https://github.com/me/a.git '${join(spaced, 'repos', 'a')}'`,
+    );
+  });
+
+  it('refuses a destination that another clone is using right now', async () => {
+    github.repos = [summary('me', 'a'), summary('other', 'a')];
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => (release = r));
+    const realClone = git.clone!;
+    git.clone = async (url, dest) => {
+      await gate;
+      return realClone(url, dest);
+    };
+    app = createApp({ token: TOKEN, port: () => 4321, github, store, git, homeDir: home });
+    const first = prepare({ owner: 'me', repo: 'a' });
+    await new Promise((r) => setTimeout(r, 20));
+    const second = await prepare({ owner: 'other', repo: 'a' });
+    release();
+    expect((await first).status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(cloned).toHaveLength(1);
   });
 
   it('rejects a repo the viewer cannot access, without cloning', async () => {
