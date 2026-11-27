@@ -326,7 +326,16 @@ function harness(o: Opts) {
       }
       return { state: o.ci ?? 'success', checks: [] };
     },
-    github: async () => ({}) as GitHubClient,
+    github: async () =>
+      ({
+        getPr: async (_r: unknown, n: number) => ({
+          number: n,
+          headSha: git.head,
+          url: `https://x/pr/${n}`,
+          draft: false,
+          state: 'open',
+        }),
+      }) as unknown as GitHubClient,
     createLog: (dir) => new RunLog(dir, { echo: (l) => echoed.push(l) }),
     hookArgv: ['node', 'hook'],
     ...(o.store ? { store: o.store } : {}),
@@ -1834,9 +1843,24 @@ describe('final review and continuations', () => {
   it('refuses to cancel a run that is not resting', async () => {
     const h = harness({ turns: [{}], ci: 'timeout' });
     const out = await h.run();
-    await expect(continueRun(out.runId, { kind: 'cancel' }, h.deps)).rejects.toThrow(
-      /not resting/,
-    );
+    await expect(continueRun(out.runId, { kind: 'cancel' }, h.deps)).rejects.toThrow(/not resting/);
+  });
+
+  it('keeps a resting run resting, with its question reopened, when shutdown aborts the continuation first', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    answerReview(store, out.runId, 'approve', null);
+    const ac = new AbortController();
+    ac.abort(new ShutdownError());
+    await expect(continueRun(out.runId, { kind: 'approve' }, h.deps, ac.signal)).rejects.toThrow();
+    expect(store.getRun(out.runId)!.stage).toBe('awaiting_review');
+    expect(state(out).stage).toBe('awaiting_review');
+    expect(store.listDecisions({ runId: out.runId, status: 'open' })).toHaveLength(1);
+    // The feedback path stays resting too.
+    const next = await continueRun(out.runId, { kind: 'feedback', text: 'x' }, h.deps, ac.signal);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(0);
   });
 
   it('refuses to continue a run that is not resting', async () => {
@@ -2088,7 +2112,18 @@ describe('final review and continuations', () => {
       expect(h.calls.published[1]!.prNumber).toBe(7);
     });
 
-    it('blocks instead of opening a second PR when the PR was closed', async () => {
+    const closedClient = () =>
+      ({
+        getPr: async (_r: unknown, n: number) => ({
+          number: n,
+          headSha: '',
+          url: 'u',
+          draft: false,
+          state: 'closed',
+        }),
+      }) as unknown as GitHubClient;
+
+    it('blocks before any work when the PR was closed or merged since review', async () => {
       const store = openStore(':memory:').runs;
       const gh = github('closed');
       const h = harness({
@@ -2102,10 +2137,14 @@ describe('final review and continuations', () => {
       });
       const out = await h.run();
       answerReview(store, out.runId, 'send_back', 'More');
-      const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, h.deps);
+      // The PR is closed by the time the feedback arrives.
+      const deps = { ...h.deps, github: async () => closedClient() };
+      const next = await continueRun(out.runId, { kind: 'feedback', text: 'More' }, deps);
       expect(next.stage).toBe('blocked');
       expect(next.note).toContain('PR #7 is closed');
-      expect(gh.calls).toEqual(['create', 'get:7']);
+      // No fix turn, no second publish.
+      expect(h.calls.sends).toHaveLength(0);
+      expect(gh.calls).toEqual(['create']);
     });
   });
 });
@@ -2346,7 +2385,19 @@ describe('planning', () => {
     expect(h.calls.starts).toHaveLength(1);
   });
 
-  it('keeps the run resting when the store cannot record the approval', async () => {
+  it('keeps the plan a draft when the move out of rest fails', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+    const out = await h.run();
+    answerPlan(store, out.runId, 'approve', null);
+    forced.illegal = ['awaiting_plan_approval', 'implementing'];
+    const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(next.stage).toBe('awaiting_plan_approval');
+    expect(store.listPlans(out.runId)[0]!.status).toBe('draft');
+    expect(h.calls.starts).toHaveLength(1);
+  });
+
+  it('carries on and notes it when the store cannot record the approval', async () => {
     const real = openStore(':memory:').runs;
     const store: RunStore = new Proxy(real, {
       get(t, prop, recv) {
@@ -2354,13 +2405,12 @@ describe('planning', () => {
         return Reflect.get(t, prop, recv) as unknown;
       },
     });
-    const h = harness({ store, description: DESCRIPTION, turns: [{}] });
+    const h = harness({ store, description: DESCRIPTION, turns: [{}, {}] });
     const out = await h.run();
     answerPlan(real, out.runId, 'approve', null);
-    const next = await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
-    expect(next.stage).toBe('awaiting_plan_approval');
-    expect(real.getRun(out.runId)!.stage).toBe('awaiting_plan_approval');
-    expect(h.calls.starts).toHaveLength(1);
+    await continueRun(out.runId, { kind: 'plan_approve' }, h.deps);
+    expect(real.listEvents(out.runId).map((e) => e.type)).toContain('plan.approval_unrecorded');
+    expect(h.calls.starts).toHaveLength(2);
   });
 
   it('stores the pane label a resumed planner is relaunched under', async () => {

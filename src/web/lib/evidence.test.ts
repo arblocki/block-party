@@ -54,7 +54,11 @@ describe('evidenceFor', () => {
         round: 1,
         reviewedSha: HEAD,
         summary: '',
-        findings: [{ status: 'open' }, { status: 'fixed' }],
+        findings: [
+          { status: 'open', triage: 'ask' },
+          { status: 'open', triage: 'record' },
+          { status: 'fixed', triage: 'auto_fix' },
+        ],
       },
     ] as never;
     const ev = evidenceFor(HEAD, [review(HEAD, 1, 2)], rounds);

@@ -1,6 +1,6 @@
 import { useRef, useState, type RefObject } from 'react';
 import { api } from '../api';
-import { decisionLabel } from '../lib/home';
+import { clipNote, decisionLabel, needsNote } from '../lib/home';
 import { relativeTime, runHref } from '../lib/route';
 import type { DecisionAnswer, RunDecision } from '../types';
 
@@ -46,6 +46,11 @@ function AnswerControls({ d, onAnswered }: { d: DecisionItemData; onAnswered?():
   const options = d.options ?? [];
   const [answer, setAnswer] = useState<DecisionAnswer | null>(d.answer);
   const [noteOpen, setNoteOpen] = useState(false);
+  // An option that needs a note waits here until the note is written.
+  const [pending, setPending] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  // A ref as well as `busy`: a double click lands before the re-render disables the buttons.
+  const sending = useRef(false);
   const [note, setNote] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +59,8 @@ function AnswerControls({ d, onAnswered }: { d: DecisionItemData; onAnswered?():
   const chosen = shown ? options.find((o) => o.id === shown.choice) : undefined;
 
   const submit = (choice: string) => {
+    if (sending.current) return;
+    sending.current = true;
     setBusy(true);
     setError(null);
     api<{ decision: RunDecision }>(`/api/inbox/${d.id}/answer`, {
@@ -61,11 +68,13 @@ function AnswerControls({ d, onAnswered }: { d: DecisionItemData; onAnswered?():
       body: JSON.stringify({ choice, note: note.trim() || undefined }),
     }).then(
       (r) => {
+        sending.current = false;
         setBusy(false);
         setAnswer(r.decision.answer ?? { choice, note: note.trim() || null });
         onAnswered?.();
       },
       (e: Error) => {
+        sending.current = false;
         setBusy(false);
         setError(e.message);
       },
@@ -86,7 +95,12 @@ function AnswerControls({ d, onAnswered }: { d: DecisionItemData; onAnswered?():
                 ? 'border-accent bg-accent-soft font-medium'
                 : 'border-line hover:bg-surface-hover disabled:opacity-60 disabled:hover:bg-transparent'
             }`}
-            onClick={() => submit(o.id)}
+            onClick={() => {
+              if (!needsNote(o.id)) return submit(o.id);
+              // Open the note box first; the answer is sent with the note.
+              setPending(o.id);
+              setNoteOpen(true);
+            }}
           >
             {o.label}
           </button>
@@ -112,10 +126,42 @@ function AnswerControls({ d, onAnswered }: { d: DecisionItemData; onAnswered?():
             Add a note
           </button>
         ))}
+      {shown === null && pending !== null && (
+        <div className="mt-1 flex items-center gap-2 text-sm">
+          <button
+            type="button"
+            disabled={busy || note.trim() === ''}
+            className="rounded-md border border-accent bg-accent-soft px-2.5 py-1 font-medium disabled:cursor-not-allowed disabled:opacity-60"
+            onClick={() => submit(pending)}
+          >
+            Send: {options.find((o) => o.id === pending)?.label ?? pending}
+          </button>
+          {note.trim() === '' && <span className="text-muted">Write what to change first.</span>}
+        </div>
+      )}
       {shown && (
-        <p className="mt-1 text-sm text-muted" role="status">
+        <p className="mt-1 whitespace-pre-wrap text-sm text-muted" role="status">
           Answered: <span className="font-medium text-fg">{chosen?.label ?? shown.choice}</span>
-          {shown.note ? ` - ${shown.note}` : ''}
+          {shown.note && (
+            <>
+              {' - '}
+              {showAll || !clipNote(shown.note).clipped
+                ? shown.note
+                : `${clipNote(shown.note).text}…`}
+              {clipNote(shown.note).clipped && (
+                <>
+                  {' '}
+                  <button
+                    type="button"
+                    className="text-accent hover:underline"
+                    onClick={() => setShowAll((v) => !v)}
+                  >
+                    {showAll ? 'Show less' : 'Show more'}
+                  </button>
+                </>
+              )}
+            </>
+          )}
         </p>
       )}
       {error && (

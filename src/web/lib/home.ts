@@ -65,3 +65,16 @@ export function runProject(run: Pick<RunSummary, 'owner' | 'repo'>): {
 } | null {
   return run.owner && run.repo ? { owner: run.owner, repo: run.repo } : null;
 }
+
+/** Options whose answer means nothing without a note saying what to change. */
+const NOTE_REQUIRED = new Set(['send_back', 'revise']);
+export const needsNote = (optionId: string): boolean => NOTE_REQUIRED.has(optionId);
+
+export const NOTE_PREVIEW = 300;
+
+/** The first `max` characters of an answered note, and whether the rest was cut. */
+export function clipNote(note: string, max = NOTE_PREVIEW): { text: string; clipped: boolean } {
+  return note.length > max
+    ? { text: note.slice(0, max).trimEnd(), clipped: true }
+    : { text: note, clipped: false };
+}

@@ -38,7 +38,9 @@ export function startServer(opts: {
   // A resting run whose answer was taken but never carried out gets its question back.
   const reopened = reopenStrandedRests(opts.store.runs);
   if (reopened.length > 0) {
-    console.log(`Reopened the question for ${reopened.length} resting run(s): ${reopened.join(', ')}`);
+    console.log(
+      `Reopened the question for ${reopened.length} resting run(s): ${reopened.join(', ')}`,
+    );
   }
   // BLOCK_PARTY_TOKEN lets `npm run dev` keep one token across tsx-watch restarts,
   // so already-open tabs don't start getting 401s.

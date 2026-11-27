@@ -344,7 +344,9 @@ export function RunView({ id }: { id: string }) {
       (r) => {
         setCancelling(false);
         if (!r.cancelled) {
-          setCancelNote('This run is not running in this server and is not waiting for you, so it cannot be cancelled here.');
+          setCancelNote(
+            'This run is not running in this server and is not waiting for you, so it cannot be cancelled here.',
+          );
         }
         refetchRef.current();
       },

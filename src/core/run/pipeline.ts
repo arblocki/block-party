@@ -738,10 +738,10 @@ async function approvePlanStep(ctx: Ctx): Promise<void> {
   if (row && row.contentHash !== plan.contentHash) {
     throw new Error(`Plan version ${n} changed after it was stored (hash mismatch)`);
   }
-  // Still resting here, so a failure up to the stage move reopens the approval.
-  if (!ctx.rec.approvePlan(n))
-    throw new Error(`Could not record the approval of plan version ${n}`);
+  // Still resting here, so a failure up to the stage move reopens the approval, and the
+  // plan stays a draft: the approval is recorded only once the run has left rest.
   await setStage(ctx, 'implementing');
+  if (!ctx.rec.approvePlan(n)) ctx.rec.event('plan.approval_unrecorded', { version: n });
   await patchState(ctx, {
     planPath: path,
     planHash: plan.contentHash,
@@ -1417,6 +1417,7 @@ export async function continueRun(
       rec.resume(st);
       const light = { st, runDir, rec, deps };
       // A failure here leaves the run resting: the catch below reopens the review.
+      throwIfAborted(signal);
       await setStage(light, 'complete', 'Approved');
       return outcomeFromState(light.st, runDir);
     }
@@ -1438,6 +1439,8 @@ export async function continueRun(
         throw new Error(`Run ${runId} is not waiting for plan approval (stage: ${ctx.st.stage})`);
       }
       ctx.rec.resume(ctx.st);
+      // A shutdown here keeps the run resting, and its question reopens.
+      throwIfAborted(signal);
       if (entry.kind === 'plan_revise') await planStep(ctx, entry.note);
       else await approvePlanStep(ctx);
       return outcomeOf(ctx);
@@ -1448,7 +1451,9 @@ export async function continueRun(
     }
     ctx.rec.resume(ctx.st);
     const n = ctx.st.rounds.feedback + 1;
+    throwIfAborted(signal);
     await setStage(ctx, 'fixing', `feedback ${n}`);
+    await requireOpenPr(ctx);
     await patchState(ctx, { rounds: { ...ctx.st.rounds, feedback: n }, sessionEnded: false });
     const file = await writeArtifact(
       ctx.runDir,
@@ -1472,6 +1477,23 @@ export async function continueRun(
     throw e;
   }
   return outcomeOf(ctx);
+}
+
+/** Feedback on a PR that is closed or merged would push to nothing: halt before any work. */
+async function requireOpenPr(ctx: Ctx): Promise<void> {
+  const { st } = ctx;
+  if (st.prNumber == null) return;
+  const github = await ctx.deps.github();
+  const pr = await abortable(
+    github.getPr({ owner: st.owner, repo: st.repo }, st.prNumber),
+    ctx.input.signal,
+  );
+  if (pr.state !== undefined && pr.state !== 'open') {
+    throw new Halt(
+      'blocked',
+      `Publish failed (pr_closed): PR #${pr.number} is ${pr.state}; not opening a second one for ${st.branch}.${describeSession(ctx)}`,
+    );
+  }
 }
 
 function outcomeFromState(st: RunState, runDir: string): RunOutcome {

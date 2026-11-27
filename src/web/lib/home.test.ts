@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest';
 import { RUN_STAGES } from '../../core/run/machine';
 import type { DecisionKind } from '../../core/store/runs';
 import type { RunSummary } from '../types';
-import { decisionLabel, orderRuns, runProject, stageTone, type StageTone } from './home';
+import {
+  clipNote,
+  decisionLabel,
+  needsNote,
+  orderRuns,
+  runProject,
+  stageTone,
+  type StageTone,
+} from './home';
 
 const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSummary => ({
   id,
@@ -119,5 +127,20 @@ describe('runProject', () => {
     expect(runProject({ ...r, owner: null })).toBeNull();
     expect(runProject({ ...r, repo: null })).toBeNull();
     expect(runProject({ ...r, repo: '' })).toBeNull();
+  });
+});
+
+describe('answer notes', () => {
+  it('requires a note for send back and request changes only', () => {
+    expect(needsNote('send_back')).toBe(true);
+    expect(needsNote('revise')).toBe(true);
+    expect(needsNote('approve')).toBe(false);
+  });
+
+  it('clips a long answered note', () => {
+    expect(clipNote('short')).toEqual({ text: 'short', clipped: false });
+    const r = clipNote('x'.repeat(500));
+    expect(r.clipped).toBe(true);
+    expect(r.text).toHaveLength(300);
   });
 });

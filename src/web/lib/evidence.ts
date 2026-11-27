@@ -88,7 +88,10 @@ export function evidenceFor(
       round: reviews.now.round,
       blocking: blockingOf(reviews.now),
       open: round
-        ? round.findings.filter((f) => f.status === 'open').length
+        ? round.findings.filter(
+            // Recorded (P3) findings never block "clean".
+            (f) => f.status === 'open' && (f.triage === 'auto_fix' || f.triage === 'ask'),
+          ).length
         : blockingOf(reviews.now),
     };
   } else if (reviews.older) {
