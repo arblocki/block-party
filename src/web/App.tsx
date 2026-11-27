@@ -36,6 +36,8 @@ import { PrPicker } from './components/PrPicker';
 import { RepoPicker } from './components/RepoPicker';
 import { routeFromSearch } from './lib/route';
 import { ReviewProvider, useReview } from './state';
+import { RunLinkProvider, useRunLink } from './runLink';
+import { RunReviewPanel } from './components/RunReviewPanel';
 import type { AppSession } from './types';
 
 function Review() {
@@ -52,6 +54,7 @@ function Review() {
   const [choice, setChoice] = useState<ViewMode | null>(null);
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [helpOpen, setHelpOpen] = useState(false);
+  const runLink = useRunLink();
 
   const analysis = result?.analysis;
   // By group becomes the default as soon as an analysis exists; until then (or while the
@@ -175,17 +178,20 @@ function Review() {
           />
         }
         rail={
-          view === 'file' ? (
-            <FileList files={files} />
-          ) : (
-            <GroupRail
-              groups={groups}
-              selectedKey={group?.key}
-              onSelect={select}
-              unrelated={analysis?.unrelatedOrSuspicious ?? []}
-              loading={loading}
-            />
-          )
+          <>
+            {runLink && <RunReviewPanel />}
+            {view === 'file' ? (
+              <FileList files={files} />
+            ) : (
+              <GroupRail
+                groups={groups}
+                selectedKey={group?.key}
+                onSelect={select}
+                unrelated={analysis?.unrelatedOrSuspicious ?? []}
+                loading={loading}
+              />
+            )}
+          </>
         }
         main={
           <>
@@ -274,11 +280,13 @@ export function App() {
   selectPr(pr);
   return (
     <ReviewProvider session={{ pr, label: `${pr.owner}/${pr.repo}#${pr.number}` }}>
-      <AnalysisProvider>
-        <ReviewStateProvider>
-          <Review />
-        </ReviewStateProvider>
-      </AnalysisProvider>
+      <RunLinkProvider>
+        <AnalysisProvider>
+          <ReviewStateProvider>
+            <Review />
+          </ReviewStateProvider>
+        </AnalysisProvider>
+      </RunLinkProvider>
     </ReviewProvider>
   );
 }

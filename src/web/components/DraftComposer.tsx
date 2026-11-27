@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useRunLink } from '../runLink';
 import { useDraft, useReview } from '../state';
 
 const STATUS_LABEL = {
@@ -13,6 +14,7 @@ const STATUS_LABEL = {
 export function DraftComposer({ draftId, inline }: { draftId: string; inline: boolean }) {
   const draft = useDraft(draftId);
   const { updateDraftBody, deleteDraft } = useReview();
+  const link = useRunLink();
   // Local text keeps typing snappy; the store debounces the PUT.
   const [body, setBody] = useState(draft?.body ?? '');
   if (!draft) return null;
@@ -69,7 +71,21 @@ export function DraftComposer({ draftId, inline }: { draftId: string; inline: bo
           updateDraftBody(draftId, e.target.value);
         }}
       />
-      <div className="mt-1 flex justify-end">
+      <div className="mt-1 flex items-center justify-end gap-2">
+        {link && (
+          <label
+            className="mr-auto flex cursor-pointer items-center gap-1 text-xs"
+            title="Adds this comment to the run panel's send tray. It is not posted to GitHub."
+          >
+            <input
+              type="checkbox"
+              checked={link.draftIds.has(draftId)}
+              disabled={empty}
+              onChange={() => link.toggleDraft(draftId)}
+            />
+            Send to implementer
+          </label>
+        )}
         <button
           type="button"
           className="rounded-md px-2 py-0.5 text-xs text-error hover:bg-error-soft"

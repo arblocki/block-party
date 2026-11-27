@@ -1047,6 +1047,135 @@ describe('run plan and findings', () => {
   });
 });
 
+describe('send to implementer', () => {
+  const finding = (id: string, over: Record<string, unknown> = {}) => ({
+    id,
+    reviewedSha: 'abcdef1',
+    severity: 'P1' as const,
+    category: 'correctness',
+    title: `Title ${id}`,
+    body: `Body of ${id}`,
+    location: { path: 'a.ts', startLine: 3, endLine: 4 },
+    confidence: 'high' as const,
+    suggestedFix: 'do the thing',
+    ...over,
+  });
+  const setup = (stage: 'awaiting_review' | 'reviewing' = 'awaiting_review') => {
+    runs.createRun(runInput(projectId, { stage, prNumber: 5 }));
+    runs.insertFindings(
+      RUN_A,
+      1,
+      [finding('f_1'), finding('f_2', { location: null })],
+      () => 'ask',
+    );
+    if (stage === 'awaiting_review') {
+      runs.openDecision({
+        runId: RUN_A,
+        kind: 'final_review',
+        title: 'Ready',
+        body: 'b',
+        options: [
+          { id: 'approve', label: 'Approve' },
+          { id: 'send_back', label: 'Send back' },
+        ],
+      });
+    }
+    const fake = fakeManager();
+    return { fake, app: makeApp(runs, fake.manager) };
+  };
+  const post = (a: typeof app, body: unknown, id = RUN_A) =>
+    req(`/api/runs/${id}/send-back`, { method: 'POST', body: JSON.stringify(body) }, a);
+  const empty = { findingKeys: [], comments: [] };
+
+  it('answers the final review with every selected item in the feedback', async () => {
+    const { fake, app: a } = setup();
+    const res = await post(a, {
+      findingKeys: ['r1:f_1', 'r1:f_2', 'r1:f_1'],
+      comments: [{ path: 'b.ts', line: 9, body: 'rename this' }],
+      note: '  and tidy up  ',
+    });
+    expect(res.status).toBe(200);
+    expect(fake.continues).toHaveLength(1);
+    const entry = fake.continues[0]!.entry;
+    expect(entry.kind).toBe('feedback');
+    const text = (entry as { text: string }).text;
+    expect(text).toContain('r1:f_1 [P1] Title f_1');
+    expect(text).toContain('a.ts:3-4');
+    expect(text).toContain('Body of f_1');
+    expect(text).toContain('Suggested fix: do the thing');
+    expect(text).toContain('r1:f_2');
+    expect(text.match(/r1:f_1/g)).toHaveLength(1);
+    expect(text).toContain('b.ts:9');
+    expect(text).toContain('rename this');
+    expect(text.endsWith('and tidy up')).toBe(true);
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toEqual([]);
+  });
+
+  it('starts one continuation for a double submit', async () => {
+    const { fake, app: a } = setup();
+    const body = { ...empty, note: 'fix it' };
+    expect((await post(a, body)).status).toBe(200);
+    expect((await post(a, body)).status).toBe(409);
+    expect(fake.continues).toHaveLength(1);
+  });
+
+  it('accepts feedback longer than an answer note', async () => {
+    const { fake, app: a } = setup();
+    const comments = Array.from({ length: 5 }, (_, i) => ({
+      path: 'a.ts',
+      line: i + 1,
+      body: 'x'.repeat(3000),
+    }));
+    expect((await post(a, { findingKeys: [], comments })).status).toBe(200);
+    expect((fake.continues[0]!.entry as { text: string }).text.length).toBeGreaterThan(4000);
+  });
+
+  it('answers 409 outside awaiting_review, without a final review decision', async () => {
+    const { fake, app: a } = setup('reviewing');
+    expect((await post(a, { ...empty, note: 'x' })).status).toBe(409);
+    expect(fake.continues).toEqual([]);
+  });
+
+  it('answers 400 for empty input or an unknown finding key, leaving the decision open', async () => {
+    const { fake, app: a } = setup();
+    expect((await post(a, empty)).status).toBe(400);
+    expect((await post(a, { ...empty, note: '   ' })).status).toBe(400);
+    const unknown = await post(a, { ...empty, findingKeys: ['r9:nope'] });
+    expect(unknown.status).toBe(400);
+    expect(JSON.stringify(await unknown.json())).toContain('r9:nope');
+    expect((await post(a, { findingKeys: 'r1:f_1', comments: [] })).status).toBe(400);
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toHaveLength(1);
+    expect(fake.continues).toEqual([]);
+  });
+
+  it('answers 404 for an unknown run and 503 without a manager', async () => {
+    const { app: a } = setup();
+    expect((await post(a, { ...empty, note: 'x' }, RUN_B)).status).toBe(404);
+    expect((await post(makeApp(), { ...empty, note: 'x' })).status).toBe(503);
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toHaveLength(1);
+  });
+
+  it('reopens the review and answers 409 when the continuation cannot start', async () => {
+    const { fake, app: a } = setup();
+    fake.manager.continue = () => false;
+    expect((await post(a, { ...empty, note: 'x' })).status).toBe(409);
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toHaveLength(1);
+  });
+
+  it('finds the run for a PR', async () => {
+    setup();
+    const found = (await (await req('/api/pr-run?owner=octocat&repo=Hello-World&pr=5')).json()) as {
+      run: { id: string } | null;
+    };
+    expect(found.run?.id).toBe(RUN_A);
+    const none = (await (await req('/api/pr-run?owner=octocat&repo=hello-world&pr=6')).json()) as {
+      run: unknown;
+    };
+    expect(none.run).toBeNull();
+    expect((await req('/api/pr-run?owner=octocat&repo=hello-world')).status).toBe(400);
+  });
+});
+
 describe('POST /api/projects', () => {
   const git = (cwd: string, ...args: string[]) =>
     execFileSync('git', args, { cwd, stdio: 'ignore' });

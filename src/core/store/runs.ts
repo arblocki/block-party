@@ -212,6 +212,11 @@ export interface RunStore {
   updateRun(id: string, patch: RunPatch): RunRow | undefined;
   getRun(id: string): RunRow | undefined;
   /**
+   * The newest run (by `createdAt`) that opened PR `prNumber` of owner/repo, or undefined.
+   * Owner and repo compare case-insensitively, as GitHub names do.
+   */
+  findRunByPr(owner: string, repo: string, prNumber: number): RunRow | undefined;
+  /**
    * Newest first by `updatedAt`. `active` keeps only runs in an active stage, `resting` only
    * runs waiting at rest for a person.
    */
@@ -594,6 +599,11 @@ export function createRunStore(db: Database.Database): RunStore {
     `SELECT * FROM runs WHERE stage IN (${restingList})
      ORDER BY updated_at DESC, rowid DESC LIMIT ?`,
   );
+  const runByPr = db.prepare<[string, string, number], RunDb>(
+    `SELECT r.* FROM runs r JOIN projects p ON p.id = r.project_id
+     WHERE p.owner = ? COLLATE NOCASE AND p.repo = ? COLLATE NOCASE AND r.pr_number = ?
+     ORDER BY r.created_at DESC, r.rowid DESC LIMIT 1`,
+  );
   const listRunsAll = db.prepare<[number], RunDb>(
     'SELECT * FROM runs ORDER BY updated_at DESC, rowid DESC LIMIT ?',
   );
@@ -749,6 +759,10 @@ export function createRunStore(db: Database.Database): RunStore {
         .immediate();
     },
     getRun,
+    findRunByPr(owner, repo, prNumber) {
+      const row = runByPr.get(owner, repo, prNumber);
+      return row && toRun(row);
+    },
     listRuns(opts = {}) {
       const stmt = opts.active ? listRunsActive : opts.resting ? listRunsResting : listRunsAll;
       return stmt.all(limitOf(opts.limit)).map(toRun);

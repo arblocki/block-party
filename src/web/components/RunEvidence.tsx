@@ -5,7 +5,7 @@ import type { ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
 import { sectionHeading } from './AppShell';
 import { listClass } from './PickerShell';
 
-const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
+export const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
   P0: 'bg-error-soft text-error',
   P1: 'bg-error-soft text-error',
   P2: 'bg-warning-soft text-warning',

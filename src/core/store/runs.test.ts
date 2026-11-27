@@ -122,6 +122,29 @@ describe('run store', () => {
       expect(runs.getRun('r1')).toEqual(updated);
     });
 
+    it('finds the newest run for a PR of a project, ignoring case and other PRs', () => {
+      const other = runs.upsertProject({
+        owner: 'o',
+        repo: 'other',
+        localPath: '/src/other',
+        defaultBase: 'main',
+      }).id;
+      runs.createRun(
+        runInput(projectId, { id: 'a', prNumber: 7, createdAt: '2026-01-01T00:00:00.000Z' }),
+      );
+      runs.createRun(
+        runInput(projectId, { id: 'b', prNumber: 7, createdAt: '2026-01-02T00:00:00.000Z' }),
+      );
+      runs.createRun(runInput(projectId, { id: 'c', prNumber: 8 }));
+      runs.createRun(runInput(other, { id: 'd', prNumber: 7 }));
+      runs.createRun(runInput(projectId, { id: 'e', prNumber: null }));
+      expect(runs.findRunByPr('o', 'r', 7)?.id).toBe('b');
+      expect(runs.findRunByPr('O', 'R', 8)?.id).toBe('c');
+      expect(runs.findRunByPr('o', 'other', 7)?.id).toBe('d');
+      expect(runs.findRunByPr('o', 'r', 9)).toBeUndefined();
+      expect(runs.findRunByPr('x', 'r', 7)).toBeUndefined();
+    });
+
     it('advances updatedAt on every update, even within one millisecond', () => {
       vi.useFakeTimers({ now: new Date('2026-05-01T00:00:00.000Z'), toFake: ['Date'] });
       try {

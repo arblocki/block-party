@@ -24,11 +24,14 @@ import {
   type Gap,
 } from '../lib/diffModel';
 import { highlightHunks, languageForPath } from '../lib/highlight';
+import { placeFindings } from '../lib/findingPlacement';
 import { placeThreads } from '../lib/threadPlacement';
 import { useFocusedHunk, useReviewState } from '../reviewState';
+import { useFileFindings } from '../runLink';
 import { useFileDraftAnchors, useReview } from '../state';
-import type { Hunk, ParsedFile, ReviewThread } from '../types';
+import type { FindingRow, Hunk, ParsedFile, ReviewThread } from '../types';
 import { DraftComposer } from './DraftComposer';
+import { FindingWidget } from './FindingWidget';
 import { ThreadWidget } from './ThreadWidget';
 
 export const fileAnchorId = (path: string): string => `file-${path}`;
@@ -88,6 +91,11 @@ export function FileDiff({
       ),
     [threads, file.path, shown, hidden],
   );
+  const findings = useFileFindings(file.path);
+  const findingPlacement = useMemo(
+    () => placeFindings(findings, shown, hidden),
+    [findings, shown, hidden],
+  );
   const { fileKeys } = useReviewState();
   const { hunkId: focusedId } = useFocusedHunk();
   // A hunkless file is itself the review item: it gets the key as its keyboard-focus id.
@@ -122,7 +130,13 @@ export function FileDiff({
   } else {
     body = (
       <LazyMount estimate={changed * 20 + 40}>
-        <FileDiffBody file={file} hunks={shown} hidden={hidden} threads={placement.inline} />
+        <FileDiffBody
+          file={file}
+          hunks={shown}
+          hidden={hidden}
+          threads={placement.inline}
+          findings={findingPlacement.inline}
+        />
       </LazyMount>
     );
   }
@@ -172,17 +186,22 @@ export function FileDiff({
           <span className="text-error">−{file.deletions}</span>
         </span>
       </div>
-      {!collapsed && showFileThreads && placement.fileLevel.length > 0 && (
-        <div
-          className="border-b border-line bg-surface-elevated/50 py-1"
-          data-testid="file-discussion"
-        >
-          <p className="px-3 text-xs font-semibold text-muted">Discussion</p>
-          {placement.fileLevel.map((t) => (
-            <ThreadWidget key={t.id} thread={t} showLocation />
-          ))}
-        </div>
-      )}
+      {!collapsed &&
+        showFileThreads &&
+        (placement.fileLevel.length > 0 || findingPlacement.fileLevel.length > 0) && (
+          <div
+            className="border-b border-line bg-surface-elevated/50 py-1"
+            data-testid="file-discussion"
+          >
+            <p className="px-3 text-xs font-semibold text-muted">Discussion</p>
+            {placement.fileLevel.map((t) => (
+              <ThreadWidget key={t.id} thread={t} showLocation />
+            ))}
+            {findingPlacement.fileLevel.map((f) => (
+              <FindingWidget key={f.key} finding={f} showLocation />
+            ))}
+          </div>
+        )}
       {!collapsed && body}
     </section>
   );
@@ -234,6 +253,7 @@ const FileDiffBody = memo(function FileDiffBody({
   hunks,
   hidden,
   threads: fileThreads,
+  findings: fileFindings,
 }: {
   file: ParsedFile;
   hunks: Hunk[];
@@ -241,6 +261,8 @@ const FileDiffBody = memo(function FileDiffBody({
   hidden: Hunk[];
   /** Threads on lines of `hunks`; the rest are shown by FileDiff. */
   threads: ReviewThread[];
+  /** Codex findings on lines of `hunks`; none for a PR without a run. */
+  findings: FindingRow[];
 }) {
   const { pr, viewType, fetchFile, startDraft } = useReview();
   const anchors = useFileDraftAnchors(file.path);
@@ -297,6 +319,11 @@ const FileDiffBody = memo(function FileDiffBody({
         <ThreadWidget thread={t} showLocation={loose} />
       ));
     }
+    for (const f of fileFindings) {
+      put({ side: 'RIGHT', line: f.location!.endLine }, f.key, (loose) => (
+        <FindingWidget finding={f} showLocation={loose} />
+      ));
+    }
     for (const a of anchors) {
       const range = { line: a.line, side: a.side, startLine: a.startLine, startSide: a.startSide };
       put({ side: a.side, line: a.line }, a.id, () => (
@@ -307,7 +334,7 @@ const FileDiffBody = memo(function FileDiffBody({
       widgets: Object.fromEntries([...byKey].map(([k, nodes]) => [k, <>{nodes}</>])),
       unplaced,
     };
-  }, [rdvHunks, fileThreads, anchors, file.hunks, hidden]);
+  }, [rdvHunks, fileThreads, fileFindings, anchors, file.hunks, hidden]);
 
   // --- gutter selection: click, shift-click, or drag across lines to open a composer
   const [sel, setSel] = useState<Selection | null>(null);

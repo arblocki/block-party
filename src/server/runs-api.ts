@@ -7,6 +7,7 @@ import type { RunFlagOverrides } from '../core/run/config.js';
 import { isTerminal } from '../core/run/machine.js';
 import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
+import { buildSendBackFeedback } from '../core/run/send-back.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
 import type {
   Decision,
@@ -193,6 +194,26 @@ const answerSchema = z.strictObject({
   note: z.string().max(MAX_NOTE_CHARS).nullish(),
 });
 
+/**
+ * Send-back feedback is built from findings and comments, so it may be longer than an answer's
+ * note (MAX_NOTE_CHARS): its own cap applies to this path only.
+ */
+const MAX_FEEDBACK_CHARS = 100_000;
+
+const sendBackSchema = z.strictObject({
+  findingKeys: z.array(z.string().min(1).max(100)).max(200),
+  comments: z
+    .array(
+      z.strictObject({
+        path: z.string().min(1).max(1000),
+        line: z.number().int().positive().nullable(),
+        body: z.string().trim().min(1).max(MAX_NOTE_CHARS),
+      }),
+    )
+    .max(200),
+  note: z.string().max(MAX_NOTE_CHARS).nullish(),
+});
+
 const validatePlanSchema = z.strictObject({ text: z.string() });
 
 const startRunSchema = z.strictObject({
@@ -356,9 +377,8 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     });
   });
 
-  app.get('/api/runs/:id/findings', (c) => {
-    const run = runOf(c);
-    if (run instanceof Response) return run;
+  /** The run's review rounds with their findings; throws OutsideRunDirError. */
+  const findingsOf = (run: RunRow): FindingsRound[] => {
     const stages = runs.listStages(run.id);
     const stored = runs.listFindings(run.id);
     // What the implementer said about each finding, from its review-fix reports. Finding ids
@@ -367,59 +387,62 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     type Resolutions = Record<string, { resolution: string; note: string }>;
     const resolutionsByReview = new Map<number, Resolutions>();
     const rounds: FindingsRound[] = [];
+    let lastReviewId: number | null = null;
+    for (const st of stages) {
+      if (st.kind === 'review') lastReviewId = st.id;
+      const reportPath = st.kind === 'review-fix' ? stringField(st.output, 'report') : null;
+      if (!reportPath) continue;
+      let report: unknown;
+      try {
+        report = readJsonInside(run.runDir, reportPath);
+      } catch (e) {
+        if (e instanceof OutsideRunDirError) throw e;
+        continue;
+      }
+      // A fix with no review before it has no round to show on, but is still read above.
+      if (lastReviewId === null) continue;
+      const resolutions: Resolutions = resolutionsByReview.get(lastReviewId) ?? {};
+      resolutionsByReview.set(lastReviewId, resolutions);
+      const list = (report as { findingResolutions?: unknown } | null)?.findingResolutions;
+      for (const r of Array.isArray(list) ? list : []) {
+        const id = stringField(r, 'findingId');
+        const resolution = stringField(r, 'resolution');
+        if (id && resolution) resolutions[id] = { resolution, note: stringField(r, 'note') ?? '' };
+      }
+    }
+    for (const st of stages) {
+      const path = st.kind === 'review' ? stringField(st.output, 'findingsPath') : null;
+      if (!path) continue;
+      let raw: unknown;
+      try {
+        raw = readJsonInside(run.runDir, path);
+      } catch (e) {
+        if (e instanceof OutsideRunDirError) throw e;
+        continue;
+      }
+      const out = ReviewerOutputSchema.safeParse(raw);
+      if (!out.success) continue;
+      const resolutions = resolutionsByReview.get(st.id) ?? {};
+      rounds.push({
+        round: st.round,
+        reviewedSha: out.data.reviewedSha,
+        summary: out.data.summary,
+        findings: out.data.findings.map((f) => fileRow(run.id, st.round, f, resolutions[f.id])),
+      });
+    }
+    // Rounds with stored rows use them; rounds from before rows existed keep the file answer.
+    return stored.length > 0 ? mergeRounds(storedRounds(stages, stored), rounds) : rounds;
+  };
+
+  app.get('/api/runs/:id/findings', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
     try {
-      let lastReviewId: number | null = null;
-      for (const st of stages) {
-        if (st.kind === 'review') lastReviewId = st.id;
-        const reportPath = st.kind === 'review-fix' ? stringField(st.output, 'report') : null;
-        if (!reportPath) continue;
-        let report: unknown;
-        try {
-          report = readJsonInside(run.runDir, reportPath);
-        } catch (e) {
-          if (e instanceof OutsideRunDirError) throw e;
-          continue;
-        }
-        // A fix with no review before it has no round to show on, but is still read above.
-        if (lastReviewId === null) continue;
-        const resolutions: Resolutions = resolutionsByReview.get(lastReviewId) ?? {};
-        resolutionsByReview.set(lastReviewId, resolutions);
-        const list = (report as { findingResolutions?: unknown } | null)?.findingResolutions;
-        for (const r of Array.isArray(list) ? list : []) {
-          const id = stringField(r, 'findingId');
-          const resolution = stringField(r, 'resolution');
-          if (id && resolution)
-            resolutions[id] = { resolution, note: stringField(r, 'note') ?? '' };
-        }
-      }
-      for (const st of stages) {
-        const path = st.kind === 'review' ? stringField(st.output, 'findingsPath') : null;
-        if (!path) continue;
-        let raw: unknown;
-        try {
-          raw = readJsonInside(run.runDir, path);
-        } catch (e) {
-          if (e instanceof OutsideRunDirError) throw e;
-          continue;
-        }
-        const out = ReviewerOutputSchema.safeParse(raw);
-        if (!out.success) continue;
-        const resolutions = resolutionsByReview.get(st.id) ?? {};
-        rounds.push({
-          round: st.round,
-          reviewedSha: out.data.reviewedSha,
-          summary: out.data.summary,
-          findings: out.data.findings.map((f) => fileRow(run.id, st.round, f, resolutions[f.id])),
-        });
-      }
+      return c.json({ rounds: findingsOf(run) });
     } catch (e) {
       if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
       throw e;
     }
-    // Rounds with stored rows use them; rounds from before rows existed keep the file answer.
-    return c.json({
-      rounds: stored.length > 0 ? mergeRounds(storedRounds(stages, stored), rounds) : rounds,
-    });
   });
 
   app.get('/api/runs/:id/events', (c) => {
@@ -506,27 +529,32 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     return c.json({ changed: runs.dismissDecision(id) });
   });
 
-  app.post('/api/inbox/:id/answer', async (c) => {
-    const id = intParam(c.req.param('id'));
-    if (id === null || id === undefined || id === 0) return badRequest(c, 'invalid decision id');
-    if (!runs.getDecision(id)) return c.json({ error: 'decision not found' }, 404);
-    const body = await parseBody(c, answerSchema);
-    if ('error' in body) return c.json({ error: body.error }, 400);
-    const note = body.data.note?.trim() || null;
-    const existing = runs.getDecision(id)!;
+  /**
+   * Answers a decision and, for the kinds that continue a run, starts that continuation. The
+   * one place both `POST /api/inbox/:id/answer` and `POST /api/runs/:id/send-back` go through,
+   * so a double submit starts at most one continuation.
+   */
+  const answerAndContinue = (
+    c: Context,
+    id: number,
+    choice: string,
+    note: string | null,
+  ): Response => {
+    const existing = runs.getDecision(id);
+    if (!existing) return c.json({ error: 'decision not found' }, 404);
     const isFinalReview = existing.kind === 'final_review';
     const isPlanApproval = existing.kind === 'plan_approval';
     if (isFinalReview || isPlanApproval) {
       // Checked before answering: an answer that cannot start its continuation would strand the run.
       if (!deps.manager) return c.json({ error: 'this server cannot continue runs' }, 503);
-      if (isFinalReview && body.data.choice === 'send_back' && !note) {
+      if (isFinalReview && choice === 'send_back' && !note) {
         return badRequest(c, 'a note is required to send the run back');
       }
-      if (isPlanApproval && body.data.choice === 'revise' && !note) {
+      if (isPlanApproval && choice === 'revise' && !note) {
         return badRequest(c, 'a note is required to request changes');
       }
     }
-    const result = runs.answerDecision(id, { choice: body.data.choice, note });
+    const result = runs.answerDecision(id, { choice, note });
     if (result === 'not_open') return c.json({ error: 'decision is not open' }, 409);
     if (result === 'run_ended') return c.json({ error: 'the run has ended' }, 409);
     if (result === 'bad_choice') return badRequest(c, 'choice is not one of the options');
@@ -535,14 +563,12 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (isFinalReview) {
       continued = deps.manager!.continue(
         existing.runId,
-        body.data.choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
+        choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
       );
     } else if (isPlanApproval) {
       continued = deps.manager!.continue(
         existing.runId,
-        body.data.choice === 'approve'
-          ? { kind: 'plan_approve' }
-          : { kind: 'plan_revise', note: note! },
+        choice === 'approve' ? { kind: 'plan_approve' } : { kind: 'plan_revise', note: note! },
       );
     }
     if (continued === false) {
@@ -555,6 +581,63 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       decision: runs.getDecision(id),
       ...(continued === undefined ? {} : { continued }),
     });
+  };
+
+  app.post('/api/inbox/:id/answer', async (c) => {
+    const id = intParam(c.req.param('id'));
+    if (id === null || id === undefined || id === 0) return badRequest(c, 'invalid decision id');
+    if (!runs.getDecision(id)) return c.json({ error: 'decision not found' }, 404);
+    const body = await parseBody(c, answerSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    return answerAndContinue(c, id, body.data.choice, body.data.note?.trim() || null);
+  });
+
+  app.get('/api/pr-run', (c) => {
+    const owner = c.req.query('owner');
+    const repo = c.req.query('repo');
+    const pr = intParam(c.req.query('pr'));
+    if (!owner || !repo || pr === undefined || pr === null || pr === 0) {
+      return badRequest(c, 'owner, repo and pr are required');
+    }
+    const run = runs.findRunByPr(owner, repo, pr);
+    return c.json({ run: run ? runSummary(run) : null });
+  });
+
+  app.post('/api/runs/:id/send-back', async (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    const body = await parseBody(c, sendBackSchema);
+    if ('error' in body) return c.json({ error: body.error }, 400);
+    const { findingKeys, comments } = body.data;
+    const note = body.data.note?.trim() || null;
+    const decision =
+      run.stage === 'awaiting_review'
+        ? runs
+            .listDecisions({ runId: run.id, status: 'open' })
+            .find((d) => d.kind === 'final_review')
+        : undefined;
+    if (!decision) return c.json({ error: 'the run is not waiting for review' }, 409);
+    if (findingKeys.length === 0 && comments.length === 0 && !note) {
+      return badRequest(c, 'nothing to send: choose a finding, a comment or write a note');
+    }
+    let rounds: FindingsRound[];
+    try {
+      rounds = findingsOf(run);
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
+      throw e;
+    }
+    const byKey = new Map(rounds.flatMap((r) => r.findings).map((f) => [f.key, f]));
+    const unique = [...new Set(findingKeys)];
+    const unknown = unique.filter((k) => !byKey.has(k));
+    if (unknown.length > 0) return badRequest(c, `unknown finding: ${unknown.join(', ')}`);
+    const text = buildSendBackFeedback({
+      findings: unique.map((k) => byKey.get(k)!),
+      comments,
+      note,
+    });
+    if (text.length > MAX_FEEDBACK_CHARS) return badRequest(c, 'the feedback is too long');
+    return answerAndContinue(c, decision.id, 'send_back', text);
   });
 
   app.get('/api/projects', (c) => c.json({ projects: runs.listProjects() }));
