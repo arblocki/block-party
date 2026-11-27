@@ -134,6 +134,35 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return s('notice') ?? s('message') ?? 'Implementer is waiting for you';
     case 'implementer.stop_failed':
       return `Could not stop the implementer${s('error') ? `: ${s('error')}` : ''}`;
+    case 'planner.session':
+      return `Planner session started${s('mode') ? ` (${s('mode')})` : ''}`;
+    case 'planner.waiting_for_human':
+      return s('notice') ?? s('message') ?? 'Planner is waiting for you';
+    case 'planner.stop_failed':
+      return `Could not stop the planner${s('error') ? `: ${s('error')}` : ''}`;
+    case 'plan.approved':
+      return num('version') !== null ? `Plan v${num('version')} approved` : 'Plan approved';
+    case 'plan.invalid': {
+      const n = Array.isArray(p.errors) ? p.errors.length : null;
+      const v = num('version') !== null ? `Plan v${num('version')}` : 'Plan';
+      return `${v} is invalid${n ? ` (${plural(n, 'error')})` : ''}`;
+    }
+    case 'plan.approval_unrecorded':
+      return `Plan${num('version') !== null ? ` v${num('version')}` : ''} approval could not be recorded`;
+    case 'continuation.failed':
+      return `Continuation failed${s('reason') ? `: ${s('reason')}` : ''}`;
+    case 'triage.not_asked': {
+      const n = Array.isArray(p.findings) ? p.findings.length : null;
+      return n !== null ? `Did not ask about ${plural(n, 'finding')}` : type;
+    }
+    case 'repeat.recorded':
+      return s('key') ? `Finding ${s('key')} recorded as a repeat` : type;
+    case 'rulings.invalid': {
+      const n = num('skipped');
+      return n !== null ? `Skipped ${plural(n, 'invalid ruling')}` : type;
+    }
+    case 'decision.answered':
+      return s('choice') ? `Decision answered: ${s('choice')}` : type;
     case 'agent.init':
       return `Agent started${s('model') ? ` (${s('model')})` : ''}`;
     case 'agent.tool_use':

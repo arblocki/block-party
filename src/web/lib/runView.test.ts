@@ -164,6 +164,33 @@ describe('checksBySha', () => {
 describe('summarizeEvent', () => {
   const sum = (type: string, payload?: unknown) => summarizeEvent({ type, payload });
 
+  it('summarizes planner, plan, continuation, repeat, rulings and decision events', () => {
+    expect(sum('planner.session', { mode: 'pane', attach: 'x' })).toBe(
+      'Planner session started (pane)',
+    );
+    expect(sum('planner.session', { mode: 'headless' })).toBe('Planner session started (headless)');
+    expect(sum('plan.approved', { version: 2 })).toBe('Plan v2 approved');
+    expect(sum('plan.invalid', { version: 1, errors: ['a', 'b'] })).toBe(
+      'Plan v1 is invalid (2 errors)',
+    );
+    expect(sum('plan.approval_unrecorded', { version: 3 })).toBe(
+      'Plan v3 approval could not be recorded',
+    );
+    expect(sum('planner.waiting_for_human', { notice: 'Needs you' })).toBe('Needs you');
+    expect(sum('planner.stop_failed', { error: 'boom' })).toBe('Could not stop the planner: boom');
+    expect(sum('continuation.failed', { reason: 'crash' })).toBe('Continuation failed: crash');
+    expect(sum('triage.not_asked', { round: 1, findings: ['a'] })).toBe(
+      'Did not ask about 1 finding',
+    );
+    expect(sum('repeat.recorded', { key: 'F1', repeatOf: 'F0' })).toBe(
+      'Finding F1 recorded as a repeat',
+    );
+    expect(sum('rulings.invalid', { skipped: 2 })).toBe('Skipped 2 invalid rulings');
+    expect(sum('decision.answered', { id: 4, choice: 'approve' })).toBe(
+      'Decision answered: approve',
+    );
+  });
+
   it('summarizes each event type the pipeline writes', () => {
     expect(sum('run.started', { branch: 'bp/x' })).toBe('Run started on bp/x');
     expect(sum('stage', { stage: 'waiting_ci', note: 'PR #4' })).toBe('Stage waiting ci: PR #4');

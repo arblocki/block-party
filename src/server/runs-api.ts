@@ -27,6 +27,7 @@ import {
   UnknownProjectError,
   type RunManager,
 } from './run-manager.js';
+import { matchCriteria, normalizeCriterion } from './acceptance-match.js';
 import { parseBody } from './state.js';
 
 export interface RunsApiDeps {
@@ -378,9 +379,6 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     });
   });
 
-  /** Collapses case and whitespace so a report's wording matches the plan's. */
-  const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
-
   /**
    * Each approved-plan criterion with the newest implementer report entry that mentions it.
    * Report entries matching no criterion follow, marked `extra`. A report that lies outside
@@ -427,18 +425,24 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     const latest = new Map<string, Entry>();
     for (const t of orderTurns(turns, runs.listStages(run.id))) {
       for (const e of t.entries) {
-        latest.set(normalize(e.criterion), { ...e, fromReport: `${t.kind}-${t.round}` });
+        const key = normalizeCriterion(e.criterion);
+        latest.set(key, { ...e, fromReport: `${t.kind}-${t.round}` });
       }
     }
-    const planned = new Set(criteria.map(normalize));
+    const reported = [...latest.values()];
+    const matched = matchCriteria(
+      criteria,
+      reported.map((e) => e.criterion),
+    );
+    const used = new Set(matched.values());
     const list = [
-      ...criteria.map((criterion) => {
-        const hit = latest.get(normalize(criterion));
-        return hit
-          ? { ...hit, criterion }
+      ...criteria.map((criterion, i) => {
+        const j = matched.get(i);
+        return j !== undefined
+          ? { ...reported[j]!, criterion }
           : { criterion, status: 'unverified', evidence: '', fromReport: null };
       }),
-      ...[...latest].filter(([key]) => !planned.has(key)).map(([, e]) => ({ ...e, extra: true })),
+      ...reported.filter((_, j) => !used.has(j)).map((e) => ({ ...e, extra: true })),
     ];
     return { criteria: list, skipped };
   };

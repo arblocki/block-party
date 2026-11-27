@@ -15,14 +15,34 @@ export const SEVERITY_CLASS: Record<ReviewFinding['severity'], string> = {
 const short = (sha: string): string => sha.slice(0, 7);
 
 /** The plan's title and acceptance criteria, with the full text behind a toggle. */
-export function PlanSection({ plan, error }: { plan: RunPlan | null; error: string | null }) {
+export function PlanSection({
+  plan,
+  error,
+  planning = false,
+  attach = null,
+}: {
+  plan: RunPlan | null;
+  error: string | null;
+  /** The run is in setup or planning: no plan exists yet, which is not an error. */
+  planning?: boolean;
+  attach?: string | null;
+}) {
   const [open, setOpen] = useState(false);
   return (
     <section className="mb-8" aria-labelledby="plan">
       <h2 id="plan" className={sectionHeading}>
         Plan
       </h2>
-      {error ? (
+      {!plan && planning ? (
+        <div className="rounded-md border border-info bg-info-soft px-3 py-2 text-sm" role="status">
+          <p className="text-info">The planner is writing the plan…</p>
+          {attach && (
+            <code className="mt-1 block overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs">
+              {attach}
+            </code>
+          )}
+        </div>
+      ) : error ? (
         <p className="text-sm text-muted">The plan could not be loaded: {error}</p>
       ) : !plan ? (
         <p className="text-sm text-muted">Loading…</p>

@@ -4,7 +4,7 @@ import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { evidenceFor, headLine, staleLines } from '../lib/evidence';
 import { prHref, relativeTime } from '../lib/route';
-import { planActions, stageNoteLabel } from '../lib/plans';
+import { planActions, plannerAttach, stageNoteLabel } from '../lib/plans';
 import { isNoisyEvent, stageStrip, summarizeEvent, type StripState } from '../lib/runView';
 import type {
   AcceptanceItem,
@@ -214,7 +214,7 @@ export function RunView({ id }: { id: string }) {
           setPlans(r.plans);
           setPlansError(null);
           // A run from before plan versions has only its plan file.
-          if (r.plans.length === 0 && stage !== 'planning') {
+          if (r.plans.length === 0 && stage !== 'planning' && stage !== 'setup') {
             await api<RunPlan>(`/api/runs/${id}/plan`).then(
               (p) => {
                 if (!alive() || seq !== plansSeq) return;
@@ -465,7 +465,12 @@ export function RunView({ id }: { id: string }) {
           onChanged={() => refetchRef.current()}
         />
       ) : (
-        <PlanSection plan={plan} error={planError} />
+        <PlanSection
+          plan={plan}
+          error={planError}
+          planning={run.stage === 'setup' || run.stage === 'planning'}
+          attach={plannerAttach(events)}
+        />
       )}
       <AcceptanceSection items={acceptance} />
       <EvidenceSection

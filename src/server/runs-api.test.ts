@@ -689,6 +689,27 @@ describe('run plan and findings', () => {
         findingResolutions: [],
       });
 
+    it('matches criteria that contain Markdown to report entries without it', async () => {
+      const PLAN_MD = PLAN.replace('- [ ] Widgets exist', '- [ ] `Widgets` exist **now**.').replace(
+        '- [ ] Widgets are blue',
+        '- [ ] Run `pnpm test` and `pnpm build`.',
+      );
+      writeFileSync(join(dir, 'plans', 'v1.md'), PLAN_MD);
+      addRun();
+      writeFileSync(
+        join(dir, 'reports', 'implement-0.json'),
+        report([entry('Widgets exist now', 'met'), entry('Run pnpm test and pnpm build.', 'met')]),
+      );
+      const body = (await json(`/api/runs/${RUN_A}/acceptance`)) as {
+        criteria: { criterion: string; status: string; extra?: boolean }[];
+      };
+      expect(body.criteria.map((c) => [c.status, c.extra])).toEqual([
+        ['met', undefined],
+        ['met', undefined],
+      ]);
+      expect(body.criteria[0]!.criterion).toContain('`Widgets`');
+    });
+
     it('takes the newest status by normalized text and marks extras and unmentioned', async () => {
       addRun();
       const a = runs.startStage({ runId: RUN_A, kind: 'implement', round: 0 });
