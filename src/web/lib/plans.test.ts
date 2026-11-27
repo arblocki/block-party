@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { PlanVersion, RunDecision, RunEvent } from '../types';
+import type { PlanVersion, RunDecision, RunEvent, RunSummary } from '../types';
 import { defaultVersion, lineDiff, plannerAttach, planActions, stageNoteLabel } from './plans';
 
 const plan = (version: number, status: PlanVersion['status']): PlanVersion => ({
@@ -10,6 +10,7 @@ const plan = (version: number, status: PlanVersion['status']): PlanVersion => ({
   feedback: null,
   createdAt: '2026-01-01T00:00:00Z',
   text: `v${version}`,
+  acceptanceCriteria: [],
 });
 
 const decision = (over: Partial<RunDecision> = {}): RunDecision => ({
@@ -46,9 +47,24 @@ describe('lineDiff', () => {
       { kind: 'same', text: 'c' },
     ]);
   });
+  it('trims the common prefix and suffix', () => {
+    const many = Array.from({ length: 5000 }, (_, i) => `l${i}`);
+    const changed = [...many.slice(0, 2500), 'X', ...many.slice(2501)];
+    const d = lineDiff(many.join('\n'), changed.join('\n'))!;
+    expect(d).toHaveLength(5001);
+    expect(d.filter((l) => l.kind !== 'same')).toEqual([
+      { kind: 'del', text: 'l2500' },
+      { kind: 'add', text: 'X' },
+    ]);
+  });
+  it('gives up when the changed middle is too large', () => {
+    const a = Array.from({ length: 2500 }, (_, i) => `a${i}`).join('\n');
+    const b = Array.from({ length: 2500 }, (_, i) => `b${i}`).join('\n');
+    expect(lineDiff(a, b)).toBeNull();
+  });
   it('handles insertions, removals and empty sides', () => {
-    expect(lineDiff('a', 'a\nb').map((l) => l.kind)).toEqual(['same', 'add']);
-    expect(lineDiff('a\nb', 'b').map((l) => l.kind)).toEqual(['del', 'same']);
+    expect(lineDiff('a', 'a\nb')!.map((l) => l.kind)).toEqual(['same', 'add']);
+    expect(lineDiff('a\nb', 'b')!.map((l) => l.kind)).toEqual(['del', 'same']);
     expect(lineDiff('', 'x')).toEqual([{ kind: 'add', text: 'x' }]);
     expect(lineDiff('x', '')).toEqual([{ kind: 'del', text: 'x' }]);
   });
@@ -90,12 +106,20 @@ describe('planActions', () => {
 });
 
 describe('stageNoteLabel', () => {
-  it('shortens the plan-ready note', () => {
-    expect(stageNoteLabel('awaiting_plan_approval', 'Plan version 3 ready')).toBe('Plan v3 ready');
+  const r = (stage: RunSummary['stage'], stageNote: string | null, planVersion: number | null) => ({
+    stage,
+    stageNote,
+    planVersion,
+  });
+  it('builds the plan-ready label from the plan version, not the note', () => {
+    expect(stageNoteLabel(r('awaiting_plan_approval', 'whatever', 3))).toBe('Plan v3 ready');
   });
   it('leaves other notes alone', () => {
-    expect(stageNoteLabel('implementing', 'Plan version 3 ready')).toBe('Plan version 3 ready');
-    expect(stageNoteLabel('planning', null)).toBeNull();
+    expect(stageNoteLabel(r('implementing', 'Plan version 3 ready', 3))).toBe(
+      'Plan version 3 ready',
+    );
+    expect(stageNoteLabel(r('awaiting_plan_approval', 'n', null))).toBe('n');
+    expect(stageNoteLabel(r('planning', null, null))).toBeNull();
   });
 });
 

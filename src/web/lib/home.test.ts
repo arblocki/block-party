@@ -16,6 +16,7 @@ const run = (id: string, stage: RunSummary['stage'], updatedAt: string): RunSumm
   createdAt: updatedAt,
   updatedAt,
   openDecisions: 0,
+  planVersion: null,
 });
 
 describe('stageTone', () => {

@@ -31,7 +31,7 @@ function RunRow({ run }: { run: RunSummary }) {
       </div>
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-muted">
         {repoLabel && <span>{repoLabel}</span>}
-        {run.stageNote && <span>{stageNoteLabel(run.stage, run.stageNote)}</span>}
+        {run.stageNote && <span>{stageNoteLabel(run)}</span>}
         {project && run.prNumber !== null && (
           <a
             href={prHref(project, run.prNumber)}

@@ -281,6 +281,7 @@ describe('JSON endpoints', () => {
           createdAt: '2026-01-01T00:00:00.000Z',
           updatedAt: '2026-01-02T00:00:00.000Z',
           openDecisions: 0,
+          planVersion: null,
         },
         expect.objectContaining({ id: RUN_A, stage: 'implementing', openDecisions: 2 }),
       ],
@@ -713,6 +714,7 @@ describe('run plan and findings', () => {
           feedback: null,
           createdAt: expect.any(String),
           text: PLAN,
+          acceptanceCriteria: expect.any(Array),
         },
         {
           version: 2,
@@ -722,8 +724,27 @@ describe('run plan and findings', () => {
           feedback: 'smaller',
           createdAt: expect.any(String),
           text: V2,
+          acceptanceCriteria: expect.any(Array),
         },
       ]);
+    });
+
+    it('gives the latest plan version on the run summary and detail', async () => {
+      addPlans(['draft', 'draft']);
+      const list = (await json('/api/runs')) as { runs: { id: string; planVersion: unknown }[] };
+      expect(list.runs.find((r) => r.id === RUN_A)!.planVersion).toBe(2);
+      const detail = (await json(`/api/runs/${RUN_A}`)) as { run: { planVersion: unknown } };
+      expect(detail.run.planVersion).toBe(2);
+    });
+
+    it('lists acceptance criteria per version, empty when the text is unreadable', async () => {
+      addPlans(['draft', 'draft']);
+      rmSync(join(dir, 'plans', 'v1.md'));
+      const body = (await json(`/api/runs/${RUN_A}/plans`)) as {
+        plans: { acceptanceCriteria: string[] }[];
+      };
+      expect(body.plans[0]!.acceptanceCriteria).toEqual([]);
+      expect(body.plans[1]!.acceptanceCriteria.length).toBeGreaterThan(0);
     });
 
     it('lists no versions for a run without plan rows', async () => {

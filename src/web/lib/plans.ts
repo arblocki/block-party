@@ -1,14 +1,37 @@
-import type { PlanVersion, RunDecision, RunDetail, RunEvent } from '../types';
+import type { PlanVersion, RunDecision, RunDetail, RunEvent, RunSummary } from '../types';
 
 export interface DiffLine {
   kind: 'same' | 'add' | 'del';
   text: string;
 }
 
-/** A line diff of `a` into `b` (longest common subsequence; plans are small). */
-export function lineDiff(a: string, b: string): DiffLine[] {
+/** Above this many line pairs (about 2000 x 2000, after trimming) the diff is not computed. */
+export const MAX_DIFF_CELLS = 2000 * 2000;
+
+/** A line diff of `a` into `b`, or null when the changed middle is too large to compare. */
+export function lineDiff(a: string, b: string): DiffLine[] | null {
   const x = a === '' ? [] : a.split('\n');
   const y = b === '' ? [] : b.split('\n');
+  let start = 0;
+  while (start < x.length && start < y.length && x[start] === y[start]) start++;
+  let endX = x.length;
+  let endY = y.length;
+  while (endX > start && endY > start && x[endX - 1] === y[endY - 1]) {
+    endX--;
+    endY--;
+  }
+  const mx = x.slice(start, endX);
+  const my = y.slice(start, endY);
+  if (mx.length * my.length > MAX_DIFF_CELLS) return null;
+  const middle = lcsDiff(mx, my);
+  return [
+    ...x.slice(0, start).map((text): DiffLine => ({ kind: 'same', text })),
+    ...middle,
+    ...x.slice(endX).map((text): DiffLine => ({ kind: 'same', text })),
+  ];
+}
+
+function lcsDiff(x: string[], y: string[]): DiffLine[] {
   // lcs[i][j]: length of the common subsequence of x[i..] and y[j..].
   const lcs: number[][] = Array.from({ length: x.length + 1 }, () =>
     new Array<number>(y.length + 1).fill(0),
@@ -58,13 +81,14 @@ export function planActions(
   );
 }
 
-/** "Plan version 2 ready" as "Plan v2 ready"; other notes pass through. */
-export function stageNoteLabel(stage: string, note: string | null): string | null {
-  if (stage === 'awaiting_plan_approval' && note) {
-    const m = /^Plan version (\d+) ready$/.exec(note);
-    if (m) return `Plan v${m[1]} ready`;
+/** "Plan v<n> ready" from the plan version while awaiting approval; else the note. */
+export function stageNoteLabel(
+  run: Pick<RunSummary, 'stage' | 'stageNote' | 'planVersion'>,
+): string | null {
+  if (run.stage === 'awaiting_plan_approval' && run.planVersion !== null) {
+    return `Plan v${run.planVersion} ready`;
   }
-  return note;
+  return run.stageNote;
 }
 
 /** The attach command of the planner's latest session, else null. */

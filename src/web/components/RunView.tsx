@@ -16,7 +16,7 @@ import type {
 } from '../types';
 import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
 import { DecisionItem } from './DecisionItem';
-import { PlanPanel } from './PlanPanel';
+import { PlanPanel, panelHasControls } from './PlanPanel';
 import { listClass } from './PickerShell';
 import { EvidenceSection, PlanSection } from './RunEvidence';
 import { StageBadge } from './StageBadge';
@@ -144,7 +144,7 @@ export function RunView({ id }: { id: string }) {
     const alive = () => !ctrl.signal.aborted;
     let lastEventId = 0;
     let signature: string | null = null;
-    // Plans are refetched when this changes: the stage note names the plan version.
+    // Plans are refetched when the stage or the latest plan version changes.
     let planSignature: string | null = null;
     let plansSeq = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -184,12 +184,17 @@ export function RunView({ id }: { id: string }) {
             );
           }
         },
-        (e: Error) => alive() && seq === plansSeq && setPlansError(e.message),
+        (e: Error) => {
+          if (!alive() || seq !== plansSeq) return;
+          setPlansError(e.message);
+          // So the next frame tries again.
+          planSignature = null;
+        },
       );
     };
 
     const refreshPlans = (d: RunDetailResponse) => {
-      const sig = `${d.run.stage}|${d.run.stageNote ?? ''}`;
+      const sig = `${d.run.stage}|${d.run.planVersion ?? ''}`;
       if (sig === planSignature) return;
       planSignature = sig;
       void loadPlans(d.run.stage);
@@ -325,7 +330,10 @@ export function RunView({ id }: { id: string }) {
   const project = runProject(run);
   // The plan panel carries the plan approval's buttons, so the list leaves it out.
   const planDecision = planActions(run, detail.decisions);
-  const open = detail.decisions.filter((d) => d.status === 'open' && d !== planDecision);
+  const panelShown = plans !== null && (plans.length > 0 || run.stage === 'planning' || plansError);
+  const open = detail.decisions.filter(
+    (d) => d.status === 'open' && !(d === planDecision && panelHasControls(plans, planDecision)),
+  );
   const answered = detail.decisions.filter((d) => d.status === 'answered' && d.options !== null);
 
   return (
@@ -350,9 +358,7 @@ export function RunView({ id }: { id: string }) {
             </button>
           )}
         </div>
-        {run.stageNote && (
-          <p className="mt-1 text-sm text-muted">{stageNoteLabel(run.stage, run.stageNote)}</p>
-        )}
+        {run.stageNote && <p className="mt-1 text-sm text-muted">{stageNoteLabel(run)}</p>}
         {cancelNote && <p className="mt-1 text-sm text-warning">{cancelNote}</p>}
         <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-muted">
           {project && (
@@ -401,7 +407,7 @@ export function RunView({ id }: { id: string }) {
           </ul>
         </section>
       )}
-      {plans !== null && (plans.length > 0 || run.stage === 'planning' || plansError) ? (
+      {panelShown ? (
         <PlanPanel
           run={run}
           decisions={detail.decisions}

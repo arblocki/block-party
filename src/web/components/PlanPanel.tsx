@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { api, jsonBody } from '../api';
 import { defaultVersion, lineDiff, planActions, plannerAttach } from '../lib/plans';
-import type { PlanVersion, RunDecision, RunDetail, RunEvent, ValidatePlanResponse } from '../types';
+import type { PlanVersion, RunDecision, RunDetail, RunEvent } from '../types';
 import { headingText, sectionHeading } from './AppShell';
 
 const NOTE_MAX = 4000;
@@ -123,34 +123,9 @@ function ApprovalControls({
   );
 }
 
-function Criteria({ text }: { text: string }) {
-  const [criteria, setCriteria] = useState<string[] | null>(null);
-  useEffect(() => {
-    setCriteria(null);
-    let current = true;
-    api<ValidatePlanResponse>('/api/plans/validate', {
-      method: 'POST',
-      ...jsonBody({ text }),
-    }).then(
-      (r) => current && setCriteria(r.ok ? r.acceptanceCriteria : []),
-      () => current && setCriteria([]),
-    );
-    return () => {
-      current = false;
-    };
-  }, [text]);
-  if (!criteria || criteria.length === 0) return null;
-  return (
-    <>
-      <p className={`mt-3 ${headingText}`}>Acceptance criteria</p>
-      <ul className="list-disc space-y-0.5 pl-5 text-sm">
-        {criteria.map((c, i) => (
-          <li key={i}>{c}</li>
-        ))}
-      </ul>
-    </>
-  );
-}
+/** Whether the panel renders approval controls for the run (see `planActions`). */
+export const panelHasControls = (plans: PlanVersion[] | null, open: RunDecision | null): boolean =>
+  open !== null && plans !== null && plans.length > 0;
 
 /** Every plan version of a run, the changes between them, and the approval buttons. */
 export function PlanPanel({
@@ -186,12 +161,11 @@ export function PlanPanel({
   const previous = selected
     ? (plans.find((p) => p.version === selected.version - 1) ?? null)
     : null;
+  const readable =
+    selected !== null && previous !== null && selected.text !== null && previous.text !== null;
   const diff = useMemo(
-    () =>
-      showDiff && selected && previous && selected.text !== null && previous.text !== null
-        ? lineDiff(previous.text, selected.text)
-        : null,
-    [showDiff, selected, previous],
+    () => (showDiff && readable ? lineDiff(previous.text!, selected.text!) : null),
+    [showDiff, readable, selected, previous],
   );
   const open = planActions(run, decisions);
   const planning = run.stage === 'planning';
@@ -251,7 +225,16 @@ export function PlanPanel({
               <p className="whitespace-pre-wrap">{selected.feedback}</p>
             </div>
           )}
-          {selected.text !== null && <Criteria text={selected.text} />}
+          {selected.acceptanceCriteria.length > 0 && (
+            <>
+              <p className={`mt-3 ${headingText}`}>Acceptance criteria</p>
+              <ul className="list-disc space-y-0.5 pl-5 text-sm">
+                {selected.acceptanceCriteria.map((c, i) => (
+                  <li key={i}>{c}</li>
+                ))}
+              </ul>
+            </>
+          )}
           {showDiff && previous && (
             <div className="mt-3">
               {diff ? (
@@ -266,7 +249,11 @@ export function PlanPanel({
                   ))}
                 </pre>
               ) : (
-                <p className="text-sm text-muted">One of these versions cannot be read.</p>
+                <p className="text-sm text-muted">
+                  {readable
+                    ? 'These versions are too large to diff here.'
+                    : 'One of these versions cannot be read.'}
+                </p>
               )}
             </div>
           )}

@@ -52,6 +52,8 @@ export interface RunSummary {
   createdAt: string;
   updatedAt: string;
   openDecisions: number;
+  /** The latest stored plan version, or null when the run has none. */
+  planVersion: number | null;
 }
 
 /** An inbox item with the run it belongs to. */
@@ -230,6 +232,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
       openDecisions: openByRun.get(run.id) ?? 0,
+      planVersion: runs.listPlans(run.id).at(-1)?.version ?? null,
     };
   };
 
@@ -311,6 +314,10 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       feedback: p.feedback,
       createdAt: p.createdAt,
       text,
+      acceptanceCriteria: (() => {
+        const parsed = text === null ? null : parsePlan(text);
+        return parsed?.ok ? parsed.plan.acceptanceCriteria : [];
+      })(),
     };
   };
 

@@ -143,6 +143,8 @@ export interface RunSummary {
   createdAt: string;
   updatedAt: string;
   openDecisions: number;
+  /** The latest stored plan version, or null. */
+  planVersion: number | null;
 }
 
 /** An inbox item (GET /api/inbox) with the run it belongs to. */
@@ -203,6 +205,7 @@ export interface PlanVersion {
   createdAt: string;
   /** Null when the file could not be read. */
   text: string | null;
+  acceptanceCriteria: string[];
 }
 
 /** A Codex finding with its triage class, status and the finding it repeats. */
