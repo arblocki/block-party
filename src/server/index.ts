@@ -8,7 +8,12 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
-import { reconcileRuns, reopenStrandedRests, resumeOnRestart } from './reconcile.js';
+import {
+  reconcileRuns,
+  reopenStrandedRests,
+  resumeOnRestart,
+  shutdownInterruptedRuns,
+} from './reconcile.js';
 import { createHerdrHost } from '../core/terminal/index.js';
 import { attachTerminalUpgrade, createTerminal } from './terminal.js';
 import type { RunManager } from './run-manager.js';
@@ -86,7 +91,9 @@ export async function startServer(opts: {
   if (opts.runManager) {
     // Runs that were queued before the restart go first; then the resumed ones queue behind them.
     opts.runManager.pump();
-    const resumed = resumeOnRestart(opts.store.runs, opts.runManager, reconciled);
+    // Runs interrupted by a crash (just found) and runs stopped cleanly by an earlier shutdown.
+    const candidates = [...new Set([...reconciled, ...shutdownInterruptedRuns(opts.store.runs)])];
+    const resumed = resumeOnRestart(opts.store.runs, opts.runManager, candidates);
     if (resumed.length > 0) console.log(`Resumed ${resumed.length} run(s): ${resumed.join(', ')}`);
   }
   return running;

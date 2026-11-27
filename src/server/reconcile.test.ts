@@ -4,7 +4,13 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openStore, type Store } from '../core/store/index.js';
 import type { RunInput } from '../core/store/runs.js';
-import { pidAlive, reconcileRuns, reopenStrandedRests, resumeOnRestart } from './reconcile.js';
+import {
+  pidAlive,
+  reconcileRuns,
+  reopenStrandedRests,
+  resumeOnRestart,
+  shutdownInterruptedRuns,
+} from './reconcile.js';
 
 const HOST = 'this-host';
 const DEAD = 4001;
@@ -326,6 +332,40 @@ describe('resumeOnRestart', () => {
     expect(resumeOnRestart(store.runs, manager, ids, 1)).toHaveLength(1);
     const off = addRun('r20260101-eeeeee', { runDir: runDirWith([], {}) });
     expect(resumeOnRestart(store.runs, manager, [off.id])).toEqual([]);
+  });
+});
+
+describe('resumeOnRestart after a shutdown', () => {
+  const stopped = (id: string, cause: string | undefined, runDir: string) => {
+    addRun(id, { stage: 'interrupted', runDir, ownerPid: null, ownerHost: null });
+    store.runs.appendEvent({
+      runId: id,
+      ts: '2026-01-01T00:00:00.000Z',
+      type: 'run.interrupted',
+      payload: { stage: 'checking', note: 'server stopped', ...(cause ? { cause } : {}) },
+    });
+  };
+
+  it('finds runs a shutdown interrupted, and resumes them through the same cap', () => {
+    const on = runDirWith([], { policy: { resumeOnRestart: true } });
+    stopped('r20260101-aaaaaa', 'shutdown', on);
+    stopped('r20260101-bbbbbb', 'crash', on);
+    stopped('r20260101-cccccc', 'shutdown', on);
+    stopped('r20260101-dddddd', 'shutdown', runDirWith([], {}));
+    const ids = shutdownInterruptedRuns(store.runs).sort();
+    expect(ids).toEqual(['r20260101-aaaaaa', 'r20260101-cccccc', 'r20260101-dddddd']);
+    const calls: string[] = [];
+    const manager = {
+      resume: (id: string) => {
+        calls.push(id);
+        return 'started' as const;
+      },
+    };
+    expect(resumeOnRestart(store.runs, manager, ids)).toEqual([
+      'r20260101-aaaaaa',
+      'r20260101-cccccc',
+    ]);
+    expect(resumeOnRestart(store.runs, manager, ids, 1)).toEqual(['r20260101-aaaaaa']);
   });
 });
 

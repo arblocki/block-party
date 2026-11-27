@@ -223,6 +223,25 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
   return changed;
 }
 
+/**
+ * Interrupted runs whose latest `run.interrupted` event came from a server shutdown (the
+ * pipeline stopped them cleanly), as opposed to a crash that reconciliation found. Both kinds
+ * are candidates for `resumeOnRestart`.
+ */
+export function shutdownInterruptedRuns(runs: RunStore): string[] {
+  const ids: string[] = [];
+  for (const run of runs.listRuns()) {
+    if (run.stage !== 'interrupted') continue;
+    const last = runs
+      .listEvents(run.id)
+      .filter((e) => e.type === 'run.interrupted')
+      .at(-1);
+    const payload = last?.payload as { cause?: unknown } | null | undefined;
+    if (payload?.cause === 'shutdown') ids.push(run.id);
+  }
+  return ids;
+}
+
 /** What `resumeOnRestart` needs from the run manager. */
 export interface Resumer {
   resume(runId: string): 'started' | 'busy' | 'not_resumable';

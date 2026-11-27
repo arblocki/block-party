@@ -461,7 +461,7 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
     // An execution still open is closed too (normally the stage already ended as cancelled).
     ctx.rec.endStage('cancelled', { error: reason });
     await setStage(ctx, 'interrupted', reason);
-    ctx.rec.event('run.interrupted', { stage: last, note: reason });
+    ctx.rec.event('run.interrupted', { stage: last, note: reason, cause: 'shutdown' });
     ctx.rec.openDecision(
       'interrupted',
       'Run interrupted',
