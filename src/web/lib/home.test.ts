@@ -104,17 +104,17 @@ describe('orderRuns', () => {
 
 describe('decisionLabel', () => {
   it.each<[DecisionKind, string]>([
-    ['blocked', 'Blocked'],
-    ['permission', 'Permission'],
+    ['blocked', 'Stuck'],
+    ['permission', 'Permission needed'],
     ['interrupted', 'Interrupted'],
-    ['cap_reached', 'Cap reached'],
+    ['cap_reached', 'Limit reached'],
     ['failed', 'Failed'],
-    ['plan_approval', 'Plan approval'],
-    ['finding_triage', 'Finding triage'],
-    ['dispute', 'Dispute'],
-    ['broad_fix', 'Broad fix'],
-    ['final_review', 'Final review'],
-    ['ci_gap', 'CI gap'],
+    ['plan_approval', 'Approve the plan'],
+    ['finding_triage', 'Review findings'],
+    ['dispute', 'Disagreement'],
+    ['broad_fix', 'Large fix'],
+    ['final_review', 'Review the PR'],
+    ['ci_gap', 'Missing CI check'],
   ])('%s -> %s', (kind, label) => {
     expect(decisionLabel(kind)).toBe(label);
   });

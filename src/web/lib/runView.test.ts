@@ -36,12 +36,12 @@ describe('stageStrip', () => {
     ];
     const strip = stageStrip(stages, run('complete'));
     expect(strip.map((i) => i.label)).toEqual([
-      'Implement',
-      'Local CI',
-      'Codex',
+      'Build',
+      'Local checks',
+      'Codex review',
       'Fix',
-      'Publish',
-      'CI',
+      'Open PR',
+      'GitHub CI',
     ]);
     expect(states(strip)).toEqual({
       implement: 'done',
@@ -165,10 +165,8 @@ describe('summarizeEvent', () => {
   const sum = (type: string, payload?: unknown) => summarizeEvent({ type, payload });
 
   it('summarizes planner, plan, continuation, repeat, rulings and decision events', () => {
-    expect(sum('planner.session', { mode: 'pane', attach: 'x' })).toBe(
-      'Planner session started (pane)',
-    );
-    expect(sum('planner.session', { mode: 'headless' })).toBe('Planner session started (headless)');
+    expect(sum('planner.session', { mode: 'pane', attach: 'x' })).toBe('Planner started');
+    expect(sum('planner.session', { mode: 'headless' })).toBe('Planner started');
     expect(sum('plan.approved', { version: 2 })).toBe('Plan v2 approved');
     expect(sum('plan.invalid', { version: 1, errors: ['a', 'b'] })).toBe(
       'Plan v1 is invalid (2 errors)',
@@ -186,18 +184,16 @@ describe('summarizeEvent', () => {
       'Finding F1 recorded as a repeat',
     );
     expect(sum('rulings.invalid', { skipped: 2 })).toBe('Skipped 2 invalid rulings');
-    expect(sum('decision.answered', { id: 4, choice: 'approve' })).toBe(
-      'Decision answered: approve',
-    );
+    expect(sum('decision.answered', { id: 4, choice: 'approve' })).toBe('You answered: approve');
   });
 
   it('summarizes each event type the pipeline writes', () => {
     expect(sum('run.started', { branch: 'bp/x' })).toBe('Run started on bp/x');
-    expect(sum('stage', { stage: 'waiting_ci', note: 'PR #4' })).toBe('Stage waiting ci: PR #4');
-    expect(sum('stage', { stage: 'implementing' })).toBe('Stage implementing');
-    expect(sum('implementer.session', { mode: 'pane', attach: 'x' })).toBe(
-      'Implementer session started (pane)',
+    expect(sum('stage', { stage: 'waiting_ci', note: 'PR #4' })).toBe(
+      'Waiting for GitHub CI: PR #4',
     );
+    expect(sum('stage', { stage: 'implementing' })).toBe('Building');
+    expect(sum('implementer.session', { mode: 'pane', attach: 'x' })).toBe('Implementer started');
     expect(sum('implementer.waiting_for_human', { notice: 'Needs approval' })).toBe(
       'Needs approval',
     );
@@ -206,7 +202,7 @@ describe('summarizeEvent', () => {
       'Agent turn finished (3 turns, $0.50)',
     );
     expect(sum('checks.result', { head: 'abc1234', passed: false })).toBe(
-      'Local CI failed on abc1234',
+      'Local checks failed on abc1234',
     );
     expect(sum('ci.failed', { head: 'abc1234', checks: ['build', 'e2e'] })).toBe(
       'GitHub CI failed on abc1234: build, e2e',

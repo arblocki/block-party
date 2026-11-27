@@ -428,7 +428,7 @@ export function RunView({ id }: { id: string }) {
       {open.length > 0 && (
         <section className="mb-8" aria-labelledby="needs-you">
           <h2 id="needs-you" className={sectionHeading}>
-            Needs you
+            Waiting on you
           </h2>
           <ul className={listClass}>
             {open.map((d) => (

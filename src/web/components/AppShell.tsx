@@ -21,7 +21,7 @@ export function TopBar() {
         New run
       </a>
       <a href={REPOS_HREF} className={linkButton}>
-        Repositories
+        Review a PR
       </a>
       <LogoutButton />
     </div>

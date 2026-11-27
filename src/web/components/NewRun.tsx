@@ -1,17 +1,11 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, jsonBody } from '../api';
-import {
-  canStart,
-  MAX_DESCRIPTION_CHARS,
-  projectLabel,
-  toRunRequest,
-  type NewRunState,
-} from '../lib/newRun';
+import { canStart, MAX_DESCRIPTION_CHARS, toRunRequest, type NewRunState } from '../lib/newRun';
 import { HOME_HREF, runHref } from '../lib/route';
 import type { Project, ValidatePlanResponse } from '../types';
-import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
+import { headingText, sectionHeading, TopBar } from './AppShell';
+import { RepoChooser } from './RepoChooser';
 
-const ADD = '__add__';
 const DEBOUNCE_MS = 400;
 const field =
   'w-full rounded-md border border-line bg-surface px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-accent';
@@ -29,14 +23,9 @@ type Validation =
   | { state: 'done'; result: ValidatePlanResponse }
   | { state: 'error'; message: string };
 
-/** The form behind `?new-run`: pick a project, paste a plan, start the run. */
+/** The form behind `?new-run`: choose a repo, say what to build, start the run. */
 export function NewRun() {
-  const [projects, setProjects] = useState<Project[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [choice, setChoice] = useState('');
-  const [addPath, setAddPath] = useState('');
-  const [adding, setAdding] = useState(false);
-  const [addError, setAddError] = useState<string | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
   const [baseRef, setBaseRef] = useState('');
   const [source, setSource] = useState<'describe' | 'paste'>('describe');
   const [description, setDescription] = useState('');
@@ -49,26 +38,6 @@ export function NewRun() {
   const [starting, setStarting] = useState(false);
   const [startError, setStartError] = useState<{ message: string; errors: string[] } | null>(null);
   const [fileMsg, setFileMsg] = useState<string | null>(null);
-
-  useEffect(() => {
-    api<{ projects: Project[] }>('/api/projects').then(
-      (r) => {
-        setProjects(r.projects);
-        if (r.projects.length === 0) setChoice(ADD);
-      },
-      (e: Error) => {
-        // Treated as an empty list, so "Add a project…" stays reachable.
-        setProjects([]);
-        setLoadError(e.message);
-      },
-    );
-  }, []);
-
-  const selectProject = (id: string, list: Project[] | null = projects) => {
-    setChoice(id);
-    const p = list?.find((x) => x.id === id);
-    if (p) setBaseRef(p.defaultBase);
-  };
 
   // Validate the plan once typing pauses; a stale answer never overwrites a newer one.
   useEffect(() => {
@@ -93,25 +62,6 @@ export function NewRun() {
     };
   }, [planText, source]);
 
-  const addProject = async () => {
-    setAdding(true);
-    setAddError(null);
-    try {
-      const { project } = await api<{ project: Project }>('/api/projects', {
-        method: 'POST',
-        ...jsonBody({ path: addPath.trim() }),
-      });
-      const list = [...(projects ?? []).filter((p) => p.id !== project.id), project];
-      setProjects(list);
-      selectProject(project.id, list);
-      setAddPath('');
-    } catch (e) {
-      setAddError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setAdding(false);
-    }
-  };
-
   const loadFile = async (file: File | undefined) => {
     if (!file) return;
     try {
@@ -123,7 +73,8 @@ export function NewRun() {
   };
 
   const state: NewRunState = {
-    projectId: choice === ADD ? '' : choice,
+    projectId: project?.id ?? '',
+    defaultBranch: project?.defaultBase ?? '',
     baseRef,
     source,
     description,
@@ -155,6 +106,7 @@ export function NewRun() {
   };
 
   const label = 'mb-1 block text-sm font-medium';
+  const hint = 'mt-1 text-xs text-muted';
   const section = 'mb-6';
 
   return (
@@ -168,125 +120,43 @@ export function NewRun() {
         }}
       >
         <section className={section}>
-          <h2 className={sectionHeading}>Project</h2>
-          {loadError && (
-            <p className="mb-2 text-sm text-error" role="alert">
-              Could not load projects: {loadError}
-            </p>
-          )}
-          <label className={label} htmlFor="nr-project">
-            Project
-          </label>
-          <select
-            id="nr-project"
-            className={field}
-            value={choice}
-            disabled={projects === null}
-            onChange={(e) => selectProject(e.target.value)}
-          >
-            <option value="">{projects === null ? 'Loading…' : 'Select a project…'}</option>
-            {(projects ?? []).map((p) => (
-              <option key={p.id} value={p.id}>
-                {projectLabel(p)}
-              </option>
-            ))}
-            <option value={ADD}>Add a project…</option>
-          </select>
-          {choice === ADD && (
-            <div className="mt-2">
-              <label className={label} htmlFor="nr-path">
-                Local path of the repository
-              </label>
-              <div className="flex gap-2">
-                <input
-                  id="nr-path"
-                  className={field}
-                  value={addPath}
-                  placeholder="/Users/you/code/repo"
-                  onChange={(e) => setAddPath(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === 'Enter') {
-                      e.preventDefault();
-                      if (addPath.trim() && !adding) void addProject();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className={linkButton}
-                  disabled={adding || addPath.trim() === ''}
-                  onClick={() => void addProject()}
-                >
-                  {adding ? 'Adding…' : 'Add'}
-                </button>
-              </div>
-              {addError && (
-                <p className="mt-1 text-sm text-error" role="alert">
-                  {addError}
-                </p>
-              )}
-            </div>
-          )}
+          <h2 className={sectionHeading}>Which repo?</h2>
+          <RepoChooser onReady={setProject} />
         </section>
 
         <section className={section}>
-          <h2 className={sectionHeading}>Base</h2>
-          <label className={label} htmlFor="nr-base">
-            Base ref
-          </label>
-          <input
-            id="nr-base"
-            className={field}
-            value={baseRef}
-            onChange={(e) => setBaseRef(e.target.value)}
-          />
-        </section>
-
-        <section className={section}>
-          <h2 className={sectionHeading}>Plan</h2>
-          <div className="mb-3 flex gap-2" role="group" aria-label="Plan source">
-            {(
-              [
-                ['describe', 'Describe the feature'],
-                ['paste', 'Paste a plan'],
-              ] as const
-            ).map(([value, text]) => (
-              <button
-                key={value}
-                type="button"
-                aria-pressed={source === value}
-                className={`rounded-md border px-2.5 py-1 text-sm ${
-                  source === value
-                    ? 'border-accent bg-accent-soft font-medium'
-                    : 'border-line hover:bg-surface-hover'
-                }`}
-                onClick={() => setSource(value)}
-              >
-                {text}
-              </button>
-            ))}
-          </div>
+          <h2 className={sectionHeading}>What should it build?</h2>
           {source === 'describe' ? (
             <>
-              <label className={label} htmlFor="nr-description">
-                What should be built?
+              <label className="sr-only" htmlFor="nr-description">
+                What should it build?
               </label>
               <textarea
                 id="nr-description"
                 className={`${field} h-40`}
                 value={description}
                 maxLength={MAX_DESCRIPTION_CHARS}
-                placeholder="Describe the feature. A planner writes the plan and you approve it before any code is written."
+                placeholder="Describe the change you want, in your own words."
                 onChange={(e) => setDescription(e.target.value)}
               />
-              <p className="mt-1 text-xs text-muted">
+              <p className={hint}>
+                A planner agent writes a plan first. Nothing is changed until you approve it.
+              </p>
+              <p className={hint}>
                 {description.length} / {MAX_DESCRIPTION_CHARS}
               </p>
+              <button
+                type="button"
+                className="mt-1 text-sm text-accent hover:underline"
+                onClick={() => setSource('paste')}
+              >
+                I already have a plan
+              </button>
             </>
           ) : (
             <>
               <label className={label} htmlFor="nr-plan">
-                Plan (Markdown)
+                Your plan (Markdown)
               </label>
               <textarea
                 id="nr-plan"
@@ -317,7 +187,7 @@ export function NewRun() {
                 {validation.state === 'checking' && <p className="text-sm text-muted">Checking…</p>}
                 {validation.state === 'error' && (
                   <p className="text-sm text-error">
-                    Could not validate the plan: {validation.message}
+                    Could not check the plan: {validation.message}
                   </p>
                 )}
                 {validation.state === 'done' && validation.result.ok && (
@@ -345,16 +215,36 @@ export function NewRun() {
                   </div>
                 )}
               </div>
+              <button
+                type="button"
+                className="mt-2 text-sm text-accent hover:underline"
+                onClick={() => setSource('describe')}
+              >
+                Describe it instead
+              </button>
             </>
           )}
         </section>
 
-        <section className={section}>
-          <h2 className={sectionHeading}>Options</h2>
-          <div className="grid gap-3 sm:grid-cols-3">
+        <details className="mb-6 rounded-md border border-line px-3 py-2">
+          <summary className="cursor-pointer text-sm font-medium">Advanced</summary>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <div>
+              <label className={label} htmlFor="nr-branch">
+                Start from branch
+              </label>
+              <input
+                id="nr-branch"
+                className={field}
+                value={baseRef}
+                placeholder={project?.defaultBase ?? "The repo's default branch"}
+                onChange={(e) => setBaseRef(e.target.value)}
+              />
+              <p className={hint}>The branch the new work starts from.</p>
+            </div>
             <div>
               <label className={label} htmlFor="nr-title">
-                Title (optional)
+                Run title
               </label>
               <input
                 id="nr-title"
@@ -365,41 +255,36 @@ export function NewRun() {
               />
             </div>
             <div>
-              <label className={label} htmlFor="nr-mode">
-                Mode
-              </label>
-              <select
-                id="nr-mode"
-                className={field}
-                value={mode}
-                onChange={(e) => setMode(e.target.value === 'headless' ? 'headless' : 'pane')}
-              >
-                <option value="pane">pane</option>
-                <option value="headless">headless</option>
-              </select>
-            </div>
-            <div>
               <label className={label} htmlFor="nr-model">
-                Model (optional)
+                Model
               </label>
               <input
                 id="nr-model"
                 className={field}
                 value={model}
-                placeholder="Default"
                 onChange={(e) => setModel(e.target.value)}
               />
+              <p className={hint}>Leave empty for the default.</p>
             </div>
           </div>
+          <label className="mt-3 flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={mode === 'pane'}
+              onChange={(e) => setMode(e.target.checked ? 'pane' : 'headless')}
+            />
+            Watch the agent in a terminal
+          </label>
+          <p className={hint}>Off runs it in the background.</p>
           <label className="mt-3 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={publish}
               onChange={(e) => setPublish(e.target.checked)}
             />
-            Open a draft PR at the end
+            Open a draft PR when done
           </label>
-        </section>
+        </details>
 
         {startError && (
           <div className="mb-3 rounded-md bg-error-soft px-3 py-2 text-sm text-error" role="alert">

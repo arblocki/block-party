@@ -36,6 +36,7 @@ export function PlanSection({
       {!plan && planning ? (
         <div className="rounded-md border border-info bg-info-soft px-3 py-2 text-sm" role="status">
           <p className="text-info">The planner is writing the plan…</p>
+          {attach && <p className="mt-1 text-muted">To watch it work, run this in a terminal:</p>}
           {attach && (
             <code className="mt-1 block overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs">
               {attach}
@@ -194,7 +195,7 @@ function FindingsTable({ findings, all }: { findings: ReviewFinding[]; all: Revi
             <th className="py-1 pr-3 font-medium">Severity</th>
             <th className="py-1 pr-3 font-medium">Finding</th>
             <th className="py-1 pr-3 font-medium">Location</th>
-            <th className="py-1 pr-3 font-medium">Triage</th>
+            <th className="py-1 pr-3 font-medium">Your call</th>
             <th className="py-1 font-medium">Status</th>
           </tr>
         </thead>
@@ -238,7 +239,7 @@ export function EvidenceSection({
           ))}
         </ul>
       )}
-      <h3 className="mb-1 mt-3 text-sm font-medium">Local CI</h3>
+      <h3 className="mb-1 mt-3 text-sm font-medium">Local checks</h3>
       {shas.length === 0 ? (
         <p className="mb-4 text-sm text-muted">No local CI yet.</p>
       ) : (

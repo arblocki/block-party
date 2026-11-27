@@ -45,6 +45,38 @@ function RunRow({ run }: { run: RunSummary }) {
   );
 }
 
+const STEPS = [
+  'Describe a change and pick a repo.',
+  'An agent writes a plan. You read it and approve it.',
+  'It builds the change, runs the tests and gets a second review. Then you review the pull request.',
+];
+
+/** What block-party is, for someone with nothing on the page yet. */
+function Intro() {
+  return (
+    <section className="rounded-md border border-line px-5 py-6" aria-labelledby="intro">
+      <h1 id="intro" className="mb-2 text-xl font-semibold">
+        Welcome to block-party
+      </h1>
+      <p className="mb-4">
+        Describe a change; an agent plans it, you approve the plan, it builds, tests and reviews it,
+        and you review the PR.
+      </p>
+      <ol className="mb-5 list-decimal space-y-1 pl-5 text-sm">
+        {STEPS.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <a
+        href={NEW_RUN_HREF}
+        className="inline-block rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white"
+      >
+        Start your first run
+      </a>
+    </section>
+  );
+}
+
 /** Runs and the decision inbox, loaded once and then kept live by `/api/stream`. */
 export function Home() {
   const [runs, setRuns] = useState<RunSummary[] | null>(null);
@@ -131,6 +163,18 @@ export function Home() {
     a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : b.id - a.id,
   );
 
+  const firstVisit =
+    runs !== null && inbox !== null && runs.length === 0 && decisions.length === 0 && !error;
+
+  if (firstVisit) {
+    return (
+      <div className="mx-auto max-w-4xl px-4 py-6">
+        <TopBar />
+        <Intro />
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-4xl px-4 py-6">
       <TopBar />
@@ -144,13 +188,13 @@ export function Home() {
       )}
       <section className="mb-8" aria-labelledby="needs-you">
         <h2 id="needs-you" className={sectionHeading}>
-          Needs you
+          Waiting on you
         </h2>
         {inbox === null ? (
           <p className="text-sm text-muted">Loading…</p>
         ) : decisions.length === 0 ? (
           <p className="rounded-md border border-line px-3 py-3 text-sm text-muted">
-            Nothing needs you.
+            Nothing is waiting on you.
           </p>
         ) : (
           <ul className={listClass}>
@@ -162,7 +206,7 @@ export function Home() {
       </section>
       <section aria-labelledby="runs">
         <h2 id="runs" className={sectionHeading}>
-          Runs
+          Your runs
         </h2>
         {runs === null ? (
           <p className="text-sm text-muted">Loading…</p>

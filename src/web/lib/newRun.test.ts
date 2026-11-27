@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { canStart, projectLabel, toRunRequest, type NewRunState } from './newRun';
+import { canStart, startBranch, toRunRequest, type NewRunState } from './newRun';
 
 const ok: NewRunState = {
   projectId: 'p1',
-  baseRef: 'main',
+  defaultBranch: 'main',
+  baseRef: '',
   source: 'paste',
   description: '',
   planText: '# Plan',
@@ -18,7 +19,7 @@ describe('canStart', () => {
   it('needs everything', () => {
     expect(canStart(ok)).toBe(true);
     expect(canStart({ ...ok, projectId: '' })).toBe(false);
-    expect(canStart({ ...ok, baseRef: '  ' })).toBe(false);
+    expect(canStart({ ...ok, defaultBranch: ' ' })).toBe(false);
     expect(canStart({ ...ok, planText: ' ' })).toBe(false);
     expect(canStart({ ...ok, planValid: false })).toBe(false);
   });
@@ -45,17 +46,24 @@ describe('canStart in describe mode', () => {
   });
 });
 
-describe('projectLabel', () => {
-  it('shows owner/repo and path', () => {
-    expect(projectLabel({ owner: 'a', repo: 'b', localPath: '/x/b' })).toBe('a/b — /x/b');
+describe('start branch', () => {
+  it('defaults to the repo default branch and lets Advanced override it', () => {
+    expect(startBranch({ defaultBranch: 'trunk', baseRef: '' })).toBe('trunk');
+    expect(startBranch({ defaultBranch: 'trunk', baseRef: '  ' })).toBe('trunk');
+    expect(startBranch({ defaultBranch: 'trunk', baseRef: ' dev ' })).toBe('dev');
+  });
+  it('can start without typing a branch, but not without any branch', () => {
+    expect(canStart({ ...ok, defaultBranch: 'trunk', baseRef: '' })).toBe(true);
+    expect(canStart({ ...ok, defaultBranch: '', baseRef: '' })).toBe(false);
+    expect(canStart({ ...ok, defaultBranch: '', baseRef: 'dev' })).toBe(true);
   });
 });
 
 describe('toRunRequest', () => {
   it('omits blank title and model', () => {
-    expect(toRunRequest(ok)).toEqual({
+    expect(toRunRequest({ ...ok, defaultBranch: 'trunk' })).toEqual({
       projectId: 'p1',
-      baseRef: 'main',
+      baseRef: 'trunk',
       planText: '# Plan',
       mode: 'pane',
       publish: true,

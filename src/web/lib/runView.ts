@@ -1,4 +1,5 @@
-import { isTerminal } from '../../core/run/machine';
+import { isTerminal, RUN_STAGES, type RunStage } from '../../core/run/machine';
+import { stageLabel } from './stageLabel';
 import type { RunEvent, RunSummary, StageKind, StageRow } from '../types';
 
 export type StripState =
@@ -17,12 +18,12 @@ export interface StripItem {
 }
 
 const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
-  { key: 'implement', label: 'Implement', kinds: ['implement'] },
-  { key: 'checks', label: 'Local CI', kinds: ['checks'] },
-  { key: 'review', label: 'Codex', kinds: ['review'] },
+  { key: 'implement', label: 'Build', kinds: ['implement'] },
+  { key: 'checks', label: 'Local checks', kinds: ['checks'] },
+  { key: 'review', label: 'Codex review', kinds: ['review'] },
   { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix', 'ci-fix', 'feedback'] },
-  { key: 'publish', label: 'Publish', kinds: ['publish'] },
-  { key: 'ci', label: 'CI', kinds: ['wait-ci'] },
+  { key: 'publish', label: 'Open PR', kinds: ['publish'] },
+  { key: 'ci', label: 'GitHub CI', kinds: ['wait-ci'] },
 ];
 
 /**
@@ -112,6 +113,8 @@ export function checksBySha(stages: readonly StageRow[]): ShaChecks[] {
 /** `agent.*` events: one per tool call or turn, collapsed in the feed by default. */
 export const isNoisyEvent = (type: string): boolean => type.startsWith('agent.');
 
+const isRunStage = (v: string): v is RunStage => (RUN_STAGES as readonly string[]).includes(v);
+
 const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
 
 /** One line for the activity feed. Unknown types, and known ones missing data, show the type. */
@@ -126,16 +129,16 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     case 'stage': {
       const stage = s('stage');
       if (!stage) return type;
-      return `Stage ${stage.replace('_', ' ')}${s('note') ? `: ${s('note')}` : ''}`;
+      return `${isRunStage(stage) ? stageLabel(stage) : stage}${s('note') ? `: ${s('note')}` : ''}`;
     }
     case 'implementer.session':
-      return `Implementer session started${s('mode') ? ` (${s('mode')})` : ''}`;
+      return 'Implementer started';
     case 'implementer.waiting_for_human':
       return s('notice') ?? s('message') ?? 'Implementer is waiting for you';
     case 'implementer.stop_failed':
       return `Could not stop the implementer${s('error') ? `: ${s('error')}` : ''}`;
     case 'planner.session':
-      return `Planner session started${s('mode') ? ` (${s('mode')})` : ''}`;
+      return 'Planner started';
     case 'planner.waiting_for_human':
       return s('notice') ?? s('message') ?? 'Planner is waiting for you';
     case 'planner.stop_failed':
@@ -162,7 +165,7 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return n !== null ? `Skipped ${plural(n, 'invalid ruling')}` : type;
     }
     case 'decision.answered':
-      return s('choice') ? `Decision answered: ${s('choice')}` : type;
+      return s('choice') ? `You answered: ${s('choice')}` : type;
     case 'agent.init':
       return `Agent started${s('model') ? ` (${s('model')})` : ''}`;
     case 'agent.tool_use':
@@ -172,7 +175,7 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     case 'agent.permission_wait':
       return s('message') ? `Waiting for approval: ${s('message')}` : type;
     case 'agent.pane_opened':
-      return `Pane opened${s('label') ? `: ${s('label')}` : ''}`;
+      return `Terminal opened${s('label') ? `: ${s('label')}` : ''}`;
     case 'agent.result': {
       const turns = num('numTurns');
       const cost = num('totalCostUsd');
@@ -183,7 +186,7 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return `${p.isError === true ? 'Agent turn failed' : 'Agent turn finished'}${detail.length ? ` (${detail.join(', ')})` : ''}`;
     }
     case 'checks.result':
-      return `Local CI ${p.passed === true ? 'passed' : 'failed'}${s('head') ? ` on ${s('head')}` : ''}`;
+      return `Local checks ${p.passed === true ? 'passed' : 'failed'}${s('head') ? ` on ${s('head')}` : ''}`;
     case 'ci.failed': {
       const names = Array.isArray(p.checks) ? p.checks.filter((c) => typeof c === 'string') : [];
       return `GitHub CI failed${s('head') ? ` on ${s('head')}` : ''}${names.length ? `: ${names.join(', ')}` : ''}`;

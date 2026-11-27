@@ -41,17 +41,17 @@ export function orderRuns(runs: readonly RunSummary[], limit = RECENT_RUN_LIMIT)
 }
 
 const DECISION_LABELS: Record<DecisionKind, string> = {
-  blocked: 'Blocked',
-  permission: 'Permission',
+  blocked: 'Stuck',
+  permission: 'Permission needed',
   interrupted: 'Interrupted',
-  cap_reached: 'Cap reached',
+  cap_reached: 'Limit reached',
   failed: 'Failed',
-  plan_approval: 'Plan approval',
-  finding_triage: 'Finding triage',
-  dispute: 'Dispute',
-  broad_fix: 'Broad fix',
-  final_review: 'Final review',
-  ci_gap: 'CI gap',
+  plan_approval: 'Approve the plan',
+  finding_triage: 'Review findings',
+  dispute: 'Disagreement',
+  broad_fix: 'Large fix',
+  final_review: 'Review the PR',
+  ci_gap: 'Missing CI check',
 };
 
 export function decisionLabel(kind: DecisionKind): string {

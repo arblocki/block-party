@@ -209,7 +209,10 @@ export function DecisionItem({
         </p>
       )}
       {d.attach && (
-        <div className="mt-2 flex items-center gap-2">
+        <p className="mt-2 text-xs text-muted">To look at it, run this in a terminal:</p>
+      )}
+      {d.attach && (
+        <div className="mt-1 flex items-center gap-2">
           <code
             ref={codeRef}
             className="min-w-0 flex-1 overflow-x-auto rounded-md bg-code-bg px-2 py-1 font-mono text-xs"

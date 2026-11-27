@@ -1,4 +1,5 @@
 import { stageTone, type StageTone } from '../lib/home';
+import { stageLabel } from '../lib/stageLabel';
 import type { RunStage } from '../../core/run/machine';
 
 /** Badge colours per tone; shared by the home list and the run view. */
@@ -15,7 +16,7 @@ export function StageBadge({ stage }: { stage: RunStage }) {
     <span
       className={`inline-block rounded-md px-1.5 py-0.5 text-xs font-medium ${stageToneClass[stageTone(stage)]}`}
     >
-      {stage.replaceAll('_', ' ')}
+      {stageLabel(stage)}
     </span>
   );
 }

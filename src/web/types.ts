@@ -254,3 +254,6 @@ export interface StartRunRequest {
   model?: string;
   publish?: boolean;
 }
+
+/** GET /api/new-run/repos */
+export type { NewRunRepo } from '../server/new-run-api';
