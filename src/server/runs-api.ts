@@ -240,6 +240,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     run: RunRow,
     projects: Map<string, Project>,
     openByRun: Map<string, number>,
+    planVersions: Map<string, number>,
   ): RunSummary => {
     const project = projects.get(run.projectId);
     return {
@@ -254,7 +255,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       createdAt: run.createdAt,
       updatedAt: run.updatedAt,
       openDecisions: openByRun.get(run.id) ?? 0,
-      planVersion: runs.listPlans(run.id).at(-1)?.version ?? null,
+      planVersion: planVersions.get(run.id) ?? null,
     };
   };
 
@@ -269,16 +270,19 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   const runSummaries = (opts: { active?: boolean; limit?: number }): RunSummary[] => {
     const projects = projectsById();
     const open = openCounts();
-    return runs.listRuns(opts).map((r) => summarize(r, projects, open));
+    const planVersions = runs.latestPlanVersions();
+    return runs.listRuns(opts).map((r) => summarize(r, projects, open, planVersions));
   };
 
   const runSummary = (run: RunRow): RunSummary => {
     const project = runs.getProject(run.projectId);
     const open = runs.listDecisions({ status: 'open', runId: run.id }).length;
+    const latestPlan = runs.listPlans(run.id).at(-1)?.version;
     return summarize(
       run,
       new Map(project ? [[project.id, project]] : []),
       new Map([[run.id, open]]),
+      new Map(latestPlan === undefined ? [] : [[run.id, latestPlan]]),
     );
   };
 

@@ -849,6 +849,29 @@ describe('run plan and findings', () => {
       expect(detail.run.planVersion).toBe(2);
     });
 
+    it('reads every listed run plan version in one query', async () => {
+      addPlans(['draft', 'draft']);
+      runs.createRun(runInput(projectId, { id: RUN_B }));
+      const calls = new Map<string, number>();
+      const proxy = new Proxy(runs, {
+        get(t, key, recv) {
+          const value = Reflect.get(t, key, recv) as unknown;
+          if (typeof value !== 'function') return value;
+          return (...args: unknown[]) => {
+            calls.set(String(key), (calls.get(String(key)) ?? 0) + 1);
+            return (value as (...a: unknown[]) => unknown).apply(t, args);
+          };
+        },
+      });
+      const res = await req('/api/runs', {}, makeApp(proxy));
+      expect(res.status).toBe(200);
+      const list = (await res.json()) as { runs: { id: string; planVersion: unknown }[] };
+      expect(calls.get('listPlans') ?? 0).toBe(0);
+      expect(calls.get('latestPlanVersions')).toBe(1);
+      expect(list.runs.find((r) => r.id === RUN_A)!.planVersion).toBe(2);
+      expect(list.runs.find((r) => r.id === RUN_B)!.planVersion).toBeNull();
+    });
+
     it('lists acceptance criteria per version, empty when the text is unreadable', async () => {
       addPlans(['draft', 'draft']);
       rmSync(join(dir, 'plans', 'v1.md'));
