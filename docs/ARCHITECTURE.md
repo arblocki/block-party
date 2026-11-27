@@ -930,6 +930,10 @@ with no UI beyond the terminal, logs, and artifacts.
 
 ### Phase 4: Reliability and parallel runs (several weeks)
 
+- [ ] **Prerequisite: first-run experience.** The new-run form starts from "which repo?" (my
+  GitHub repos, with local clones found or made automatically), hides the base branch and
+  run mode under Advanced, and the home page explains itself when empty. Plan:
+  [`docs/plans/phase-4.md`](plans/phase-4.md).
 - [ ] Thorough crash recovery and reconciliation; safe cancellation at any stage.
 - [ ] Concurrency limits; multiple simultaneous runs across projects.
 - [ ] Stronger permission profiles; optional sandboxed execution.
