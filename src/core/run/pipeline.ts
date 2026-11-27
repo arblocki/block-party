@@ -26,7 +26,6 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
-import { DecisionDismissedError } from './wait.js';
 import { assertTransition, isResting, isTerminal } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
@@ -65,11 +64,13 @@ import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from '
 import { RunRecorder } from './recorder.js';
 import {
   askTriage,
+  awaitAnswers,
   buildFixSet,
   escalateUpheld,
   haltOnRepeatOfFixed,
   inheritRulings,
   markSpent,
+  openDecisions,
   reportNotAsked,
   settleFix,
   writeRulings,
@@ -330,7 +331,7 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
     // A continuation that failed before leaving rest: the run has not moved, so it cannot end
     // (a resting run only leaves by its own moves).
     // Offer the same question again (the final review, or the plan approval).
-    ctx.rec.reopenRestDecision(ctx.st.stage, ctx.st.title, (e as Error).message);
+    ctx.rec.reopenRestDecision(ctx.st.stage, (e as Error).message);
     return;
   }
   if (isShutdown(input.signal)) {
@@ -1221,35 +1222,23 @@ function openCiGapInfo(ctx: Ctx, failure: CiFailure, names: string): void {
 
 /** Past the CI fix budget: asks whether to try another round; `stop` or a dismissal blocks. */
 async function askCiGap(ctx: Ctx, failure: CiFailure, used: number): Promise<void> {
-  await setStage(ctx, 'awaiting_decision', 'GitHub CI keeps failing');
-  const id = ctx.rec.openDecision(
+  const [id] = await openDecisions(
+    env,
+    ctx,
     'ci_gap',
+    [
+      {
+        title: 'GitHub CI still failing',
+        body:
+          `GitHub CI still fails on ${failure.head.slice(0, 7)} after ${used} fix round(s) ` +
+          `(PR #${failure.prNumber}). Try another fix round, or stop?`,
+        options: CI_GAP_OPTIONS,
+      },
+    ],
     'GitHub CI still failing',
-    `GitHub CI still fails on ${failure.head.slice(0, 7)} after ${used} fix round(s) ` +
-      `(PR #${failure.prNumber}). Try another fix round, or stop?`,
-    attachCommand(ctx),
-    CI_GAP_OPTIONS,
   );
-  if (id === null) {
-    throw new Halt(
-      'blocked',
-      `GitHub CI still failing after ${used} fix round(s), and the run database is unavailable to ask.${describeSession(ctx)}`,
-      true,
-    );
-  }
-  let answer;
-  try {
-    answer = await ctx.rec.awaitDecision(id, ctx.input.signal);
-  } catch (e) {
-    if (e instanceof DecisionDismissedError) {
-      throw new Halt(
-        'blocked',
-        `The question about failing GitHub CI was dismissed.${describeSession(ctx)}`,
-      );
-    }
-    throw e;
-  }
-  if (answer.choice !== 'retry') {
+  const [answer] = await awaitAnswers(env, ctx, [id!]);
+  if (answer!.choice !== 'retry') {
     throw new Halt(
       'blocked',
       `Stopped at your request: GitHub CI keeps failing (PR #${failure.prNumber}).${describeSession(ctx)}`,
@@ -1518,7 +1507,7 @@ async function reopenIfResting(
     if (!restDecisionFor(st.stage)) return;
     const rec = new RunRecorder(deps.createLog(runDir), deps.store);
     rec.attach(runId);
-    rec.reopenRestDecision(st.stage, st.title, (e as Error).message);
+    rec.reopenRestDecision(st.stage, (e as Error).message);
   } catch {
     // run.json is unreadable too: nothing here can say what the run needs.
   }

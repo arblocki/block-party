@@ -52,19 +52,28 @@ export function restDecisionFor(stage: string): RestDecision | undefined {
  * resting or already has that decision open. Store only: used where there is no pipeline
  * context.
  */
-export function reopenRestDecision(runs: RunStore, runId: string, reason: string): number | null {
+export function reopenRestDecision(
+  runs: RunStore,
+  runId: string,
+  reason: string,
+  /** Where the `continuation.failed` event goes (default: the store only). */
+  record?: (type: string, payload: Record<string, unknown>) => void,
+): number | null {
   try {
     const run = runs.getRun(runId);
     const spec = run && restDecisionFor(run.stage);
     if (!run || !spec) return null;
     const open = runs.listDecisions({ runId, status: 'open' });
     if (open.some((d) => d.kind === spec.kind)) return null;
-    runs.appendEvent({
-      runId,
-      ts: new Date().toISOString(),
-      type: 'continuation.failed',
-      payload: { reason },
-    });
+    if (record) record('continuation.failed', { reason });
+    else {
+      runs.appendEvent({
+        runId,
+        ts: new Date().toISOString(),
+        type: 'continuation.failed',
+        payload: { reason },
+      });
+    }
     return runs.openDecision({
       runId,
       kind: spec.kind,

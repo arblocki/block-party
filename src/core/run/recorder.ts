@@ -15,7 +15,7 @@ import type {
 } from '../store/runs.js';
 import type { RunLog } from './events.js';
 import type { RunState } from './run-state.js';
-import { restDecisionFor } from './rest-decision.js';
+import { reopenRestDecision, restDecisionFor } from './rest-decision.js';
 import { waitForAnswer } from './wait.js';
 
 export interface RecorderOptions {
@@ -110,17 +110,16 @@ export class RunRecorder {
    * be carried out and the run is still resting: release it and open a fresh item of the same
    * kind saying why, so the person can try again.
    */
-  reopenRestDecision(stage: RunState['stage'], title: string, reason: string): void {
-    const spec = restDecisionFor(stage);
-    if (!spec) return;
-    const open = this.withRun('listDecisions', (s, runId) =>
-      s.listDecisions({ runId, status: 'open' }),
-    );
-    // One open item at a time: an earlier failure handler may have reopened it.
-    if (open?.some((d) => d.kind === spec.kind)) return;
-    this.event('continuation.failed', { reason });
+  reopenRestDecision(stage: RunState['stage'], reason: string): void {
+    if (!restDecisionFor(stage)) return;
+    if (!this.store) {
+      this.event('continuation.failed', { reason });
+      return;
+    }
     this.release();
-    this.openDecision(spec.kind, spec.title, spec.reopenedBody(title, reason), null, spec.options);
+    this.withRun('reopenRestDecision', (s, runId) =>
+      reopenRestDecision(s, runId, reason, (type, data) => this.event(type, data)),
+    );
   }
 
   /** Clears the run's owner: nothing drives a run that is resting, so reconciliation skips it. */

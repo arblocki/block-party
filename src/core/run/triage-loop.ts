@@ -125,7 +125,7 @@ function earlierRuling(ctx: Ctx, f: Finding): string | undefined {
  * Moves the run to `awaiting_decision` and opens one decision per spec. A run database that
  * cannot take them halts the run: nothing could answer, so waiting would never end.
  */
-async function openDecisions(
+export async function openDecisions(
   env: LoopEnv,
   ctx: Ctx,
   kind: DecisionKind,
@@ -147,7 +147,7 @@ async function openDecisions(
 }
 
 /** Waits for every answer; a dismissed question halts the run. */
-async function awaitAnswers(env: LoopEnv, ctx: Ctx, ids: number[]): Promise<DecisionAnswer[]> {
+export async function awaitAnswers(env: LoopEnv, ctx: Ctx, ids: number[]): Promise<DecisionAnswer[]> {
   const answers: DecisionAnswer[] = [];
   for (const id of ids) {
     try {
