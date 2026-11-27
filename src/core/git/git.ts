@@ -1,14 +1,18 @@
 import { execFile } from 'node:child_process';
 import { existsSync, realpathSync } from 'node:fs';
+import { dirname } from 'node:path';
 
 export interface GitResult {
   stdout: string;
   stderr: string;
   code: number;
 }
-export type GitRunner = (args: string[], opts: { cwd: string }) => Promise<GitResult>;
+export type GitRunner = (
+  args: string[],
+  opts: { cwd: string; timeoutMs?: number },
+) => Promise<GitResult>;
 
-export const defaultRunner: GitRunner = (args, { cwd }) =>
+export const defaultRunner: GitRunner = (args, { cwd, timeoutMs }) =>
   new Promise((resolve, reject) => {
     execFile(
       'git',
@@ -16,7 +20,7 @@ export const defaultRunner: GitRunner = (args, { cwd }) =>
       {
         cwd,
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-        timeout: 120_000,
+        timeout: timeoutMs ?? 120_000,
         maxBuffer: 64 * 1024 * 1024,
       },
       (err, stdout, stderr) => {
@@ -121,6 +125,23 @@ export function createGit(runner: GitRunner = defaultRunner) {
       const r = await runner(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], { cwd });
       const name = r.code === 0 ? r.stdout.trim().replace(/^origin\//, '') : '';
       return name || 'main';
+    },
+
+    /**
+     * Plain `git clone` of `url` into `dest` (whose parent must exist), with the user's own git
+     * credentials. Rejects with a GitError when git fails or the timeout (default 10 min) hits.
+     */
+    async clone(url: string, dest: string, timeoutMs = 600_000): Promise<void> {
+      const args = ['clone', '--', url, dest];
+      const r = await runner(args, { cwd: dirname(dest), timeoutMs });
+      if (r.code !== 0) {
+        throw new GitError(
+          `git clone failed (exit ${r.code}): ${r.stderr.trim() || r.stdout.trim()}`,
+          args,
+          r.stderr,
+          r.code,
+        );
+      }
     },
 
     async fetchBase(

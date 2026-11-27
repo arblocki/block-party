@@ -14,6 +14,7 @@ import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { registerApi, upstreamError } from './api.js';
 import type { RunManager } from './run-manager.js';
+import { registerNewRunApi, type NewRunApiDeps } from './new-run-api.js';
 import { registerRunsApi, type RunsApiDeps } from './runs-api.js';
 import { hostGuard, SESSION_COOKIE, tokenGuard, tokensMatch } from './security.js';
 
@@ -39,7 +40,9 @@ export interface AppOptions {
   /** Starts and cancels runs; without one the server cannot start runs. */
   runManager?: RunManager;
   /** Git service for registering projects (default: the real one). */
-  git?: RunsApiDeps['git'];
+  git?: NewRunApiDeps['git'];
+  /** Home directory searched for existing clones (default: the user's). */
+  homeDir?: string;
 }
 
 export function createApp(opts: AppOptions): Hono {
@@ -87,6 +90,12 @@ export function createApp(opts: AppOptions): Hono {
     ...opts.streamTiming,
     ...(opts.runManager ? { manager: opts.runManager } : {}),
     ...(opts.git ? { git: opts.git } : {}),
+  });
+  registerNewRunApi(app, {
+    runs: opts.store.runs,
+    github: opts.github,
+    ...(opts.git ? { git: opts.git } : {}),
+    ...(opts.homeDir ? { homeDir: opts.homeDir } : {}),
   });
 
   // Repository routes; `:owner/:repo` must be a valid GitHub name pair.
