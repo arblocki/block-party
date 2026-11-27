@@ -521,6 +521,31 @@ describe('run store', () => {
       expect(runs.approvePlan('r1', 5)).toBe(false);
       expect(runs.listPlans('r1')[0]!.status).toBe('draft');
     });
+
+    it('gives each run its latest plan version in one map', () => {
+      expect(runs.latestPlanVersions().size).toBe(0);
+      runs.createRun(
+        runInput(projectId, {
+          id: 'r2',
+          branch: 'bp/add-a-thing-2',
+          worktreePath: '/wt/r2',
+          runDir: '/runs/r2',
+        }),
+      );
+      runs.createRun(
+        runInput(projectId, {
+          id: 'r3',
+          branch: 'bp/add-a-thing-3',
+          worktreePath: '/wt/r3',
+          runDir: '/runs/r3',
+        }),
+      );
+      runs.addPlanVersion(plan(2));
+      runs.addPlanVersion(plan(1));
+      runs.addPlanVersion(plan(3));
+      runs.addPlanVersion(plan(1, { runId: 'r2', path: '/runs/r2/plans/v1.md' }));
+      expect(Object.fromEntries(runs.latestPlanVersions())).toEqual({ r1: 3, r2: 1 });
+    });
   });
 });
 

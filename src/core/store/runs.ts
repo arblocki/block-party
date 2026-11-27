@@ -296,6 +296,8 @@ export interface RunStore {
   approvePlan(runId: string, version: number): boolean;
   /** Ascending by version. */
   listPlans(runId: string): PlanRow[];
+  /** Each run's highest stored plan version, keyed by run id; runs without plans are absent. */
+  latestPlanVersions(): Map<string, number>;
 }
 
 interface ProjectDb {
@@ -689,6 +691,9 @@ export function createRunStore(db: Database.Database): RunStore {
   const plansByRun = db.prepare<[string], PlanDb>(
     'SELECT * FROM plans WHERE run_id = ? ORDER BY version',
   );
+  const latestPlanVersionStmt = db.prepare<[], { run_id: string; version: number }>(
+    'SELECT run_id, MAX(version) AS version FROM plans GROUP BY run_id',
+  );
 
   // SQLite treats a negative LIMIT as "no limit".
   const limitOf = (limit: number | undefined): number => limit ?? -1;
@@ -902,6 +907,9 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     listPlans(runId) {
       return plansByRun.all(runId).map(toPlan);
+    },
+    latestPlanVersions() {
+      return new Map(latestPlanVersionStmt.all().map((r) => [r.run_id, r.version]));
     },
   };
 }
