@@ -31,7 +31,11 @@ const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
   { key: 'implement', label: 'Build', kinds: ['implement'] },
   { key: 'checks', label: 'Local checks', kinds: ['checks'] },
   { key: 'review', label: 'Codex review', kinds: ['review'] },
-  { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix', 'ci-fix', 'feedback'] },
+  {
+    key: 'fix',
+    label: 'Fix',
+    kinds: ['check-fix', 'review-fix', 'ci-fix', 'feedback', 'resume-commit'],
+  },
   { key: 'publish', label: 'Open PR', kinds: ['publish'] },
   { key: 'ci', label: 'GitHub CI', kinds: ['wait-ci'] },
 ];
@@ -198,7 +202,9 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
         ? 'Sent the agent a nudge, as you asked'
         : `Agent went quiet${num('minutes') !== null ? ` for ${plural(num('minutes')!, 'minute')}` : ''}: sent it a nudge asking for a status`;
     case 'implementer.nudge_skipped':
-      return "Couldn't nudge the agent: it was busy";
+      return s('why') === "the agent's terminal has closed"
+        ? "Didn't nudge the agent: its terminal has closed"
+        : "Couldn't nudge the agent: it was busy";
     case 'implementer.nudge_failed':
       return `Could not nudge the agent${s('error') ? `: ${s('error')}` : ''}`;
     case 'implementer.stalled':
@@ -319,6 +325,14 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return 'Run cancelled; its files and branch were kept';
     case 'run.resumed':
       return 'Run resumed';
+    case 'resume.failed':
+      return `Could not resume the run${s('reason') ? `: ${s('reason')}` : ''}`;
+    case 'run.resume_asked':
+      return `Needs your decision before resuming${s('reason') ? `: ${s('reason')}` : ''}`;
+    case 'review.accepted':
+      return num('round') !== null
+        ? `Review round ${num('round')} accepted: it will not be reviewed again`
+        : 'Review accepted: it will not be reviewed again';
     case 'reconcile.pane_alive':
       return p.state === 'working'
         ? 'After a restart: the agent is still running in its terminal'

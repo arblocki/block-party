@@ -78,6 +78,32 @@ describe('mayHaveLegacyPlan', () => {
   });
 });
 
+describe('stageStrip resume-commit', () => {
+  it('counts a resume-commit turn in the Fix step', () => {
+    const strip = stageStrip(
+      [stage('implement', 'succeeded'), stage('resume-commit', 'succeeded')],
+      run('reviewing'),
+    );
+    expect(strip.find((i) => i.key === 'fix')).toMatchObject({ state: 'done', count: 1 });
+  });
+});
+
+describe('summarizeEvent resume and review events', () => {
+  const sum = (type: string, payload?: unknown) => summarizeEvent({ type, payload });
+  it('says them in plain words', () => {
+    expect(sum('resume.failed', { reason: 'no pane' })).toBe('Could not resume the run: no pane');
+    expect(sum('run.resume_asked', { reason: 'edited files' })).toBe(
+      'Needs your decision before resuming: edited files',
+    );
+    expect(sum('review.accepted', { round: 2 })).toBe(
+      'Review round 2 accepted: it will not be reviewed again',
+    );
+    expect(sum('implementer.nudge_skipped', { why: "the agent's terminal has closed" })).toBe(
+      "Didn't nudge the agent: its terminal has closed",
+    );
+  });
+});
+
 describe('stageStrip', () => {
   it('shows a completed run with every step done', () => {
     const stages = [
