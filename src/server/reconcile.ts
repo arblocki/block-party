@@ -1,4 +1,5 @@
 import { hostname as osHostname } from 'node:os';
+import { reopenRestDecision } from '../core/run/rest-decision.js';
 import { interruptedBody } from '../core/run/pipeline-helpers.js';
 import type { RunStore } from '../core/store/runs.js';
 
@@ -68,4 +69,22 @@ export function reconcileRuns(opts: ReconcileOptions): string[] {
     changed.push(run.id);
   }
   return changed;
+}
+
+/**
+ * A hard crash between answering a rest decision and leaving rest strands the run: the answer
+ * is recorded, the run still rests, and nothing is open. Reopens the question for each such
+ * run (a no-op when it is already open). Returns the ids of the runs it reopened.
+ */
+export function reopenStrandedRests(runs: RunStore): string[] {
+  const reopened: string[] = [];
+  for (const run of runs.listRuns({ resting: true })) {
+    const id = reopenRestDecision(
+      runs,
+      run.id,
+      'the server stopped before carrying out your answer',
+    );
+    if (id !== null) reopened.push(run.id);
+  }
+  return reopened;
 }

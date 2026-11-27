@@ -7,7 +7,7 @@ import type { GitHubClient } from '../core/github/types.js';
 import type { Store } from '../core/store/index.js';
 import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
-import { reconcileRuns } from './reconcile.js';
+import { reconcileRuns, reopenStrandedRests } from './reconcile.js';
 import type { RunManager } from './run-manager.js';
 import { generateToken, parseAllowedHosts } from './security.js';
 
@@ -34,6 +34,11 @@ export function startServer(opts: {
   const reconciled = reconcileRuns({ runs: opts.store.runs });
   if (reconciled.length > 0) {
     console.log(`Marked ${reconciled.length} run(s) interrupted: ${reconciled.join(', ')}`);
+  }
+  // A resting run whose answer was taken but never carried out gets its question back.
+  const reopened = reopenStrandedRests(opts.store.runs);
+  if (reopened.length > 0) {
+    console.log(`Reopened the question for ${reopened.length} resting run(s): ${reopened.join(', ')}`);
   }
   // BLOCK_PARTY_TOKEN lets `npm run dev` keep one token across tsx-watch restarts,
   // so already-open tabs don't start getting 401s.

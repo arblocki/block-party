@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openStore, type Store } from '../core/store/index.js';
 import type { RunInput } from '../core/store/runs.js';
-import { pidAlive, reconcileRuns } from './reconcile.js';
+import { pidAlive, reconcileRuns, reopenStrandedRests } from './reconcile.js';
 
 const HOST = 'this-host';
 const DEAD = 4001;
@@ -162,5 +162,30 @@ describe('pidAlive', () => {
   it('is true for this process and false for a pid that cannot exist', () => {
     expect(pidAlive(process.pid)).toBe(true);
     expect(pidAlive(2 ** 22 + 12345)).toBe(false);
+  });
+});
+
+describe('reopenStrandedRests', () => {
+  it('reopens the question of a resting run whose answer was taken, and only once', () => {
+    addRun('r20260101-cccccc', { stage: 'awaiting_review', ownerPid: null, ownerHost: null });
+    const id = store.runs.openDecision({
+      runId: 'r20260101-cccccc',
+      kind: 'final_review',
+      title: 'Ready for your review',
+      body: 'b',
+      options: [{ id: 'approve', label: 'Approve' }],
+    });
+    store.runs.answerDecision(id, { choice: 'approve', note: null });
+    expect(reopenStrandedRests(store.runs)).toEqual(['r20260101-cccccc']);
+    const open = store.runs.listDecisions({ runId: 'r20260101-cccccc', status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0]!.body).toContain('the server stopped before carrying out your answer');
+    // Already open now: nothing more to do.
+    expect(reopenStrandedRests(store.runs)).toEqual([]);
+  });
+
+  it('leaves active runs alone', () => {
+    addRun('r20260101-dddddd');
+    expect(reopenStrandedRests(store.runs)).toEqual([]);
   });
 });
