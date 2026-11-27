@@ -3,7 +3,13 @@ import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ReportObjectSchema, ReportSchema, readReport, type ReadReportResult } from './report.js';
+import {
+  ReportObjectSchema,
+  ReportSchema,
+  orderTurns,
+  readReport,
+  type ReadReportResult,
+} from './report.js';
 
 const valid = {
   status: 'done',
@@ -61,5 +67,27 @@ describe('readReport', () => {
     await writeFile(p, JSON.stringify(valid));
     const ok = await readReport(p);
     expect(ok.ok && 'report' in ok && ok.report.status).toBe('done');
+  });
+});
+
+describe('orderTurns', () => {
+  it('follows the stage rows, then the rest by kind and round', () => {
+    const reports = [
+      { kind: 'implement', round: 0 },
+      { kind: 'review-fix', round: 1 },
+      { kind: 'check-fix', round: 1 },
+      { kind: 'feedback', round: 1 },
+    ];
+    const stages = [
+      { kind: 'review-fix', round: 1 },
+      { kind: 'checks', round: 1 },
+      { kind: 'implement', round: 0 },
+    ];
+    expect(orderTurns(reports, stages)).toEqual([
+      { kind: 'review-fix', round: 1 },
+      { kind: 'implement', round: 0 },
+      { kind: 'check-fix', round: 1 },
+      { kind: 'feedback', round: 1 },
+    ]);
   });
 });

@@ -84,7 +84,7 @@ function Strip({
           <span className="text-xs">
             {i.state}
             {i.count > 1 ? ` x${i.count}` : ''}
-            {i.met ? ` · ${i.met.met}/${i.met.total}` : ''}
+            {i.met ? ` · criteria ${i.met.met}/${i.met.total}` : ''}
           </span>
         </li>
       ))}

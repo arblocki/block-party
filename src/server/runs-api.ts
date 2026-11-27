@@ -383,19 +383,20 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
 
   /**
    * Each approved-plan criterion with the newest implementer report entry that mentions it.
-   * Report entries matching no criterion follow, marked `extra`. Throws OutsideRunDirError.
+   * Report entries matching no criterion follow, marked `extra`. A report that lies outside
+   * the run directory is never read and is named in `skipped`. Throws for the plan only.
    */
   const acceptanceOf = (run: RunRow) => {
     const plans = runs.listPlans(run.id);
     // Only an approved plan has criteria; a run from before plan rows has just its file.
     const path = plans.length > 0 ? plans.find((p) => p.status === 'approved')?.path : run.planPath;
-    if (!path) return [];
+    if (!path) return { criteria: [], skipped: [] };
     let planText: string;
     try {
       planText = readInsideRunDir(run.runDir, path);
     } catch (e) {
       if (e instanceof OutsideRunDirError) throw e;
-      return [];
+      return { criteria: [], skipped: [] };
     }
     const parsed = parsePlan(planText);
     const criteria = parsed.ok ? parsed.plan.acceptanceCriteria : [];
@@ -405,6 +406,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     } catch {
       // No reports yet.
     }
+    const skipped: string[] = [];
     const turns: { kind: string; round: number; entries: Report['acceptance'] }[] = [];
     for (const name of names) {
       const m = /^(.+)-(\d+)\.json$/.exec(name);
@@ -413,7 +415,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       try {
         raw = readJsonInside(run.runDir, `reports/${name}`);
       } catch (e) {
-        if (e instanceof OutsideRunDirError) throw e;
+        if (e instanceof OutsideRunDirError) skipped.push(name);
         continue;
       }
       const report = ReportSchema.safeParse(raw);
@@ -429,7 +431,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       }
     }
     const planned = new Set(criteria.map(normalize));
-    return [
+    const list = [
       ...criteria.map((criterion) => {
         const hit = latest.get(normalize(criterion));
         return hit
@@ -438,13 +440,14 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       }),
       ...[...latest].filter(([key]) => !planned.has(key)).map(([, e]) => ({ ...e, extra: true })),
     ];
+    return { criteria: list, skipped };
   };
 
   app.get('/api/runs/:id/acceptance', (c) => {
     const run = runOf(c);
     if (run instanceof Response) return run;
     try {
-      return c.json({ criteria: acceptanceOf(run) });
+      return c.json(acceptanceOf(run));
     } catch (e) {
       if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
       throw e;

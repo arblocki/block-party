@@ -99,4 +99,35 @@ describe('evidenceFor', () => {
     expect(ev.ci).toBe('none');
     expect(ev.stale.ci).toEqual({ sha: OLD, state: 'failure' });
   });
+
+  it('does not call a blocked publish pending', () => {
+    const ev = evidenceFor(HEAD, [stage('publish', 'blocked', { headSha: HEAD }, null)]);
+    expect(ev.ci).toBe('none');
+  });
+
+  it('shows a timed-out and a cancelled wait-ci distinctly', () => {
+    const publish = stage('publish', 'succeeded', { headSha: HEAD }, { prNumber: 1 });
+    const timedOut = stage(
+      'wait-ci',
+      'blocked',
+      { prNumber: 1, headSha: HEAD },
+      { state: 'timeout' },
+    );
+    const cancelled = stage('wait-ci', 'cancelled', { prNumber: 1, headSha: HEAD }, null);
+    expect(evidenceFor(HEAD, [publish, timedOut]).ci).toBe('timeout');
+    expect(evidenceFor(HEAD, [publish, cancelled]).ci).toBe('error');
+    expect(headLine(evidenceFor(HEAD, [publish, timedOut]))).toContain('GitHub CI timed out');
+  });
+
+  it('keeps pending for a running wait-ci and a succeeded publish with no wait yet', () => {
+    const publish = stage('publish', 'succeeded', { headSha: HEAD }, null);
+    expect(evidenceFor(HEAD, [publish]).ci).toBe('pending');
+    const running = stage('wait-ci', 'running', { prNumber: 1, headSha: HEAD }, null);
+    expect(evidenceFor(HEAD, [publish, running]).ci).toBe('pending');
+  });
+
+  it('has no stale entries without a head', () => {
+    const ev = evidenceFor(null, [checks(OLD, true), review(OLD, 1, 0)]);
+    expect(ev).toEqual({ head: null, checks: 'none', review: null, ci: 'none', stale: {} });
+  });
 });

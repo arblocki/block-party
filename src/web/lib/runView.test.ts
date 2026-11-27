@@ -207,7 +207,14 @@ describe('summarizeEvent', () => {
 });
 
 describe('stageStrip met criteria', () => {
-  it('puts the met count on the Implement and Fix cells that ran', () => {
+  it('puts the count on the Fix cell when a fix ran', () => {
+    const stages = [stage('implement', 'succeeded'), stage('review-fix', 'succeeded')];
+    const strip = stageStrip(stages, run('checking'), { met: 5, total: 7 });
+    expect(strip.find((i) => i.key === 'fix')!.met).toEqual({ met: 5, total: 7 });
+    expect(strip.find((i) => i.key === 'implement')!.met).toBeUndefined();
+  });
+
+  it('puts the count on the Implement cell when no fix ran', () => {
     const stages = [stage('implement', 'succeeded'), stage('checks', 'succeeded')];
     const strip = stageStrip(stages, run('checking'), { met: 5, total: 7 });
     expect(strip.find((i) => i.key === 'implement')!.met).toEqual({ met: 5, total: 7 });

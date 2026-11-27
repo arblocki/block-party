@@ -6,12 +6,12 @@ export interface HeadEvidence {
   checks: 'passed' | 'failed' | 'none';
   /** The latest finished review of the current head. */
   review: { round: number; blocking: number; open: number } | null;
-  ci: 'success' | 'failure' | 'no_ci' | 'pending' | 'none';
+  ci: CiState | 'none';
   /** Evidence that exists only for older heads. */
   stale: {
     checks?: { sha: string; passed: boolean };
     review?: { round: number; sha: string; blocking: number };
-    ci?: { sha: string; state: 'success' | 'failure' | 'no_ci' | 'pending' };
+    ci?: { sha: string; state: CiState };
   };
 }
 
@@ -27,15 +27,15 @@ const sha = (v: unknown): string | null => {
       : null;
 };
 
-type CiState = 'success' | 'failure' | 'no_ci' | 'pending';
+export type CiState = 'success' | 'failure' | 'no_ci' | 'pending' | 'timeout' | 'error';
 
+/** A running wait is pending; a finished one without a known result (cancelled, cut off) is an error. */
 const ciOf = (s: StageRow): CiState => {
   const state = record(s.output).state;
-  return s.state === 'running'
-    ? 'pending'
-    : state === 'success' || state === 'failure' || state === 'no_ci'
-      ? state
-      : 'pending';
+  if (state === 'success' || state === 'failure' || state === 'no_ci' || state === 'timeout') {
+    return state;
+  }
+  return s.state === 'running' ? 'pending' : 'error';
 };
 
 /**
@@ -59,10 +59,16 @@ export function evidenceFor(
   const checksDone = (s: StageRow) => typeof record(s.output).passed === 'boolean';
   const checks = latest('checks', checksDone);
   const reviews = latest('review', (s) => s.state !== 'running' && s.output != null);
-  const publishes = latest('publish', () => true);
+  // A publish that did not succeed (blocked, failed) opened no PR to wait on.
+  const publishes = latest(
+    'publish',
+    (s) => s.state === 'succeeded' || typeof record(s.output).prNumber === 'number',
+  );
   const waits = latest('wait-ci', () => true);
 
   const out: HeadEvidence = { head, checks: 'none', review: null, ci: 'none', stale: {} };
+  // Without a head (still planning) nothing is stale either.
+  if (head === null) return out;
 
   if (checks.now) out.checks = record(checks.now.output).passed === true ? 'passed' : 'failed';
   else if (checks.older) {
@@ -109,6 +115,8 @@ const CI_TEXT: Record<HeadEvidence['ci'], string> = {
   failure: 'GitHub CI failed',
   no_ci: 'no GitHub CI',
   pending: 'GitHub CI pending',
+  timeout: 'GitHub CI timed out',
+  error: 'GitHub CI did not finish',
   none: 'not published',
 };
 

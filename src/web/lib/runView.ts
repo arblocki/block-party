@@ -34,6 +34,11 @@ export function stageStrip(
   met: { met: number; total: number } | null = null,
 ): StripItem[] {
   const finished = isTerminal(run.stage);
+  // The count sits on the latest cell that produced reports: Fix if one ran, else Implement.
+  const ran = (key: StripItem['key']) =>
+    stages.some((s) => STRIP.find((x) => x.key === key)!.kinds.includes(s.kind));
+  const metKey =
+    met && met.total > 0 ? (ran('fix') ? 'fix' : ran('implement') ? 'implement' : null) : null;
   return STRIP.map(({ key, label, kinds }) => {
     const execs = stages.filter((s) => kinds.includes(s.kind));
     const last = execs.at(-1);
@@ -41,9 +46,7 @@ export function stageStrip(
     if (!last) state = run.stage === 'complete' ? 'skipped' : 'pending';
     else if (execs.some((s) => s.state === 'running')) state = finished ? 'stopped' : 'running';
     else state = last.state === 'succeeded' ? 'done' : (last.state as StripState);
-    const counted =
-      met && met.total > 0 && execs.length > 0 && (key === 'implement' || key === 'fix');
-    return { key, label, state, count: execs.length, ...(counted ? { met } : {}) };
+    return { key, label, state, count: execs.length, ...(key === metKey && met ? { met } : {}) };
   });
 }
 

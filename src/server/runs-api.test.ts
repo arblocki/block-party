@@ -708,6 +708,7 @@ describe('run plan and findings', () => {
       );
       const body = await json(`/api/runs/${RUN_A}/acceptance`);
       expect(body).toEqual({
+        skipped: [],
         criteria: [
           {
             criterion: 'Widgets exist',
@@ -756,7 +757,7 @@ describe('run plan and findings', () => {
         createdBy: 'agent',
         status: 'draft',
       });
-      expect(await json(`/api/runs/${RUN_A}/acceptance`)).toEqual({ criteria: [] });
+      expect(await json(`/api/runs/${RUN_A}/acceptance`)).toEqual({ criteria: [], skipped: [] });
     });
 
     it('lists unverified criteria when a report is invalid', async () => {
@@ -768,12 +769,20 @@ describe('run plan and findings', () => {
       expect(body.criteria.map((c) => c.status)).toEqual(['unverified', 'unverified']);
     });
 
-    it('refuses a report that links outside the run directory', async () => {
+    it('skips a report that links outside the run directory and names it', async () => {
       addRun();
       writeFileSync(join(outside, 'r.json'), report([entry('Widgets exist', 'met')]));
       symlinkSync(join(outside, 'r.json'), join(dir, 'reports', 'implement-0.json'));
-      const res = await req(`/api/runs/${RUN_A}/acceptance`);
-      expect(res.status).toBe(403);
+      writeFileSync(
+        join(dir, 'reports', 'review-fix-1.json'),
+        report([entry('Widgets are blue', 'met')]),
+      );
+      const body = (await json(`/api/runs/${RUN_A}/acceptance`)) as {
+        criteria: { status: string }[];
+        skipped: string[];
+      };
+      expect(body.skipped).toEqual(['implement-0.json']);
+      expect(body.criteria.map((c) => c.status)).toEqual(['unverified', 'met']);
     });
   });
 
