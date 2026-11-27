@@ -1,4 +1,5 @@
 import { createServer, type Server } from 'node:http';
+import net from 'node:net';
 import { getRequestListener } from '@hono/node-server';
 import type { AddressInfo } from 'node:net';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -25,6 +26,8 @@ class FakePty implements PtyLike {
   written: string[] = [];
   resizes: [number, number][] = [];
   killed = 0;
+  paused = 0;
+  resumed = 0;
   private data: ((d: string) => void)[] = [];
   private exit: (() => void)[] = [];
   constructor(
@@ -46,6 +49,12 @@ class FakePty implements PtyLike {
   }
   kill() {
     this.killed += 1;
+  }
+  pause() {
+    this.paused += 1;
+  }
+  resume() {
+    this.resumed += 1;
   }
   emit(d: string) {
     this.data.forEach((f) => f(d));
@@ -78,8 +87,9 @@ class FakeHost implements TerminalHost {
   attachCommand(p: PaneRef) {
     return `herdr --session ${p.session}`;
   }
-  attachArgv(p: PaneRef) {
-    return ['fake-herdr', '--session', p.session, '--pane', p.label];
+  async attachArgv(p: PaneRef) {
+    if (!this.alive) throw new Error('gone');
+    return ['fake-herdr', '--session', p.session, 'terminal', 'attach', `term-of-${p.label}`];
   }
   async list() {
     return [];
@@ -257,6 +267,50 @@ describe('terminal websocket: who may connect', () => {
     const other = connect('/api/other');
     expect((await other.closed).opened).toBe(false);
   });
+
+  it('survives a malformed percent-encoded path: no crash, no spawn', async () => {
+    // Without a token the request is refused; with one it is just an unknown run.
+    const bad = '/api/runs/%E0%A4%A/terminal';
+    const refusedReply = await new Promise<string>((resolve) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(
+          `GET ${bad} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nConnection: Upgrade\r\n` +
+            'Upgrade: websocket\r\nSec-WebSocket-Version: 13\r\n' +
+            'Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n',
+        );
+      });
+      let got = '';
+      sock.on('data', (d) => (got += d.toString()));
+      sock.on('close', () => resolve(got));
+      sock.on('error', () => {});
+    });
+    expect(refusedReply).not.toContain('101 Switching');
+    const c = connect(bad);
+    expect((await c.closed).code).toBe(4404);
+    expect(ptys).toEqual([]);
+    const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      headers: { [TOKEN_HEADER]: TOKEN },
+    });
+    expect(health.status).toBe(200);
+  });
+
+  it('answers a refusal with the proper status text', async () => {
+    const reply = await new Promise<string>((resolve) => {
+      const sock = net.connect(port, '127.0.0.1', () => {
+        sock.write(
+          `GET /api/runs/${RUN}/terminal HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\n` +
+            'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\n' +
+            `Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nOrigin: http://evil.example\r\n` +
+            `x-block-party-token: ${TOKEN}\r\n\r\n`,
+        );
+      });
+      let got = '';
+      sock.on('data', (d) => (got += d.toString()));
+      sock.on('close', () => resolve(got));
+      sock.on('error', () => {});
+    });
+    expect(reply.startsWith('HTTP/1.1 403 Forbidden')).toBe(true);
+  });
 });
 
 describe('terminal websocket: which runs have a terminal', () => {
@@ -266,7 +320,7 @@ describe('terminal websocket: which runs have a terminal', () => {
 
   it('closes 4404 for an unknown run', async () => {
     const c = connect('/api/runs/nope/terminal');
-    expect(await c.closed).toMatchObject({ code: 4404, reason: 'run not found' });
+    expect(await c.closed).toMatchObject({ code: 4404, reason: "This run doesn't exist." });
     expect(ptys).toEqual([]);
   });
 
@@ -276,7 +330,7 @@ describe('terminal websocket: which runs have a terminal', () => {
     const c = connect();
     const r = await c.closed;
     expect(r.code).toBe(4404);
-    expect(r.reason).toContain('headless');
+    expect(r.reason).toBe("This run's agent doesn't run in a terminal.");
     expect(ptys).toEqual([]);
   });
 
@@ -298,7 +352,7 @@ describe('terminal websocket: which runs have a terminal', () => {
   it('shows the planner while planning and the implementer otherwise', async () => {
     seedRun({ stage: 'planning' });
     const c = await ready();
-    expect(ptys[0]?.args).toContain('bp-plan');
+    expect(ptys[0]?.args).toContain('term-of-bp-plan');
     c.ws.close();
     await c.closed;
   });
@@ -314,7 +368,7 @@ describe('terminal websocket: the pty', () => {
     const c = await ready();
     const p = ptys[0]!;
     expect(p.file).toBe('fake-herdr');
-    expect(p.args).toEqual(['--session', 'block-party', '--pane', 'bp-impl']);
+    expect(p.args).toEqual(['--session', 'block-party', 'terminal', 'attach', 'term-of-bp-impl']);
     expect(p.opts.cwd).toBe('/wt/a');
     expect(p.opts.env).toEqual({ PATH: '/bin', HOME: '/h', TERM: 'xterm-256color' });
     c.ws.close();
@@ -328,7 +382,13 @@ describe('terminal websocket: the pty', () => {
     await sleep(30);
     expect(ptys).toHaveLength(1);
     expect(ptys[0]?.file).toBe('fake-herdr');
-    expect(ptys[0]?.args).toEqual(['--session', 'block-party', '--pane', 'bp-impl']);
+    expect(ptys[0]?.args).toEqual([
+      '--session',
+      'block-party',
+      'terminal',
+      'attach',
+      'term-of-bp-impl',
+    ]);
     c.ws.close();
     await c.closed;
   });
@@ -380,6 +440,28 @@ describe('terminal websocket: the pty', () => {
     expect(host.closed).toEqual([]);
   });
 
+  it('tells a second viewer when herdr already has a writable client', async () => {
+    const c = await ready();
+    ptys[0]!.emit('herdr: terminal term_x already has an attached client; retry with --takeover\n');
+    ptys[0]!.end();
+    const r = await c.closed;
+    expect(r.code).toBe(4429);
+    expect(r.reason).toContain('already open');
+  });
+
+  it('pauses the pty while the viewer is far behind and resumes when it drains', async () => {
+    const c = await ready();
+    c.ws.pause();
+    ptys[0]!.emit('x'.repeat(8 * 1024 * 1024));
+    await sleep(100);
+    expect(ptys[0]!.paused).toBe(1);
+    expect(ptys[0]!.resumed).toBe(0);
+    c.ws.resume();
+    for (let i = 0; i < 100 && ptys[0]!.resumed === 0; i++) await sleep(20);
+    expect(ptys[0]!.resumed).toBe(1);
+    c.ws.close();
+  });
+
   it('closes the socket when the pty exits', async () => {
     const c = await ready();
     ptys[0]!.end();
@@ -389,9 +471,19 @@ describe('terminal websocket: the pty', () => {
 });
 
 describe('terminal websocket: limits', () => {
-  it('allows two terminals per run and refuses a third', async () => {
+  it('allows one terminal per run by default (herdr gives one client the input)', async () => {
     seedRun();
     await start();
+    const a = await ready();
+    const c = connect();
+    expect(await c.closed).toMatchObject({ code: 4429 });
+    expect(ptys).toHaveLength(1);
+    a.ws.close();
+  });
+
+  it('allows two terminals per run when configured and refuses a third', async () => {
+    seedRun();
+    await start({ limits: { perRun: 2 } });
     const a = await ready();
     const b = await ready();
     const c = connect();
@@ -447,7 +539,7 @@ describe('terminal websocket: node-pty unavailable', () => {
     const c = connect();
     const r = await c.closed;
     expect(r.code).toBe(4501);
-    expect(r.reason).toBe('Embedded terminal unavailable: native build missing');
+    expect(r.reason).toBe('native build missing');
     const health = await fetch(`http://127.0.0.1:${port}/api/health`, {
       headers: { [TOKEN_HEADER]: TOKEN },
     });

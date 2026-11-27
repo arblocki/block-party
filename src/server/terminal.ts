@@ -1,5 +1,5 @@
-import { chmodSync } from 'node:fs';
-import type { IncomingMessage, Server } from 'node:http';
+import { accessSync, chmodSync, constants } from 'node:fs';
+import { STATUS_CODES, type IncomingMessage, type Server } from 'node:http';
 import { createRequire } from 'node:module';
 import type { Duplex } from 'node:stream';
 import type { Hono } from 'hono';
@@ -17,6 +17,9 @@ export interface PtyLike {
   write(data: string): void;
   resize(cols: number, rows: number): void;
   kill(): void;
+  /** Stop and restart reading output (flow control for a slow viewer). */
+  pause?(): void;
+  resume?(): void;
 }
 
 export type PtyFactory = (
@@ -29,16 +32,31 @@ export type PtyFactory = (
 export type PtyLoader = () => Promise<PtyFactory>;
 
 /**
- * pnpm installs node-pty's prebuilt `spawn-helper` without its exec bit, which makes every
- * spawn fail with "posix_spawnp failed". Set it before the first spawn.
+ * node-pty 1.1.0 ships a prebuilt `spawn-helper`, and pnpm installs it without the exec bit,
+ * so every spawn fails with "posix_spawnp failed". Set the bit before the first spawn; if that
+ * can't be done and the file still isn't executable, say what to run.
  */
 function fixSpawnHelper(): void {
+  let helper: string;
   try {
     const req = createRequire(import.meta.url);
     const dir = req.resolve('node-pty/package.json').replace(/package\.json$/, '');
-    chmodSync(`${dir}prebuilds/${process.platform}-${process.arch}/spawn-helper`, 0o755);
+    helper = `${dir}prebuilds/${process.platform}-${process.arch}/spawn-helper`;
+    accessSync(helper);
   } catch {
-    // Not a prebuilt install (or Windows): nothing to fix.
+    return; // Not a prebuilt install (compiled from source, or Windows): nothing to fix.
+  }
+  try {
+    accessSync(helper, constants.X_OK);
+    return;
+  } catch {
+    // fall through to chmod
+  }
+  try {
+    chmodSync(helper, 0o755);
+    accessSync(helper, constants.X_OK);
+  } catch {
+    throw new Error(`node-pty's spawn-helper isn't executable: run chmod +x ${helper}`);
   }
 }
 
@@ -52,12 +70,16 @@ export const loadNodePty: PtyLoader = async () => {
   return (file, args, opts) => spawn(file, args, { name: 'xterm-256color', ...opts });
 };
 
-export const TERMINAL_LIMITS = { perRun: 2, total: 8, idleMs: 30 * 60 * 1000 } as const;
+/** One writable viewer per terminal: herdr gives input and resize to a single attached client. */
+export const TERMINAL_LIMITS = { perRun: 1, total: 8, idleMs: 30 * 60 * 1000 } as const;
 const MIN_SIZE = 1;
 const MAX_SIZE = 500;
 const DEFAULT_SIZE = { cols: 80, rows: 24 };
 /** Messages a client may send while the pty is still starting. */
 const MAX_QUEUED = 64;
+/** Pause the pty when this much output is waiting to be sent; resume once it drains. */
+const HIGH_WATER = 1024 * 1024;
+const LOW_WATER = 256 * 1024;
 
 export interface TerminalDeps {
   runs: Pick<RunStore, 'getRun'>;
@@ -79,7 +101,8 @@ export interface TerminalEndpoint {
   closeAll(): void;
 }
 
-const TERMINAL_PATH = /^\/api\/runs\/([^/?]+)\/terminal(?:\?.*)?$/;
+const TERMINAL_PATH = /^\/api\/runs\/[^/?]+\/terminal(?:\?.*)?$/;
+const RUN_ID_HEADER = 'x-terminal-run-id';
 
 /** A `{ type: 'resize', cols, rows }` frame: the parsed size, 'invalid', or null if not one. */
 function parseResize(text: string): { cols: number; rows: number } | 'invalid' | null {
@@ -139,7 +162,7 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
     let idle: NodeJS.Timeout | undefined;
     const arm = () => {
       clearTimeout(idle);
-      idle = setTimeout(() => end(4408, 'idle for 30 minutes'), idleMs);
+      idle = setTimeout(() => end(4408, 'Closed after 30 minutes without activity.'), idleMs);
       idle.unref?.();
     };
     const release = () => {
@@ -171,11 +194,11 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
 
     // The slot is taken before any await, so racing connections cannot exceed the limits.
     if (open >= total) {
-      ws.close(4429, `too many open terminals (${total})`);
+      ws.close(4429, `Too many terminals are open (${total}). Close one and try again.`);
       return;
     }
     if ((perRunCount.get(runId) ?? 0) >= perRun) {
-      ws.close(4429, `this run already has ${perRun} terminals open`);
+      ws.close(4429, "This run's terminal is already open in another tab or window.");
       return;
     }
     open += 1;
@@ -218,32 +241,39 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
     void (async () => {
       try {
         const run = deps.runs.getRun(runId);
-        if (!run) return end(4404, 'run not found');
+        if (!run) return end(4404, "This run doesn't exist.");
         let state: RunState;
         try {
           state = await loadState(run.runDir);
         } catch {
-          return end(4404, 'this run has no terminal session');
+          return end(4404, 'This run has no agent session yet.');
         }
         const label = livePaneLabel(run.stage, state);
-        if (!label) return end(4404, 'this run has no live terminal (headless run)');
+        if (!label) return end(4404, "This run's agent doesn't run in a terminal.");
         const pane: PaneRef = { session, label, cwd: run.worktreePath };
         let alive = false;
         try {
           alive = await deps.host.isAlive(pane);
         } catch {
-          return end(4404, 'the terminal host is not reachable');
+          return end(4404, "Couldn't reach the terminal app (herdr).");
         }
-        if (!alive) return end(4404, 'the agent session is not running');
+        if (!alive) return end(4404, "The agent session isn't running.");
         let spawn: PtyFactory;
         try {
           spawn = await factory();
         } catch (e) {
-          return end(4501, `Embedded terminal unavailable: ${(e as Error).message}`);
+          return end(4501, (e as Error).message);
         }
         if (closed) return;
         // The command comes from the host adapter and the recorded pane, never the client.
-        const [file, ...args] = deps.host.attachArgv(pane);
+        let argv: string[];
+        try {
+          argv = await deps.host.attachArgv(pane);
+        } catch {
+          return end(4404, "The agent session isn't running.");
+        }
+        if (closed) return;
+        const [file, ...args] = argv;
         const env: Record<string, string> = {};
         for (const [k, v] of Object.entries(deps.env?.() ?? cleanHerdrEnv())) {
           if (v !== undefined) env[k] = v;
@@ -253,19 +283,38 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
         try {
           p = spawn(file as string, args, { ...DEFAULT_SIZE, cwd: run.worktreePath, env });
         } catch (e) {
-          return end(4501, `Embedded terminal unavailable: ${(e as Error).message}`);
+          return end(4501, (e as Error).message);
         }
         proc = p;
         arm();
+        let head = '';
+        let paused: NodeJS.Timeout | undefined;
         p.onData((d) => {
+          if (head.length < 2048) head += d;
           if (ws.readyState !== ws.OPEN) return;
           arm();
           ws.send(d);
+          if (ws.bufferedAmount > HIGH_WATER && !paused && p.pause) {
+            p.pause();
+            paused = setInterval(() => {
+              if (ws.bufferedAmount > LOW_WATER && ws.readyState === ws.OPEN) return;
+              clearInterval(paused);
+              paused = undefined;
+              p.resume?.();
+            }, 50);
+            paused.unref?.();
+            ws.once('close', () => clearInterval(paused));
+          }
         });
-        p.onExit(() => end(1000, 'terminal ended'));
+        p.onExit(() =>
+          // herdr refuses a second writable client and exits at once, saying so.
+          /already has an attached client/.test(head)
+            ? end(4429, 'This agent is already open in another terminal (maybe your own herdr).')
+            : end(1000, 'The terminal session ended.'),
+        );
         queue.splice(0).forEach((d, i) => handle(d, pendingBinary[i] ?? false));
       } catch (e) {
-        end(4500, `terminal failed: ${(e as Error).message}`);
+        end(4500, `The terminal failed: ${(e as Error).message}`);
       }
     })();
   }
@@ -274,30 +323,30 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
     register(app) {
       // Only reached by plain HTTP (a WebSocket upgrade is answered by `upgrade`, which runs
       // the request through this route for the host, origin and token checks first).
-      app.get('/api/runs/:id/terminal', (c) => c.text('WebSocket upgrade required', 426));
+      app.get('/api/runs/:id/terminal', (c) => {
+        c.header(RUN_ID_HEADER, c.req.param('id'));
+        return c.text('WebSocket upgrade required', 426);
+      });
     },
 
     upgrade(app, req, socket, head) {
-      const m = TERMINAL_PATH.exec(req.url ?? '');
-      if (!m) return false;
-      const runId = decodeURIComponent(m[1] as string);
-      const headers = new Headers();
-      for (const [k, v] of Object.entries(req.headers)) {
-        if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
-      }
-      const host = req.headers.host ?? 'localhost';
+      if (!TERMINAL_PATH.test(req.url ?? '')) return false;
       void (async () => {
         try {
-          const res = await app.fetch(
-            new Request(`http://${host}/api/runs/${encodeURIComponent(runId)}/terminal`, {
-              headers,
-            }),
-          );
+          const headers = new Headers();
+          for (const [k, v] of Object.entries(req.headers)) {
+            if (v !== undefined) headers.set(k, Array.isArray(v) ? v.join(', ') : v);
+          }
+          const host = req.headers.host ?? 'localhost';
+          // The raw path goes through untouched (no decoding here); Hono reads the run id.
+          const path = (req.url ?? '').split('?')[0];
+          const res = await app.fetch(new Request(`http://${host}${path}`, { headers }));
+          const runId = res.headers.get(RUN_ID_HEADER);
           // 426 means the guards passed and the route is the terminal one.
-          if (res.status !== 426) {
+          if (res.status !== 426 || runId === null) {
             const body = await res.text();
             socket.end(
-              `HTTP/1.1 ${res.status} ${res.status === 401 ? 'Unauthorized' : 'Forbidden'}\r\n` +
+              `HTTP/1.1 ${res.status} ${STATUS_CODES[res.status] ?? 'Error'}\r\n` +
                 `Content-Type: ${res.headers.get('content-type') ?? 'text/plain'}\r\n` +
                 `Content-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`,
             );
@@ -320,6 +369,10 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
 /** Routes the server's HTTP upgrades to the terminal endpoint; any other upgrade is refused. */
 export function attachTerminalUpgrade(server: Server, app: Hono, term: TerminalEndpoint): void {
   server.on('upgrade', (req, socket, head) => {
-    if (!term.upgrade(app, req, socket, head)) socket.destroy();
+    try {
+      if (!term.upgrade(app, req, socket, head)) socket.destroy();
+    } catch {
+      socket.destroy();
+    }
   });
 }

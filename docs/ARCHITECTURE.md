@@ -840,10 +840,10 @@ Test coverage), each a different stage list on the same engine.
   like every other endpoint: Host/Origin guard, then the session token (the cookie, since
   browsers can't set headers on a WebSocket; a cookie-only request must be same-origin). It
   spawns, through `node-pty` and with no shell, only the argv that the terminal host builds
-  from the run's recorded pane (`TerminalHost.attachArgv`), in the run's worktree with the
+  from the run's recorded pane (`TerminalHost.attachArgv`, which targets that one pane), in the run's worktree with the
   agent-scrubbed environment. Nothing the client sends (path, query, messages) reaches the
-  argv; a message is typed input or a validated `resize` (1-500). At most 2 terminals per
-  run and 8 in total, closed after 30 minutes idle. Closing the socket kills only the
+  argv; a message is typed input or a validated `resize` (1-500). At most 1 terminal per
+  run (herdr gives one client the input) and 8 in total, closed after 30 minutes idle. Closing the socket kills only the
   attached client, so the pane and the agent keep running. Typing into it is typing into
   the agent, so it is exactly as trusted as the token. If `node-pty` can't load, the server
   runs and the panel falls back to the copy-and-paste attach command.

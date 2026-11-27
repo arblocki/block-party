@@ -75,7 +75,7 @@ class FakeHost implements TerminalHost {
   attachCommand(p: PaneRef) {
     return `herdr attach ${p.label}`;
   }
-  attachArgv(p: PaneRef) {
+  async attachArgv(p: PaneRef) {
     return ['herdr', '--session', p.session];
   }
   listGate?: Promise<void>;

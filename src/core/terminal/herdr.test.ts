@@ -242,6 +242,26 @@ describe('createHerdrHost', () => {
     });
   });
 
+  it('attachArgv targets the run pane own terminal, not the session or another pane', async () => {
+    fake.on('pane.list', {
+      panes: [
+        { pane_id: 'w1:p1', terminal_id: 'term_other', label: 'other', cwd },
+        { pane_id: 'w2:p1', terminal_id: 'term_run', label: 'bp-run-impl', cwd },
+      ],
+    });
+    const host = createHerdrHost({ session: 'bp-x', client: sock() });
+    expect(await host.attachArgv(pane)).toEqual([
+      'herdr',
+      '--session',
+      'bp-x',
+      'terminal',
+      'attach',
+      'term_run',
+    ]);
+    fake.on('pane.list', { panes: [] });
+    await expect(host.attachArgv(pane)).rejects.toThrow(/no pane labelled/);
+  });
+
   it('read, agentState, list, attachCommand', async () => {
     fake.on('pane.list', paneList('w1:p1'));
     fake.on('pane.read', { read: { text: 'hi\n' } });
@@ -259,8 +279,6 @@ describe('createHerdrHost', () => {
     expect(await host.list()).toEqual([pane]);
     expect(host.attachCommand(pane)).toContain('herdr --session bp-x');
     expect(host.attachCommand(pane)).toContain('bp-run-impl');
-    // An argv for a pty, with the session only ever taken from the pane (no shell string).
-    expect(host.attachArgv(pane)).toEqual(['herdr', '--session', 'bp-x']);
   });
 
   it('isAlive is false when the pane is gone or the server is down; close is a no-op then', async () => {

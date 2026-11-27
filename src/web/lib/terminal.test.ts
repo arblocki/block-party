@@ -93,6 +93,7 @@ describe('closeNotice', () => {
     expect(closeNotice(4408, 'idle', true).message).toContain('30 minutes');
     expect(closeNotice(1006, '', true).message).toContain('lost');
     expect(closeNotice(1006, '', false).kind).toBe('unavailable');
+    expect(closeNotice(1006, '', false).message).toContain('refused the connection');
   });
 });
 

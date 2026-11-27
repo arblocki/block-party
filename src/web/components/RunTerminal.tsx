@@ -22,9 +22,11 @@ const readCssVar = (name: string): string =>
  */
 export default function RunTerminal({
   runId,
+  role,
   onClosed,
 }: {
   runId: string;
+  role: 'planner' | 'implementer';
   onClosed: (notice: CloseNotice) => void;
 }) {
   const host = useRef<HTMLDivElement>(null);
@@ -109,7 +111,8 @@ export default function RunTerminal({
   return (
     <div>
       <p className="mb-2 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning">
-        You&apos;re typing into the agent&apos;s session. It sees what you type.
+        You&apos;re typing into the {role} for this run. It sees what you type. Opening this may
+        resize the session to fit this window.
       </p>
       <div className="mb-2 flex items-center gap-3 text-sm text-muted">
         <span role="status">

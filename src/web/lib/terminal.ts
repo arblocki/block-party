@@ -13,6 +13,7 @@ export interface LiveSession {
  * implementer's. Only a session that runs in a terminal ("pane" mode) counts, and not for a
  * finished run. The server makes the final call (the agent may have stopped).
  */
+
 export function liveSession(stage: RunStage, events: readonly RunEvent[]): LiveSession | null {
   if (isTerminal(stage)) return null;
   const type = stage === 'planning' ? 'planner.session' : 'implementer.session';
@@ -55,7 +56,7 @@ export function closeNotice(code: number, reason: string, opened: boolean): Clos
     return { kind: 'ended', message: 'Disconnected after 30 minutes without activity.' };
   }
   if (code === 4501 || code === 4404 || code === 4429 || code === 4500) {
-    const text = why || 'it could not be started';
+    const text = why || 'it could not be started.';
     return {
       kind: 'unavailable',
       message: text.startsWith('Embedded terminal unavailable')
@@ -68,7 +69,7 @@ export function closeNotice(code: number, reason: string, opened: boolean): Clos
     : {
         kind: 'unavailable',
         message:
-          'Embedded terminal unavailable: could not connect. Reload the page and sign in again if this keeps happening.',
+          "Embedded terminal unavailable: the server refused the connection. This can happen if your browser didn't send its same-origin header or your sign-in has expired. Reload the page, and open block-party at the address it printed when it started.",
       };
 }
 

@@ -22,9 +22,10 @@ export interface TerminalHost {
   close(pane: PaneRef): Promise<void>;
   attachCommand(pane: PaneRef): string;
   /**
-   * The argv (no shell) that attaches a terminal to the pane's host session. Built only from
-   * the pane's own session name, never from client input.
+   * The argv (no shell) that attaches a terminal to this one pane, and nothing else in the
+   * host. Resolved on the server from the pane's recorded label and cwd, never from client
+   * input. Rejects if the pane is gone.
    */
-  attachArgv(pane: PaneRef): string[];
+  attachArgv(pane: PaneRef): Promise<string[]>;
   list(): Promise<PaneRef[]>;
 }

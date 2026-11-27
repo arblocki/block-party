@@ -65,6 +65,7 @@ export function RunTerminalSection({
           <RunTerminal
             key={session}
             runId={runId}
+            role={live.role}
             onClosed={(n) => {
               setNotice(n);
               setSession(null);

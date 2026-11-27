@@ -18,6 +18,7 @@ export interface HerdrHostOptions {
 
 interface RawPane {
   paneId: string;
+  terminalId: string;
   label: string;
   cwd: string;
 }
@@ -67,6 +68,7 @@ export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
       if (typeof o.pane_id !== 'string') continue;
       out.push({
         paneId: o.pane_id,
+        terminalId: typeof o.terminal_id === 'string' ? o.terminal_id : '',
         label: typeof o.label === 'string' ? o.label : '',
         cwd: typeof o.cwd === 'string' ? o.cwd : '',
       });
@@ -163,10 +165,17 @@ export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
       return `herdr --session ${pane.session}  # workspace: ${pane.label}`;
     },
 
-    // herdr attaches to a whole session, not to one workspace, so this shows the session's
-    // current workspace (the run's pane is in it, one tab per run).
-    attachArgv(pane) {
-      return ['herdr', '--session', pane.session];
+    // `herdr terminal attach` direct-attaches one server-owned terminal: no sidebar, no other
+    // panes or workspaces, and no way to create new ones. (`herdr --session` would attach the
+    // whole shared session, and `agent attach` refuses a pane herdr hasn't detected an agent
+    // in.) Only one writable client owns a terminal, so a second attach exits with an error.
+    async attachArgv(pane) {
+      const id = await need(pane);
+      const found = (await panes()).find((p) => p.paneId === id);
+      if (!found?.terminalId) {
+        throw new HerdrError('pane_not_found', `pane ${pane.label} has no terminal id`);
+      }
+      return ['herdr', '--session', pane.session, 'terminal', 'attach', found.terminalId];
     },
 
     async list() {
