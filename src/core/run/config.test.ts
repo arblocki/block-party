@@ -16,6 +16,7 @@ describe('resolveRunConfig', () => {
       maxReviewFixRounds: 1,
       resumeOnRestart: false,
       stallAfterMinutes: 10,
+      workingStallMinutes: 30,
       idleNudgeMinutes: 3,
       maxNudges: 1,
       maxCiFixRounds: 1,

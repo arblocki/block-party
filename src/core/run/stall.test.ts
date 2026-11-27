@@ -151,4 +151,31 @@ describe('createStallWatcher', () => {
     clock.advance(60 * MIN);
     expect(log).toEqual([]);
   });
+
+  it('allows a longer silence while the terminal says working', () => {
+    const { clock, w, log } = setup({ workingStallAfterMs: 30 * MIN });
+    w.agentState('working');
+    clock.advance(29 * MIN);
+    expect(log).toEqual([]);
+    clock.advance(1 * MIN);
+    expect(log).toEqual(['nudge']);
+  });
+
+  it('uses the short limit for idle and unknown states, even after working', () => {
+    const { clock, w, log } = setup({ workingStallAfterMs: 30 * MIN });
+    w.agentState('working');
+    clock.advance(8 * MIN);
+    w.agentState('unknown');
+    clock.advance(2 * MIN);
+    expect(log).toEqual(['nudge']);
+  });
+
+  it('a skipped nudge is not counted', () => {
+    const { clock, w, log } = setup();
+    clock.advance(10 * MIN);
+    w.nudgeSkipped();
+    expect(w.nudges).toBe(0);
+    clock.advance(10 * MIN);
+    expect(log).toEqual(['nudge', 'nudge']);
+  });
 });

@@ -133,6 +133,27 @@ describe('waitForTurnEnd', () => {
     expect((await p).kind).toBe('no_report');
   });
 
+  it('reports activity for this session only, and each state query with the stop flag', async () => {
+    let activity = 0;
+    const states: [string, boolean][] = [];
+    const p = start({
+      onActivity: () => activity++,
+      onAgentState: (s, i) => states.push([s, i.stopped]),
+      agentState: () => Promise.resolve('idle' as const),
+    });
+    add({ hook_event_name: 'PreToolUse', session_id: 's1' });
+    add({ hook_event_name: 'PreToolUse', session_id: 'other' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(activity).toBe(1);
+    expect(states[0]).toEqual(['idle', false]);
+    add({ hook_event_name: 'Stop', session_id: 's1' });
+    writeFileSync(reportPath, '{}');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(activity).toBe(2);
+    expect(states.at(-1)).toEqual(['idle', true]);
+    expect((await p).kind).toBe('report');
+  });
+
   it('resolves permission from a Notification', async () => {
     const p = start();
     add({

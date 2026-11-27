@@ -275,15 +275,41 @@ async function inStage<T>(
   return value;
 }
 
+/**
+ * Closes one agent session for good (a stalled agent the person chose to stop): without the
+ * polite exit, saving a pane's last screen first. Its worktree and conversation are kept.
+ */
+async function stopAgentSession(
+  ctx: AgentCtx,
+  session: ImplementerSession,
+  role: 'implementer' | 'planner',
+): Promise<void> {
+  try {
+    await ctx.deps.adapter.stop(session, {
+      force: true,
+      runDir: ctx.runDir,
+      eventsPath: join(ctx.runDir, 'events.jsonl'),
+    });
+  } catch (e) {
+    ctx.rec.event(`${role}.stop_failed`, { error: (e as Error).message });
+  }
+}
+
 /** Awaits an implementer turn; its permission decisions are resolved once it ends. */
 async function turnEnded<T>(ctx: Ctx, turn: Promise<T>, nudge?: NudgeTarget): Promise<T> {
   // Every turn kind waits here, so stall detection covers them all. A person's `stop` on a
-  // stalled agent ends the wait: the run blocks (the agent's session is left as it is).
+  // stalled agent ends the wait: its session is stopped and the run blocks.
   const guard = startStallGuard(ctx, nudge);
   try {
     return await (guard ? Promise.race([turn, guard.stopped]) : turn);
   } catch (e) {
-    if (e instanceof StallStopError) throw new Halt('blocked', e.message);
+    if (e instanceof StallStopError) {
+      // The abandoned wait must not record anything more for a run that is blocked.
+      ctx.abandoned = true;
+      const session = nudge ? nudge.session : ctx.session;
+      if (session) await stopAgentSession(ctx, session, nudge ? 'planner' : 'implementer');
+      throw new Halt('blocked', e.message);
+    }
     throw e;
   } finally {
     guard?.end();
@@ -667,6 +693,7 @@ function plannerStart(ctx: Ctx, planPath: string): Omit<ImplementerStartInput, '
         notice: `Planner needs your approval - attach: ${attach ?? '(session starting)'}`,
         message,
       });
+      if (ctx.abandoned) return;
       ctx.rec.permissionWait(message, attach);
       ctx.stall?.agentState('blocked');
     },

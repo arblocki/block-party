@@ -65,6 +65,20 @@ const make = (proc: FakeProc | ((n: number) => FakeProc), events?: HeadlessEvent
 };
 
 describe('createHeadlessClaude', () => {
+  it('calls onActivity as stream events arrive', async () => {
+    const { adapter } = make({ stdout: init + result() });
+    let n = 0;
+    await adapter.start({ ...input, onActivity: () => n++ });
+    expect(n).toBeGreaterThan(0);
+  });
+
+  it('does not call onActivity for a stream with no parsed events', async () => {
+    const { adapter } = make({ stdout: '' });
+    let n = 0;
+    await adapter.start({ ...input, onActivity: () => n++ });
+    expect(n).toBe(0);
+  });
+
   it('calls onSession once the process is launched, before the outcome', async () => {
     const order: string[] = [];
     const { adapter, calls } = make({ stdout: init + result() });

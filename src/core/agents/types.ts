@@ -29,6 +29,8 @@ export interface ImplementerStartInput {
    * adapter keeps waiting for the turn to end (until the timeout or abort).
    */
   onPermission?: (message: string) => void;
+  /** Pane mode: the message of a `send` was typed and submitted (the agent has it). */
+  onMessageSent?: () => void;
   /** Any sign of life during the turn (a hook line, a stream event): feeds stall detection. */
   onActivity?: () => void;
   /**

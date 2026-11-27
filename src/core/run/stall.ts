@@ -7,6 +7,8 @@
 export interface StallPolicy {
   /** Silence (no activity) that counts as a stall, in ms. */
   stallAfterMs: number;
+  /** The same, while the terminal reports the agent `working` (default: stallAfterMs). */
+  workingStallAfterMs?: number;
   /** The terminal reports the agent idle, with no report, for this long: nudge. */
   idleNudgeMs: number;
   /** Nudges sent per turn before a stall becomes an inbox item. 0 skips nudging. */
@@ -52,6 +54,8 @@ export interface StallWatcher {
   agentState(state: string, opts?: { stopped?: boolean }): void;
   /** The human's answer to the open stall: nudge again, or keep waiting. */
   answer(choice: 'nudge' | 'wait'): void;
+  /** A nudge turned out not to be typed (the agent was busy): it does not count. */
+  nudgeSkipped(): void;
   /** Nudges sent so far this turn. */
   readonly nudges: number;
   /** A stall is open (asked about, not yet answered or resumed). */
@@ -68,6 +72,9 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
   let stalled = false;
   let stopped = false;
   let blocked = false;
+  let working = false;
+  /** Silence is measured from here: the last activity, nudge or answer. */
+  let base = lastActivity;
   let idleSince: number | undefined;
   let cancelSilence: (() => void) | undefined;
   let cancelIdle: (() => void) | undefined;
@@ -84,10 +91,16 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
   const armSilence = (): void => {
     clearSilence();
     if (stopped || blocked || stalled) return;
-    cancelSilence = opts.setTimer(() => {
-      cancelSilence = undefined;
-      trigger('silence', lastActivity);
-    }, policy.stallAfterMs);
+    const limit = working
+      ? (policy.workingStallAfterMs ?? policy.stallAfterMs)
+      : policy.stallAfterMs;
+    cancelSilence = opts.setTimer(
+      () => {
+        cancelSilence = undefined;
+        trigger('silence', lastActivity);
+      },
+      Math.max(0, base + limit - opts.now()),
+    );
   };
 
   const armIdle = (): void => {
@@ -112,6 +125,7 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
       nudges += 1;
       // The next trigger is a full period away, whatever the agent does with the nudge.
       if (idleSince !== undefined) idleSince = opts.now();
+      base = opts.now();
       armSilence();
       armIdle();
       opts.onNudge(info);
@@ -129,6 +143,7 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
     activity() {
       if (stopped) return;
       lastActivity = opts.now();
+      base = lastActivity;
       blocked = false;
       if (idleSince !== undefined) idleSince = lastActivity;
       if (stalled) {
@@ -143,6 +158,7 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
       if (state === 'blocked') {
         // Waiting on a human (a permission item is open): not silence.
         blocked = true;
+        working = false;
         idleSince = undefined;
         clearSilence();
         clearIdle();
@@ -151,6 +167,12 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
       if (blocked) {
         blocked = false;
         lastActivity = opts.now();
+        base = lastActivity;
+        armSilence();
+      }
+      const nowWorking = state === 'working';
+      if (nowWorking !== working) {
+        working = nowWorking;
         armSilence();
       }
       if (state === 'idle' && !o?.stopped) {
@@ -167,6 +189,7 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
       if (stopped || !stalled) return;
       stalled = false;
       lastActivity = opts.now();
+      base = lastActivity;
       if (idleSince !== undefined) idleSince = lastActivity;
       if (choice === 'nudge') {
         nudges += 1;
@@ -174,6 +197,9 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
       }
       armSilence();
       armIdle();
+    },
+    nudgeSkipped() {
+      nudges = Math.max(0, nudges - 1);
     },
     get nudges() {
       return nudges;

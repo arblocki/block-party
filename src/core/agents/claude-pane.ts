@@ -464,6 +464,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       if (dead) {
         st.resumes += 1;
         st.known = true;
+        input.onMessageSent?.();
         const label = `bp-${st.runId}-${st.role}-r${st.resumes}`;
         const { outcome } = await launch(
           st,
@@ -504,6 +505,7 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       }
       if (got === 'aborted') return aborted;
       if (got === 'timeout') return { kind: 'no_report', detail: 'message was not submitted' };
+      input.onMessageSent?.();
       return awaitTurn(pane, session.sessionId, input, offset);
     },
 

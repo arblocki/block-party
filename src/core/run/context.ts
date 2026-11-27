@@ -39,6 +39,8 @@ export interface Ctx {
   session?: ImplementerSession;
   /** The stall watcher of the turn being awaited, if one is running. */
   stall?: StallWatcher;
+  /** A stalled turn was stopped on the person's say: its adapter wait is ignored from now on. */
+  abandoned?: boolean;
   /** The planner's session (its own conversation, separate from the implementer's). */
   plannerSession?: ImplementerSession;
   rounds: ReviewRoundInput[];
@@ -120,6 +122,7 @@ export function buildCtx(b: BuildCtxInput): Ctx {
       timeoutMs: config.policy.stageTimeoutMs,
       signal: input.signal,
       onPermission: (message) => {
+        if (ctx.abandoned) return;
         const attach = attachCommand(ctx);
         ctx.rec.event('implementer.waiting_for_human', {
           notice: `⏸ Implementer needs your approval — attach: ${attach ?? '(session starting)'}`,

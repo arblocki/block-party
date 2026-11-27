@@ -85,17 +85,32 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
 
   const sendNudge = (info: StallInfo): void => {
     const { session, start } = nudgeTarget();
-    rec.event('implementer.nudged', { reason: info.reason, minutes: info.minutes });
-    if (!session) return;
+    const skip = (why: string): void => {
+      watcher.nudgeSkipped();
+      rec.event('implementer.nudge_skipped', { reason: info.reason, why });
+    };
+    if (!session) return skip('no session');
     const message = nudgeMessage(start.reportPath);
+    let typed = false;
+    const onMessageSent = (): void => {
+      typed = true;
+      rec.event('implementer.nudged', { reason: info.reason, minutes: info.minutes });
+    };
     // The turn already being awaited sees the agent's reply; this send only types the message.
     void Promise.resolve()
-      .then(() => ctx.deps.adapter.send(session, { ...start, prompt: message }, message))
-      .catch((e: unknown) =>
+      .then(() =>
+        ctx.deps.adapter.send(session, { ...start, prompt: message, onMessageSent }, message),
+      )
+      .then((outcome) => {
+        // Settled without the message going in (the agent stayed busy, or it was not submitted).
+        if (!typed && !ended) skip(outcome.kind === 'timeout' ? 'busy' : 'not submitted');
+      })
+      .catch((e: unknown) => {
+        if (!typed) watcher.nudgeSkipped();
         rec.event('implementer.nudge_failed', {
           error: e instanceof Error ? e.message : String(e),
-        }),
-      );
+        });
+      });
   };
 
   const handleAnswer = (choice: string): void => {
@@ -162,6 +177,7 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
     setTimer: (fn, ms) => clock.setTimer(fn, ms),
     policy: {
       stallAfterMs: cfg.stallAfterMinutes * MINUTE,
+      workingStallAfterMs: cfg.workingStallMinutes * MINUTE,
       idleNudgeMs: cfg.idleNudgeMinutes * MINUTE,
       maxNudges: canNudge ? cfg.maxNudges : 0,
     },

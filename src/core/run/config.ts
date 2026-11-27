@@ -46,6 +46,8 @@ export const RunConfigSchema = z.object({
       resumeOnRestart: z.boolean().default(false),
       /** Minutes with no hook or stream event during a turn before the agent counts as stalled. */
       stallAfterMinutes: z.number().positive().default(10),
+      /** The same, while the terminal says the agent is working (long tool calls are quiet). */
+      workingStallMinutes: z.number().positive().default(30),
       /** Minutes the terminal reports the agent idle, without a report, before a nudge. */
       idleNudgeMinutes: z.number().positive().default(3),
       /** Nudges per turn before a stall is raised as an inbox item. */

@@ -197,6 +197,8 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return s('reason') === 'requested'
         ? 'Sent the agent a nudge, as you asked'
         : `Agent went quiet${num('minutes') !== null ? ` for ${plural(num('minutes')!, 'minute')}` : ''}: sent it a nudge asking for a status`;
+    case 'implementer.nudge_skipped':
+      return "Couldn't nudge the agent: it was busy";
     case 'implementer.nudge_failed':
       return `Could not nudge the agent${s('error') ? `: ${s('error')}` : ''}`;
     case 'implementer.stalled':

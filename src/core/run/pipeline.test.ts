@@ -137,6 +137,8 @@ interface Opts {
   /** The first turn waits for this before it ends (the agent is silent until then). */
   holdFirstTurn?: Promise<void>;
   stallClock?: PipelineDeps['stallClock'];
+  /** A nudge finds the agent busy: nothing is typed and `send` times out. */
+  nudgeBusy?: boolean;
   permissionPrompts?: number;
   abortInPublish?: AbortController;
   /** Replaces the fake publishRun (e.g. to run the real one against fakes). */
@@ -243,7 +245,11 @@ function harness(o: Opts) {
       calls.sendSessions.push(s.sessionId);
       calls.sendInputs.push(input);
       // A stall nudge only types a message: it is not a turn of its own.
-      if (message.startsWith('Status check from block-party')) return { kind: 'no_report' };
+      if (message.startsWith('Status check from block-party')) {
+        if (o.nudgeBusy) return { kind: 'timeout' };
+        input.onMessageSent?.();
+        return { kind: 'no_report' };
+      }
       return doTurn(input);
     },
     async stop(s, stopOpts) {
@@ -3376,17 +3382,9 @@ describe('stall detection', () => {
     });
     const open = () => store.listDecisions({ status: 'open' }).filter((d) => d.kind === 'stalled');
     const events = (type: string) =>
-      store.listDecisions(
-        {},
-      ) // ensure the store is reachable
-      .length >= 0
-        ? readFileSync(
-            join(h.deps.paths!.runDir(store.listRuns()[0]!.id), 'run-events.jsonl'),
-            'utf8',
-          )
-            .split('\n')
-            .filter((l) => l.includes(`"${type}"`))
-        : [];
+      readFileSync(join(h.deps.paths!.runDir(store.listRuns()[0]!.id), 'run-events.jsonl'), 'utf8')
+        .split('\n')
+        .filter((l) => l.includes(`"${type}"`));
     return { clock, store, h, release, open, events };
   };
 
@@ -3432,6 +3430,49 @@ describe('stall detection', () => {
     const out = await p;
     expect(out.stage).toBe('blocked');
     expect(out.note).toContain('Stopped by you');
+    // The agent itself is stopped for good, not just abandoned.
+    expect(h.calls.stoppedSessions).toEqual(['s1']);
+    expect(h.calls.stopOpts[0]).toMatchObject({ force: true, runDir: out.runDir });
+    // The abandoned wait cannot open a permission item for the blocked run.
+    h.calls.startInputs[0]!.onPermission?.('late prompt');
+    expect(store.listDecisions({}).filter((d) => d.kind === 'permission')).toHaveLength(0);
+  });
+
+  it('stops a headless agent too, and a stopped planner', async () => {
+    const a = setup({ pane: false, flags: { mode: 'headless' } });
+    const pa = a.h.run();
+    await vi.waitFor(() => expect(a.h.calls.starts).toHaveLength(1));
+    a.clock.advance(10 * MIN);
+    a.store.answerDecision(a.open()[0]!.id, { choice: 'stop', note: null });
+    a.clock.advance(1000);
+    expect((await pa).stage).toBe('blocked');
+    expect(a.h.calls.stoppedSessions).toEqual(['s1']);
+
+    const b = setup({ description: 'Add widgets' });
+    const pb = b.h.run();
+    await vi.waitFor(() => expect(b.h.calls.starts).toHaveLength(1));
+    b.clock.advance(20 * MIN);
+    b.store.answerDecision(b.open()[0]!.id, { choice: 'stop', note: null });
+    b.clock.advance(1000);
+    expect((await pb).stage).toBe('blocked');
+    expect(b.h.calls.stoppedSessions).toEqual(['planner-1']);
+  });
+
+  it('does not count a nudge that could not be typed against the limit', async () => {
+    const { clock, h, release, open, events } = setup({ nudgeBusy: true });
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(events('implementer.nudge_skipped')).toHaveLength(1));
+    expect(events('implementer.nudged')).toHaveLength(0);
+    // Another try, not a stalled item: the skipped nudge was not used up.
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(h.calls.sends).toHaveLength(2));
+    expect(open()).toHaveLength(0);
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(h.calls.sends).toHaveLength(3));
+    release();
+    await p;
   });
 
   it('sends the nudge again when the item is answered nudge', async () => {
