@@ -147,7 +147,11 @@ export async function openDecisions(
 }
 
 /** Waits for every answer; a dismissed question halts the run. */
-export async function awaitAnswers(env: LoopEnv, ctx: Ctx, ids: number[]): Promise<DecisionAnswer[]> {
+export async function awaitAnswers(
+  env: LoopEnv,
+  ctx: Ctx,
+  ids: number[],
+): Promise<DecisionAnswer[]> {
   const answers: DecisionAnswer[] = [];
   for (const id of ids) {
     try {

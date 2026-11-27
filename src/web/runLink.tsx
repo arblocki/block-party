@@ -8,7 +8,8 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { api, jsonBody } from './api';
+import { api, jsonBody, openStream } from './api';
+import { isTerminal } from '../core/run/machine';
 import { splitByFile, visibleFindings } from './lib/findingPlacement';
 import { useReview } from './state';
 import type {
@@ -20,7 +21,8 @@ import type {
   StageRow,
 } from './types';
 
-const POLL_MS = 5000;
+/** Several stream frames close together cost one fetch. */
+const REFETCH_DELAY_MS = 100;
 const NO_FINDINGS: FindingRow[] = [];
 
 /** A comment of the reviewer's own, as the send-back endpoint takes it. */
@@ -110,8 +112,15 @@ export function RunLinkProvider({ children }: { children: ReactNode }) {
     );
   }, [owner, repo, number]);
 
-  const reload = useCallback(async () => {
-    if (!runId) return;
+  // What the shown data was built from: an identical reload does not re-render the page.
+  const signature = useRef('');
+  useEffect(() => {
+    signature.current = '';
+  }, [runId]);
+
+  /** Loads the run; resolves with its stage (undefined when the load failed). */
+  const load = useCallback(async (): Promise<string | undefined> => {
+    if (!runId) return undefined;
     try {
       const base = `/api/runs/${encodeURIComponent(runId)}`;
       const [detail, found, plan] = await Promise.all([
@@ -119,20 +128,49 @@ export function RunLinkProvider({ children }: { children: ReactNode }) {
         api<RunFindings>(`${base}/findings`),
         api<{ acceptanceCriteria: string[] }>(`${base}/plan`).catch(() => null),
       ]);
-      if (alive.current) {
-        setData({ detail, rounds: found.rounds, criteria: plan?.acceptanceCriteria ?? [] });
+      const criteria = plan?.acceptanceCriteria ?? [];
+      const sig = JSON.stringify([detail, found.rounds, criteria]);
+      if (alive.current && sig !== signature.current) {
+        signature.current = sig;
+        setData({ detail, rounds: found.rounds, criteria });
       }
+      return detail.run.stage;
     } catch {
-      // keep what is shown; the next poll retries
+      // keep what is shown; the next stream frame retries
+      return undefined;
     }
   }, [runId]);
 
+  const reload = useCallback(async () => {
+    await load();
+  }, [load]);
+
+  // The run's event stream says when something changed, so there is no polling; it stops
+  // for good once the run has ended.
   useEffect(() => {
     if (!runId) return;
-    void reload();
-    const timer = setInterval(() => void reload(), POLL_MS);
-    return () => clearInterval(timer);
-  }, [runId, reload]);
+    const ctrl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const refresh = async () => {
+      const stage = await load();
+      if (stage !== undefined && isTerminal(stage as Parameters<typeof isTerminal>[0])) {
+        ctrl.abort();
+      }
+    };
+    void refresh();
+    void openStream(
+      `/api/runs/${encodeURIComponent(runId)}/stream`,
+      () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => void refresh(), REFETCH_DELAY_MS);
+      },
+      ctrl.signal,
+    );
+    return () => {
+      ctrl.abort();
+      clearTimeout(timer);
+    };
+  }, [runId, load]);
 
   const allFindings = useMemo(() => data?.rounds.flatMap((r) => r.findings) ?? [], [data]);
   const placed = useMemo(() => {

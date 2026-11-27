@@ -840,6 +840,9 @@ Test coverage), each a different stage list on the same engine.
   `GITHUB_TOKEN` or other secrets into agent environments unless a stage needs them
   (block-party does the pushing and PR creation itself), and later containerized or
   sandboxed execution for fully unattended runs.
+- **The planner's write restriction is Claude Code permission rules** (it may write only its
+  plan file). Your own and the project's `.claude/settings.json` allow rules still apply on
+  top of them, so an allow rule there can widen what the planner may do.
 - **Hook command input is untrusted:** `block-party hook` validates payloads, writes only to
   that run's directory, and never executes anything from them.
 - **Agent output is data, not instructions** for the engine. Reports and findings are
