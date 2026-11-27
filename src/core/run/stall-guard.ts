@@ -27,6 +27,7 @@ export interface StallGuard {
 }
 
 const DEFAULT_POLL_MS = 1000;
+const CLOSED = "the agent's terminal has closed";
 
 const MINUTE = 60_000;
 
@@ -64,6 +65,8 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
   const { rec } = ctx;
 
   let decisionId: number | null = null;
+  /** The open stall is about a terminal that closed: no nudge, and its own wording. */
+  let terminalClosed = false;
   let cancelPoll: (() => void) | undefined;
   let ended = false;
   let rejectStopped: (e: Error) => void = () => undefined;
@@ -103,7 +106,12 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
       .then(async () => {
         // A closed terminal is not woken by a nudge: `send` would relaunch it.
         if (ctx.deps.adapter.isAlive && !(await ctx.deps.adapter.isAlive(session))) {
-          skip("the agent's terminal has closed");
+          // Nothing to wake: the nudge stays counted, and the person is asked at once.
+          rec.event('implementer.nudge_skipped', { reason: info.reason, why: CLOSED });
+          if (!ended) {
+            terminalClosed = true;
+            watcher.stallNow(info);
+          }
           return undefined;
         }
         return ctx.deps.adapter.send(
@@ -157,13 +165,16 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
   const onStall = (info: StallInfo): void => {
     const session = nudgeTarget().session();
     const attach = session ? ctx.deps.adapter.describe(session) : attachCommand(ctx);
-    const what =
-      info.reason === 'idle'
+    const closed = terminalClosed;
+    terminalClosed = false;
+    const what = closed
+      ? "The agent's terminal has closed without finishing its turn."
+      : info.reason === 'idle'
         ? `The agent has been idle for ${info.minutes} min without writing its report.`
         : `The agent has shown no activity for ${info.minutes} min.`;
     const body =
       `${what} Last activity: ${clockTime(info.lastActivityAt)}. ` +
-      (canNudge ? 'It was already nudged once. ' : '') +
+      (canNudge && !closed ? 'It was already nudged once. ' : '') +
       'The run is still waiting for it: if it recovers, this item closes by itself.' +
       (attach ? ` Attach: ${attach}` : '');
     rec.event('implementer.stalled', {
@@ -176,7 +187,7 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
       'Agent may be stuck',
       body,
       attach,
-      stalledOptions(canNudge),
+      stalledOptions(canNudge && !closed),
     );
     if (id === null || !ctx.deps.store) return;
     decisionId = id;

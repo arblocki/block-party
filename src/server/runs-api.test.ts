@@ -1971,8 +1971,35 @@ describe('POST /api/runs/:id/resume', () => {
     expect(res.status).toBe(409);
     const open = runs.listDecisions({ runId: RUN_A, status: 'open' });
     expect(open).toHaveLength(1);
-    expect(open[0]).toMatchObject({ kind: 'resume_conflict', options: opts });
+    expect(open[0]).toMatchObject({ kind: 'interrupted', options: opts });
     expect(open[0]!.body).toContain('could not be carried out');
+    // A second refused answer does not stack another copy.
+    await post(
+      `/api/inbox/${open[0]!.id}/answer`,
+      { choice: 'resume' },
+      makeApp(runs, fake.manager),
+    );
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toHaveLength(1);
+  });
+
+  it('does not reopen the question when the run is no longer resumable', async () => {
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    const fake = fakeManager();
+    const q = runs.openDecision({
+      runId: RUN_A,
+      kind: 'blocked',
+      title: 't',
+      body: 'b',
+      options: [{ id: 'resume', label: 'Resume' }],
+    });
+    runs.updateRun(RUN_A, { stage: 'implementing' });
+    const res = await post(
+      `/api/inbox/${q}/answer`,
+      { choice: 'resume' },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(409);
+    expect(runs.listDecisions({ runId: RUN_A, status: 'open' })).toHaveLength(0);
   });
 
   it('answers 202 while a cancel is still settling', async () => {

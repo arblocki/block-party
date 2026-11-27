@@ -654,10 +654,10 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     reason: string,
   ): void => {
     const open = runs.listDecisions({ runId: existing.runId, status: 'open' });
-    if (open.some((d) => d.kind === 'resume_conflict')) return;
+    if (open.some((d) => d.kind === existing.kind)) return;
     runs.openDecision({
       runId: existing.runId,
-      kind: 'resume_conflict',
+      kind: existing.kind,
       title: existing.title,
       body: `${existing.body} Your answer could not be carried out: ${reason}.`,
       attach: existing.attach,
@@ -761,11 +761,9 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         choice === 'keep' ? { keep: true } : undefined,
       );
       if (started !== 'started') {
-        // The answer is recorded but nothing carries it out: the question is asked again.
-        reopenStoppedQuestion(
-          existing,
-          started === 'busy' ? 'the run is already being resumed' : 'the run is no longer stopped',
-        );
+        // Busy: another resume is under way and this answer was not carried out, so the
+        // question is asked again as it was. A run that is no longer stopped has nothing to ask.
+        if (started === 'busy') reopenStoppedQuestion(existing, 'the run is already being resumed');
         return resumeRefused(c, started);
       }
       continued = true;

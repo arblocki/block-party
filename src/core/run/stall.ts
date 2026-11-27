@@ -56,6 +56,8 @@ export interface StallWatcher {
   answer(choice: 'nudge' | 'wait'): void;
   /** A nudge turned out not to be typed (the agent was busy): it does not count. */
   nudgeSkipped(): void;
+  /** Raises the stall at once (a nudge cannot help: the terminal closed). */
+  stallNow(info: StallInfo): void;
   /** Nudges sent so far this turn. */
   readonly nudges: number;
   /** A stall is open (asked about, not yet answered or resumed). */
@@ -200,6 +202,13 @@ export function createStallWatcher(opts: StallWatcherOptions): StallWatcher {
     },
     nudgeSkipped() {
       nudges = Math.max(0, nudges - 1);
+    },
+    stallNow(info) {
+      if (stopped || stalled) return;
+      stalled = true;
+      clearSilence();
+      clearIdle();
+      opts.onStall(info);
     },
     get nudges() {
       return nudges;

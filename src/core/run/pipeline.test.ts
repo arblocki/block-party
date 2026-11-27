@@ -3560,19 +3560,18 @@ describe('stall detection', () => {
     await p;
   });
 
-  it('does not nudge a closed terminal, and does not count it against the limit', async () => {
+  it('does not nudge a closed terminal: it opens the stalled item at once', async () => {
     const { clock, h, release, open, events } = setup({ terminalClosed: true });
     const p = h.run();
     await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
     clock.advance(10 * MIN);
-    await vi.waitFor(() => expect(events('implementer.nudge_skipped')).toHaveLength(1));
+    await vi.waitFor(() => expect(open()).toHaveLength(1));
     expect(events('implementer.nudge_skipped')[0]).toContain("the agent's terminal has closed");
     expect(h.calls.sends).toHaveLength(0);
     expect(events('implementer.nudged')).toHaveLength(0);
-    // The skipped nudge was not used up: the next silence tries again instead of stalling.
-    clock.advance(10 * MIN);
-    await vi.waitFor(() => expect(events('implementer.nudge_skipped')).toHaveLength(2));
-    expect(open()).toHaveLength(0);
+    const d = open()[0]!;
+    expect(d.body).toContain("The agent's terminal has closed without finishing its turn.");
+    expect(d.options?.map((o) => o.label)).toEqual(['Keep waiting', 'Stop the run → blocked']);
     release();
     await p;
   });
