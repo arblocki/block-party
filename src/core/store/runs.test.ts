@@ -522,7 +522,7 @@ describe('run store', () => {
       expect(runs.listPlans('r1')[0]!.status).toBe('draft');
     });
 
-    it('gives each run its latest plan version in one map', () => {
+    it('latestPlanVersions gives each run its latest plan version', () => {
       expect(runs.latestPlanVersions().size).toBe(0);
       runs.createRun(
         runInput(projectId, {
@@ -544,7 +544,9 @@ describe('run store', () => {
       runs.addPlanVersion(plan(1));
       runs.addPlanVersion(plan(3));
       runs.addPlanVersion(plan(1, { runId: 'r2', path: '/runs/r2/plans/v1.md' }));
-      expect(Object.fromEntries(runs.latestPlanVersions())).toEqual({ r1: 3, r2: 1 });
+      const map = runs.latestPlanVersions();
+      expect(Object.fromEntries(map)).toEqual({ r1: 3, r2: 1 });
+      expect(map.has('r3')).toBe(false);
     });
   });
 });
