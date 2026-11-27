@@ -179,6 +179,22 @@ export class RunRecorder {
     return this.openDecisionId(kind, title, body, attach, options) ?? null;
   }
 
+  /** Stores the owner's rulings (no-op without a store). */
+  saveRulings(rulings: unknown): void {
+    this.withRun('saveRulings', (s, runId) => s.setRulings(runId, JSON.stringify(rulings)));
+  }
+
+  /** The stored rulings as parsed JSON; undefined when none were stored (or no store). */
+  loadRulings(): unknown {
+    const json = this.withRun('loadRulings', (s, runId) => s.getRulings(runId));
+    if (json === undefined || json === null) return undefined;
+    try {
+      return JSON.parse(json);
+    } catch {
+      return undefined;
+    }
+  }
+
   /** Stores a plan version (no-op without a store). */
   addPlanVersion(input: Omit<PlanInput, 'runId'>): void {
     this.withRun('addPlanVersion', (s, runId) => s.addPlanVersion({ ...input, runId }));

@@ -22,6 +22,7 @@ import {
   reviewFixDuties,
   type FixDuties,
   type LoopEnv,
+  writeRulings,
 } from './triage-loop.js';
 import { writeArtifact } from './artifacts.js';
 
@@ -686,6 +687,8 @@ export async function resumeTurn(
         )}). Commit the ones that belong to this task and revert any that don't; write the report. Details: ${brief}`
     : `You were interrupted. Continue the task in ${brief}; write the report when done.${left}${why}`;
   const session = ctx.session;
+  // An agent may have edited the rulings file while it ran: restore it from the database.
+  await writeRulings(ctx);
   const report = await steps.inStage(
     ctx,
     kind,

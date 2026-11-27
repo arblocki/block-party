@@ -90,6 +90,7 @@ export function buildCtx(b: BuildCtxInput): Ctx {
   const perms = implementerPermissions(
     checks.required.map((c) => c.run),
     checks.fix ?? [],
+    { worktree: st.worktreePath, runDir, extra: config.permissions },
   );
   const ctx: Ctx = {
     input,
@@ -326,7 +327,12 @@ export async function loadContext(
   ctx.reports = await loadReports(runDir, runId, deps.store);
   ctx.lastReport = ctx.reports.at(-1)?.report;
   ctx.rulingsWritten = (await listDir(join(runDir, 'inputs'))).includes('rulings.json');
-  const rulings = parseRulings(await readJson(join(runDir, 'inputs', 'rulings.json')));
+  // The database holds the rulings; the file is only a copy an agent may have edited. Runs
+  // from before the table existed have only the file.
+  const stored = rec.loadRulings();
+  const rulings = parseRulings(
+    stored !== undefined ? stored : await readJson(join(runDir, 'inputs', 'rulings.json')),
+  );
   ctx.rulings = rulings.rulings;
   if (rulings.invalid > 0) rec.event('rulings.invalid', { skipped: rulings.invalid });
   if (st.implementer) {

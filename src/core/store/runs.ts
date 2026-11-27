@@ -307,6 +307,10 @@ export interface RunStore {
   latestEventId(): number;
   /** Bytes of the run's hook events file already copied into `run_events` (0 if none). */
   getHookOffset(runId: string): number;
+  /** The run's stored rulings as JSON text; null when none were stored. */
+  getRulings(runId: string): string | null;
+  /** Stores the run's rulings (replacing earlier ones). */
+  setRulings(runId: string, json: string): void;
   /** Moves the run's hook offset forward to `offset` (never back); the live watcher calls it. */
   advanceHookOffset(runId: string, offset: number): void;
   /**
@@ -747,6 +751,13 @@ export function createRunStore(db: Database.Database): RunStore {
   const setHookOffset = db.prepare(`
     INSERT INTO run_hook_offsets (run_id, byte_offset) VALUES (?, ?)
     ON CONFLICT (run_id) DO UPDATE SET byte_offset = excluded.byte_offset`);
+  const getRulingsRow = db.prepare<[string], { rulings_json: string }>(
+    'SELECT rulings_json FROM run_rulings WHERE run_id = ?',
+  );
+  const setRulingsRow = db.prepare(`
+    INSERT INTO run_rulings (run_id, rulings_json, updated_at) VALUES (?, ?, ?)
+    ON CONFLICT (run_id) DO UPDATE SET rulings_json = excluded.rulings_json,
+      updated_at = excluded.updated_at`);
   const maxEventId = db.prepare<[], { id: number | null }>('SELECT max(id) AS id FROM run_events');
 
   const deleteRoundFindings = db.prepare(
@@ -1030,6 +1041,12 @@ export function createRunStore(db: Database.Database): RunStore {
     },
     latestEventId() {
       return maxEventId.get()?.id ?? 0;
+    },
+    getRulings(runId) {
+      return getRulingsRow.get(runId)?.rulings_json ?? null;
+    },
+    setRulings(runId, json) {
+      setRulingsRow.run(runId, json, new Date().toISOString());
     },
     getHookOffset(runId) {
       return hookOffset.get(runId)?.byte_offset ?? 0;

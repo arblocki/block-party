@@ -256,4 +256,13 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE runs ADD COLUMN queued_at TEXT;
   CREATE INDEX runs_by_queue ON runs (queued_at) WHERE queued_entry IS NOT NULL;
   `,
+  `
+  -- The owner's rulings on review findings, kept here so an agent that edits the copy in the
+  -- run directory (inputs/rulings.json) cannot change them. The file is rewritten from this.
+  CREATE TABLE run_rulings (
+    run_id TEXT PRIMARY KEY REFERENCES runs (id),
+    rulings_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+  `,
 ];

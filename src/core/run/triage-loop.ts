@@ -45,8 +45,14 @@ export function fixItem(round: number, finding: Finding): FixItem {
   return { round, id: finding.id, key: keyOf(round, finding.id), finding, also: [] };
 }
 
-/** Writes the owner's rulings so far where the fix brief points the implementer. */
+/**
+ * Writes the owner's rulings so far where the fix brief points the implementer. The rulings
+ * live in the database (and in `ctx`); the file is only a copy for the agents to read, so
+ * this rewrites it whole, discarding any edit an agent made. Called after every change to
+ * the rulings and before every implementer turn and review round.
+ */
 export async function writeRulings(ctx: Ctx): Promise<string> {
+  ctx.rec.saveRulings(ctx.rulings);
   const art = await writeArtifact(ctx.runDir, 'inputs/rulings.json', ctx.rulings);
   ctx.rulingsWritten = true;
   return art.path;
