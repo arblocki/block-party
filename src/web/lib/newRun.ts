@@ -1,8 +1,14 @@
 import type { Project, StartRunRequest } from '../types';
 
+/** The server accepts 1-20000 characters of description. */
+export const MAX_DESCRIPTION_CHARS = 20000;
+
 export interface NewRunState {
   projectId: string;
   baseRef: string;
+  /** Describe the feature for the planner, or paste a finished plan. */
+  source: 'describe' | 'paste';
+  description: string;
   planText: string;
   /** The plan text passed validation. */
   planValid: boolean;
@@ -12,9 +18,14 @@ export interface NewRunState {
   publish: boolean;
 }
 
-/** Start needs a project, a base ref and a plan the server accepted. */
+/** Start needs a project, a base ref, and a description or a plan the server accepted. */
 export function canStart(s: NewRunState): boolean {
-  return s.projectId !== '' && s.baseRef.trim() !== '' && s.planText.trim() !== '' && s.planValid;
+  if (s.projectId === '' || s.baseRef.trim() === '') return false;
+  if (s.source === 'describe') {
+    const d = s.description.trim();
+    return d !== '' && d.length <= MAX_DESCRIPTION_CHARS;
+  }
+  return s.planText.trim() !== '' && s.planValid;
 }
 
 export function projectLabel(p: Pick<Project, 'owner' | 'repo' | 'localPath'>): string {
@@ -28,7 +39,7 @@ export function toRunRequest(s: NewRunState): StartRunRequest {
   return {
     projectId: s.projectId,
     baseRef: s.baseRef.trim(),
-    planText: s.planText,
+    ...(s.source === 'describe' ? { description: s.description.trim() } : { planText: s.planText }),
     ...(title ? { title } : {}),
     mode: s.mode,
     ...(model ? { model } : {}),

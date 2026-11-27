@@ -4,6 +4,8 @@ import { canStart, projectLabel, toRunRequest, type NewRunState } from './newRun
 const ok: NewRunState = {
   projectId: 'p1',
   baseRef: 'main',
+  source: 'paste',
+  description: '',
   planText: '# Plan',
   planValid: true,
   title: '',
@@ -19,6 +21,27 @@ describe('canStart', () => {
     expect(canStart({ ...ok, baseRef: '  ' })).toBe(false);
     expect(canStart({ ...ok, planText: ' ' })).toBe(false);
     expect(canStart({ ...ok, planValid: false })).toBe(false);
+  });
+});
+
+describe('canStart in describe mode', () => {
+  const d: NewRunState = {
+    ...ok,
+    source: 'describe',
+    description: 'Add a login page',
+    planText: '',
+    planValid: false,
+  };
+  it('needs a description of 1-20000 characters, not a valid plan', () => {
+    expect(canStart(d)).toBe(true);
+    expect(canStart({ ...d, description: '  ' })).toBe(false);
+    expect(canStart({ ...d, description: 'x'.repeat(20000) })).toBe(true);
+    expect(canStart({ ...d, description: 'x'.repeat(20001) })).toBe(false);
+    expect(canStart({ ...d, projectId: '' })).toBe(false);
+  });
+  it('ignores a pasted plan in describe mode, and a description in paste mode', () => {
+    expect(canStart({ ...d, planText: '# Plan', planValid: true, description: '' })).toBe(false);
+    expect(canStart({ ...ok, description: 'something', planValid: false })).toBe(false);
   });
 });
 
@@ -57,5 +80,23 @@ describe('toRunRequest', () => {
       model: 'm',
       publish: false,
     });
+  });
+});
+
+describe('toRunRequest source', () => {
+  it('sends only the description in describe mode', () => {
+    const body = toRunRequest({
+      ...ok,
+      source: 'describe',
+      description: ' Add login ',
+      planText: '# Old',
+    });
+    expect(body.description).toBe('Add login');
+    expect('planText' in body).toBe(false);
+  });
+  it('sends only the plan text in paste mode', () => {
+    const body = toRunRequest({ ...ok, description: 'ignored' });
+    expect(body.planText).toBe('# Plan');
+    expect('description' in body).toBe(false);
   });
 });

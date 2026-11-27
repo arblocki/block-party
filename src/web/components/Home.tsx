@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, openStream } from '../api';
 import { orderRuns, runProject } from '../lib/home';
+import { stageNoteLabel } from '../lib/plans';
 import { NEW_RUN_HREF, prHref, relativeTime, runHref } from '../lib/route';
 import type { InboxDecision, RunSummary } from '../types';
 import { sectionHeading, TopBar } from './AppShell';
@@ -30,7 +31,7 @@ function RunRow({ run }: { run: RunSummary }) {
       </div>
       <div className="mt-0.5 flex flex-wrap gap-x-3 text-sm text-muted">
         {repoLabel && <span>{repoLabel}</span>}
-        {run.stageNote && <span>{run.stageNote}</span>}
+        {run.stageNote && <span>{stageNoteLabel(run.stage, run.stageNote)}</span>}
         {project && run.prNumber !== null && (
           <a
             href={prHref(project, run.prNumber)}

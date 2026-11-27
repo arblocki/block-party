@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api, ApiError, jsonBody } from '../api';
-import { canStart, projectLabel, toRunRequest, type NewRunState } from '../lib/newRun';
+import {
+  canStart,
+  MAX_DESCRIPTION_CHARS,
+  projectLabel,
+  toRunRequest,
+  type NewRunState,
+} from '../lib/newRun';
 import { HOME_HREF, runHref } from '../lib/route';
 import type { Project, ValidatePlanResponse } from '../types';
 import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
@@ -32,6 +38,8 @@ export function NewRun() {
   const [adding, setAdding] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [baseRef, setBaseRef] = useState('');
+  const [source, setSource] = useState<'describe' | 'paste'>('describe');
+  const [description, setDescription] = useState('');
   const [planText, setPlanText] = useState('');
   const [validation, setValidation] = useState<Validation>({ state: 'idle' });
   const [title, setTitle] = useState('');
@@ -64,7 +72,7 @@ export function NewRun() {
 
   // Validate the plan once typing pauses; a stale answer never overwrites a newer one.
   useEffect(() => {
-    if (planText.trim() === '') {
+    if (source !== 'paste' || planText.trim() === '') {
       setValidation({ state: 'idle' });
       return;
     }
@@ -83,7 +91,7 @@ export function NewRun() {
       current = false;
       clearTimeout(timer);
     };
-  }, [planText]);
+  }, [planText, source]);
 
   const addProject = async () => {
     setAdding(true);
@@ -117,6 +125,8 @@ export function NewRun() {
   const state: NewRunState = {
     projectId: choice === ADD ? '' : choice,
     baseRef,
+    source,
+    description,
     planText,
     planValid: validation.state === 'done' && validation.result.ok,
     title,
@@ -234,63 +244,109 @@ export function NewRun() {
 
         <section className={section}>
           <h2 className={sectionHeading}>Plan</h2>
-          <label className={label} htmlFor="nr-plan">
-            Plan (Markdown)
-          </label>
-          <textarea
-            id="nr-plan"
-            className={`${field} h-64 font-mono`}
-            value={planText}
-            onChange={(e) => setPlanText(e.target.value)}
-          />
-          <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
-            <label htmlFor="nr-file" className="text-muted">
-              Or load a file
-            </label>
-            <input
-              id="nr-file"
-              type="file"
-              accept=".md,text/markdown"
-              onChange={(e) => {
-                void loadFile(e.target.files?.[0]);
-                e.target.value = '';
-              }}
-            />
+          <div className="mb-3 flex gap-2" role="group" aria-label="Plan source">
+            {(
+              [
+                ['describe', 'Describe the feature'],
+                ['paste', 'Paste a plan'],
+              ] as const
+            ).map(([value, text]) => (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={source === value}
+                className={`rounded-md border px-2.5 py-1 text-sm ${
+                  source === value
+                    ? 'border-accent bg-accent-soft font-medium'
+                    : 'border-line hover:bg-surface-hover'
+                }`}
+                onClick={() => setSource(value)}
+              >
+                {text}
+              </button>
+            ))}
           </div>
-          {fileMsg && (
-            <p className="mt-1 text-sm text-error" role="alert">
-              {fileMsg}
-            </p>
-          )}
-          <div className="mt-3" aria-live="polite">
-            {validation.state === 'checking' && <p className="text-sm text-muted">Checking…</p>}
-            {validation.state === 'error' && (
-              <p className="text-sm text-error">
-                Could not validate the plan: {validation.message}
+          {source === 'describe' ? (
+            <>
+              <label className={label} htmlFor="nr-description">
+                What should be built?
+              </label>
+              <textarea
+                id="nr-description"
+                className={`${field} h-40`}
+                value={description}
+                maxLength={MAX_DESCRIPTION_CHARS}
+                placeholder="Describe the feature. A planner writes the plan and you approve it before any code is written."
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              <p className="mt-1 text-xs text-muted">
+                {description.length} / {MAX_DESCRIPTION_CHARS}
               </p>
-            )}
-            {validation.state === 'done' && validation.result.ok && (
-              <div className="rounded-md border border-line px-3 py-2">
-                <p className="font-medium">{validation.result.title}</p>
-                <p className={`mt-2 ${headingText}`}>Acceptance criteria</p>
-                <ul className="list-disc pl-5 text-sm">
-                  {validation.result.acceptanceCriteria.map((c, i) => (
-                    <li key={i}>{c}</li>
-                  ))}
-                </ul>
+            </>
+          ) : (
+            <>
+              <label className={label} htmlFor="nr-plan">
+                Plan (Markdown)
+              </label>
+              <textarea
+                id="nr-plan"
+                className={`${field} h-64 font-mono`}
+                value={planText}
+                onChange={(e) => setPlanText(e.target.value)}
+              />
+              <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+                <label htmlFor="nr-file" className="text-muted">
+                  Or load a file
+                </label>
+                <input
+                  id="nr-file"
+                  type="file"
+                  accept=".md,text/markdown"
+                  onChange={(e) => {
+                    void loadFile(e.target.files?.[0]);
+                    e.target.value = '';
+                  }}
+                />
               </div>
-            )}
-            {validation.state === 'done' && !validation.result.ok && (
-              <div className="rounded-md bg-error-soft px-3 py-2 text-sm text-error" role="alert">
-                <p className="font-medium">This plan is not valid:</p>
-                <ul className="list-disc pl-5">
-                  {validation.result.errors.map((m, i) => (
-                    <li key={i}>{m}</li>
-                  ))}
-                </ul>
+              {fileMsg && (
+                <p className="mt-1 text-sm text-error" role="alert">
+                  {fileMsg}
+                </p>
+              )}
+              <div className="mt-3" aria-live="polite">
+                {validation.state === 'checking' && <p className="text-sm text-muted">Checking…</p>}
+                {validation.state === 'error' && (
+                  <p className="text-sm text-error">
+                    Could not validate the plan: {validation.message}
+                  </p>
+                )}
+                {validation.state === 'done' && validation.result.ok && (
+                  <div className="rounded-md border border-line px-3 py-2">
+                    <p className="font-medium">{validation.result.title}</p>
+                    <p className={`mt-2 ${headingText}`}>Acceptance criteria</p>
+                    <ul className="list-disc pl-5 text-sm">
+                      {validation.result.acceptanceCriteria.map((c, i) => (
+                        <li key={i}>{c}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {validation.state === 'done' && !validation.result.ok && (
+                  <div
+                    className="rounded-md bg-error-soft px-3 py-2 text-sm text-error"
+                    role="alert"
+                  >
+                    <p className="font-medium">This plan is not valid:</p>
+                    <ul className="list-disc pl-5">
+                      {validation.result.errors.map((m, i) => (
+                        <li key={i}>{m}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
               </div>
-            )}
-          </div>
+            </>
+          )}
         </section>
 
         <section className={section}>

@@ -193,6 +193,18 @@ export interface RunPlan {
   acceptanceCriteria: string[];
 }
 
+/** One version of a run's plan (GET /api/runs/:id/plans). */
+export interface PlanVersion {
+  version: number;
+  title: string;
+  status: 'draft' | 'approved' | 'superseded';
+  createdBy: 'agent' | 'me';
+  feedback: string | null;
+  createdAt: string;
+  /** Null when the file could not be read. */
+  text: string | null;
+}
+
 /** A Codex finding with its triage class, status and the finding it repeats. */
 export type { FindingRow, FindingStatus, FindingTriage } from '../core/store/runs';
 export type ReviewFinding = FindingRow;
@@ -220,7 +232,9 @@ export type ValidatePlanResponse =
 export interface StartRunRequest {
   projectId: string;
   baseRef: string;
-  planText: string;
+  /** Exactly one of `planText` and `description`. */
+  planText?: string;
+  description?: string;
   title?: string;
   mode?: 'pane' | 'headless';
   model?: string;

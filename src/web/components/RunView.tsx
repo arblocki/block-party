@@ -3,8 +3,10 @@ import { isResting, isTerminal } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { prHref, relativeTime } from '../lib/route';
+import { planActions, stageNoteLabel } from '../lib/plans';
 import { isNoisyEvent, stageStrip, summarizeEvent, type StripState } from '../lib/runView';
 import type {
+  PlanVersion,
   ReviewRound,
   RunDetailResponse,
   RunEvent,
@@ -14,6 +16,7 @@ import type {
 } from '../types';
 import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
 import { DecisionItem } from './DecisionItem';
+import { PlanPanel } from './PlanPanel';
 import { listClass } from './PickerShell';
 import { EvidenceSection, PlanSection } from './RunEvidence';
 import { StageBadge } from './StageBadge';
@@ -126,6 +129,8 @@ export function RunView({ id }: { id: string }) {
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [plan, setPlan] = useState<RunPlan | null>(null);
   const [planError, setPlanError] = useState<string | null>(null);
+  const [plans, setPlans] = useState<PlanVersion[] | null>(null);
+  const [plansError, setPlansError] = useState<string | null>(null);
   const [rounds, setRounds] = useState<ReviewRound[] | null>(null);
   const [findingsError, setFindingsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -139,6 +144,9 @@ export function RunView({ id }: { id: string }) {
     const alive = () => !ctrl.signal.aborted;
     let lastEventId = 0;
     let signature: string | null = null;
+    // Plans are refetched when this changes: the stage note names the plan version.
+    let planSignature: string | null = null;
+    let plansSeq = 0;
     let timer: ReturnType<typeof setTimeout> | undefined;
 
     // A response older than the newest request must not overwrite a newer one.
@@ -157,6 +165,36 @@ export function RunView({ id }: { id: string }) {
       );
     };
 
+    const loadPlans = (stage: string) => {
+      const seq = ++plansSeq;
+      return api<{ plans: PlanVersion[] }>(`/api/runs/${id}/plans`).then(
+        async (r) => {
+          if (!alive() || seq !== plansSeq) return;
+          setPlans(r.plans);
+          setPlansError(null);
+          // A run from before plan versions has only its plan file.
+          if (r.plans.length === 0 && stage !== 'planning') {
+            await api<RunPlan>(`/api/runs/${id}/plan`).then(
+              (p) => {
+                if (!alive() || seq !== plansSeq) return;
+                setPlan(p);
+                setPlanError(null);
+              },
+              (e: Error) => alive() && seq === plansSeq && setPlanError(e.message),
+            );
+          }
+        },
+        (e: Error) => alive() && seq === plansSeq && setPlansError(e.message),
+      );
+    };
+
+    const refreshPlans = (d: RunDetailResponse) => {
+      const sig = `${d.run.stage}|${d.run.stageNote ?? ''}`;
+      if (sig === planSignature) return;
+      planSignature = sig;
+      void loadPlans(d.run.stage);
+    };
+
     const loadDetail = () => {
       const seq = ++detailSeq;
       return api<RunDetailResponse>(`/api/runs/${id}`).then(
@@ -164,6 +202,7 @@ export function RunView({ id }: { id: string }) {
           if (!alive() || seq !== detailSeq) return;
           setDetail(d);
           setError(null);
+          refreshPlans(d);
           const sig = reviewSignature(d.stages);
           if (sig !== signature) {
             signature = sig;
@@ -189,14 +228,7 @@ export function RunView({ id }: { id: string }) {
         if (seq === detailSeq) setDetail(first);
         signature = reviewSignature(first.stages);
         void loadFindings();
-        api<RunPlan>(`/api/runs/${id}/plan`).then(
-          (p) => {
-            if (!alive()) return;
-            setPlan(p);
-            setPlanError(null);
-          },
-          (e: Error) => alive() && setPlanError(e.message),
-        );
+        refreshPlans(first);
         const all: RunEvent[] = [];
         for (;;) {
           const page = await api<{ events: RunEvent[]; lastId: number }>(
@@ -291,7 +323,9 @@ export function RunView({ id }: { id: string }) {
   }
 
   const project = runProject(run);
-  const open = detail.decisions.filter((d) => d.status === 'open');
+  // The plan panel carries the plan approval's buttons, so the list leaves it out.
+  const planDecision = planActions(run, detail.decisions);
+  const open = detail.decisions.filter((d) => d.status === 'open' && d !== planDecision);
   const answered = detail.decisions.filter((d) => d.status === 'answered' && d.options !== null);
 
   return (
@@ -316,7 +350,9 @@ export function RunView({ id }: { id: string }) {
             </button>
           )}
         </div>
-        {run.stageNote && <p className="mt-1 text-sm text-muted">{run.stageNote}</p>}
+        {run.stageNote && (
+          <p className="mt-1 text-sm text-muted">{stageNoteLabel(run.stage, run.stageNote)}</p>
+        )}
         {cancelNote && <p className="mt-1 text-sm text-warning">{cancelNote}</p>}
         <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-muted">
           {project && (
@@ -365,7 +401,18 @@ export function RunView({ id }: { id: string }) {
           </ul>
         </section>
       )}
-      <PlanSection plan={plan} error={planError} />
+      {plans !== null && (plans.length > 0 || run.stage === 'planning' || plansError) ? (
+        <PlanPanel
+          run={run}
+          decisions={detail.decisions}
+          plans={plans}
+          error={plansError}
+          events={events}
+          onChanged={() => refetchRef.current()}
+        />
+      ) : (
+        <PlanSection plan={plan} error={planError} />
+      )}
       <EvidenceSection stages={detail.stages} rounds={rounds} findingsError={findingsError} />
       <Activity events={events} />
     </div>
