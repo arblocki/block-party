@@ -96,7 +96,7 @@ function setup(stage: RunStage) {
     implementer: { mode: 'pane', sessionId: 's-9', paneLabel: 'pane-1' },
     planner: null,
     sessionEnded: true,
-    rounds: { checkFix: 1, reviewFix: 1, feedback: 0, checkRuns: 0 },
+    rounds: { checkFix: 1, reviewFix: 1, ciFix: 0, feedback: 0, checkRuns: 0 },
     prNumber: 7,
     createdAt: '2026-11-22T10:00:00.000Z',
     updatedAt: '2026-11-22T10:00:00.000Z',
@@ -155,7 +155,7 @@ describe('loadContext', () => {
       cwd: '/wt/r1',
       paneLabel: 'pane-1',
     });
-    expect(ctx.fixBase).toEqual({ checkFix: 1, reviewFix: 1 });
+    expect(ctx.fixBase).toEqual({ checkFix: 1, reviewFix: 1, ciFix: 0 });
   });
 
   it('refuses a run that is not resting', async () => {

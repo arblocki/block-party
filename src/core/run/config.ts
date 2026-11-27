@@ -25,6 +25,8 @@ export const RunConfigSchema = z.object({
     .object({
       maxCheckFixRounds: z.number().int().min(0).default(2),
       maxReviewFixRounds: z.number().int().min(0).default(1),
+      /** Fix rounds for a GitHub CI failure after local CI passed, per pass. */
+      maxCiFixRounds: z.number().int().min(0).default(1),
       autoFix: z.array(SeveritySchema).default(['P0', 'P1']),
       /** Severities that are not fixed automatically but asked about in the inbox. */
       ask: z.array(SeveritySchema).default(['P2']),

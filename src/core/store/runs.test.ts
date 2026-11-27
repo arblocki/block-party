@@ -24,7 +24,7 @@ function runInput(projectId: string, over: Partial<RunInput> = {}): RunInput {
     planPath: '/runs/r1/plans/v1.md',
     planHash: 'hash1',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
     ownerPid: null,
     ownerHost: null,
     createdAt: '2026-01-01T00:00:00.000Z',
@@ -90,7 +90,7 @@ describe('run store', () => {
         headSha: 'head0',
         prNumber: 12,
         implementer: { mode: 'pane', sessionId: 's1', paneLabel: 'impl' },
-        rounds: { checkFix: 1, reviewFix: 2, feedback: 0, checkRuns: 0 },
+        rounds: { checkFix: 1, reviewFix: 2, ciFix: 0, feedback: 0, checkRuns: 0 },
         ownerPid: 4242,
         ownerHost: 'host-a',
       });
@@ -112,7 +112,7 @@ describe('run store', () => {
         planPath: '/p2.md',
         planHash: 'hash2',
         implementer: { mode: 'headless' as const, sessionId: 's2', paneLabel: null },
-        rounds: { checkFix: 3, reviewFix: 4, feedback: 0, checkRuns: 0 },
+        rounds: { checkFix: 3, reviewFix: 4, ciFix: 0, feedback: 0, checkRuns: 0 },
         ownerPid: null,
         ownerHost: null,
       };

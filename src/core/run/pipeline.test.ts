@@ -19,7 +19,7 @@ import type {
 } from '../agents/types.js';
 import type { ChecksRunResult } from '../checks/run.js';
 import type { DiffFile } from '../git/index.js';
-import type { GitHubClient } from '../github/types.js';
+import type { CiCheck, GitHubClient } from '../github/types.js';
 import type { Finding } from '../reviewer/findings.js';
 import type { ReviewResult } from '../reviewer/codex-reviewer.js';
 import { resolveRunConfig, type RunFlagOverrides } from './config.js';
@@ -124,6 +124,8 @@ interface Opts {
   checks?: boolean[]; // pass/fail per runChecks call; default always pass
   reviews?: (ReviewResult | Error)[];
   ci?: CiWaitState;
+  /** One result per wait-for-CI call (the last repeats); overrides `ci`. */
+  ciSeq?: { state: CiWaitState; checks?: CiCheck[] }[];
   flags?: RunFlagOverrides;
   section?: unknown;
   noChecksConfig?: boolean;
@@ -165,6 +167,7 @@ function harness(o: Opts) {
       planPath: string;
     }[],
     published: [] as PublishOptions[],
+    ciWaits: [] as string[],
     checks: 0,
     setup: 0,
     worktrees: 0,
@@ -181,7 +184,7 @@ function harness(o: Opts) {
       writeFileSync(path, t.plan ?? PLAN);
     }
     if (planner && t.moveHead) git.head = 'f'.repeat(40);
-    if (t.commit !== false && !planner) git.head = String(++git.n).padStart(40, 'c');
+    if (t.commit !== false && !planner) git.head = String(++git.n).padEnd(40, 'c');
     git.dirty = t.dirty ?? false;
     if (t.report === 'invalid') writeFileSync(input.reportPath, '{nope');
     else if (t.report !== undefined || !t.outcome) {
@@ -315,7 +318,14 @@ function harness(o: Opts) {
       }
       return { prNumber: 7, url: 'https://x/pr/7', headSha: git.head, created: true };
     },
-    waitForCi: async () => ({ state: o.ci ?? 'success', checks: [] }),
+    waitForCi: async (w) => {
+      calls.ciWaits.push(w.sha);
+      if (o.ciSeq) {
+        const r = o.ciSeq[Math.min(calls.ciWaits.length - 1, o.ciSeq.length - 1)]!;
+        return { state: r.state, checks: r.checks ?? [] };
+      }
+      return { state: o.ci ?? 'success', checks: [] };
+    },
     github: async () => ({}) as GitHubClient,
     createLog: (dir) => new RunLog(dir, { echo: (l) => echoed.push(l) }),
     hookArgv: ['node', 'hook'],
@@ -624,7 +634,7 @@ describe('runPipeline', () => {
   it('blocks on GitHub CI failure and timeout', async () => {
     const failed = await harness({ turns: [{}], ci: 'failure' }).run();
     expect(failed.stage).toBe('blocked');
-    expect(failed.note).toContain('parity gap');
+    expect(failed.note).toContain('still failing');
     const timeout = await harness({ turns: [{}], ci: 'timeout' }).run();
     expect(timeout.stage).toBe('blocked');
   });
@@ -1592,12 +1602,17 @@ describe('runPipeline with a store', () => {
     expect(store.listDecisions({ runId: out.runId })).toHaveLength(0);
   });
 
-  it('ends wait-ci failed and blocks when GitHub CI fails', async () => {
-    const store = openStore(':memory:').runs;
-    const out = await harness({ store, turns: [{}], ci: 'failure' }).run();
+  it('ends wait-ci failed and blocks when GitHub CI fails and the owner stops', async () => {
+    const { store } = scripted({ ci_gap: ['stop'] });
+    const out = await harness({ store, turns: [{}, {}], ci: 'failure' }).run();
     expect(out.stage).toBe('blocked');
     expect(stagesOf(store, out).at(-1)).toEqual(['wait-ci', 1, 'failed']);
-    expect(store.listDecisions({ runId: out.runId }).map((d) => d.kind)).toEqual(['blocked']);
+    expect(
+      store
+        .listDecisions({ runId: out.runId })
+        .map((d) => d.kind)
+        .sort(),
+    ).toEqual(['blocked', 'ci_gap', 'ci_gap', 'ci_gap']);
   });
 
   it('completes exactly as without a store when every store method throws', async () => {
@@ -1631,6 +1646,107 @@ describe('runPipeline with a store', () => {
     expect(brokenEvents.filter((e) => e.type !== 'db.error').map((e) => e.type)).toEqual(
       fileEvents(plain).map((e) => e.type),
     );
+  });
+});
+
+describe('CI parity gap', () => {
+  const GH_FAIL: CiCheck[] = [
+    { name: 'build-linux', status: 'completed', conclusion: 'failure', url: 'https://gh/9' },
+    { name: 'lint', status: 'completed', conclusion: 'success', url: 'https://gh/8' },
+  ];
+  const fail = { state: 'failure' as const, checks: GH_FAIL };
+  const ok = { state: 'success' as const };
+  const kinds = (store: RunStore, out: RunOutcome) =>
+    stagesOf(store, out).map((s) => s[0] as string);
+
+  it('runs one ci-fix turn with the failing check names, re-verifies, pushes and rests', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, { report: report({ summary: 'Fixed CI' }) }],
+      ciSeq: [fail, ok],
+      reviews: [review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sends[0]).toContain('ci-fix-1.md');
+    const input = readFileSync(join(out.runDir, 'inputs', 'ci-failures-1.md'), 'utf8');
+    expect(input).toContain('build-linux');
+    expect(input).toContain('https://gh/9');
+    expect(h.calls.checks).toBe(2);
+    expect(h.calls.reviews).toHaveLength(2);
+    expect(h.calls.published).toHaveLength(2);
+    expect(h.calls.published[1]!.prNumber).toBe(7);
+    expect(h.calls.ciWaits).toHaveLength(2);
+    expect(h.calls.ciWaits[0]).not.toBe(h.calls.ciWaits[1]);
+    expect(kinds(store, out)).toEqual([
+      'implement',
+      'checks',
+      'review',
+      'publish',
+      'wait-ci',
+      'ci-fix',
+      'checks',
+      'review',
+      'publish',
+      'wait-ci',
+    ]);
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open.map((d) => d.kind).sort()).toEqual(['ci_gap', 'final_review']);
+    expect(open.find((d) => d.kind === 'ci_gap')!.options).toBeNull();
+    expect(JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')).rounds.ciFix).toBe(1);
+  });
+
+  it('opens a ci_gap decision on the second failure: stop blocks the run', async () => {
+    const { store, asked } = scripted({ ci_gap: ['stop'] });
+    const h = harness({ store, turns: [{}, {}], ciSeq: [fail], reviews: [review([]), review([])] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('Stopped at your request');
+    expect(asked.map((a) => a.kind)).toEqual(['ci_gap']);
+    expect(h.calls.sends).toHaveLength(1);
+  });
+
+  it('retry makes one more ci-fix round', async () => {
+    const { store, asked } = scripted({ ci_gap: ['retry'] });
+    const h = harness({
+      store,
+      turns: [{}, {}, {}],
+      ciSeq: [fail, fail, ok],
+      reviews: [review([]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(1);
+    expect(h.calls.sends).toHaveLength(2);
+    expect(h.calls.sends[1]).toContain('ci-fix-2.md');
+  });
+
+  it('opens one informational item per failed head', async () => {
+    const { store } = scripted({ ci_gap: ['stop'] });
+    const h = harness({ store, turns: [{}, {}], ciSeq: [fail], reviews: [review([]), review([])] });
+    const out = await h.run();
+    const info = store
+      .listDecisions({ runId: out.runId })
+      .filter((d) => d.kind === 'ci_gap' && d.options === null);
+    expect(info).toHaveLength(2);
+    expect(new Set(info.map((d) => d.title)).size).toBe(2);
+    expect(info[0]!.body).toContain('build-linux');
+  });
+
+  it('blocks instead of waiting when there is no database to ask', async () => {
+    const h = harness({ turns: [{}, {}], ciSeq: [fail], reviews: [review([]), review([])] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(out.note).toContain('database');
+  });
+
+  it('does not fix a timeout', async () => {
+    const h = harness({ turns: [{}], ci: 'timeout' });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    expect(h.calls.sends).toHaveLength(0);
   });
 });
 
@@ -1694,7 +1810,7 @@ describe('final review and continuations', () => {
   });
 
   it('refuses to continue a run that is not resting', async () => {
-    const h = harness({ turns: [{}], ci: 'failure' });
+    const h = harness({ turns: [{}], ci: 'timeout' });
     const out = await h.run();
     expect(out.stage).toBe('blocked');
     await expect(continueRun(out.runId, { kind: 'approve' }, h.deps)).rejects.toThrow(
@@ -1807,6 +1923,7 @@ describe('final review and continuations', () => {
     expect(state(out).rounds).toEqual({
       checkFix: 0,
       reviewFix: 2,
+      ciFix: 0,
       feedback: 1,
       checkRuns: 4,
     });

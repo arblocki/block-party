@@ -51,6 +51,7 @@ export type StageKind =
   | 'implement'
   | 'check-fix'
   | 'review-fix'
+  | 'ci-fix'
   | 'feedback'
   | 'checks'
   | 'review'

@@ -14,6 +14,7 @@ describe('resolveRunConfig', () => {
     expect(c.policy).toEqual({
       maxCheckFixRounds: 2,
       maxReviewFixRounds: 1,
+      maxCiFixRounds: 1,
       autoFix: ['P0', 'P1'],
       ask: ['P2'],
       maxFixLinesPerFinding: 200,

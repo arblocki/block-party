@@ -44,7 +44,7 @@ export interface Ctx {
   reports: TurnReport[];
   lastChecks?: ChecksRunResult;
   /** Fix rounds already used when this pass began: the caps count from here. */
-  fixBase: { checkFix: number; reviewFix: number };
+  fixBase: { checkFix: number; reviewFix: number; ciFix: number };
   rulingsWritten: boolean;
   /** The commit range of the latest fix turn, for judging how broad it was. */
   lastFix?: { from: string; to: string };
@@ -140,7 +140,11 @@ export function buildCtx(b: BuildCtxInput): Ctx {
     },
     rounds: [],
     reports: [],
-    fixBase: { checkFix: st.rounds.checkFix, reviewFix: st.rounds.reviewFix },
+    fixBase: {
+      checkFix: st.rounds.checkFix,
+      reviewFix: st.rounds.reviewFix,
+      ciFix: st.rounds.ciFix,
+    },
     rulingsWritten: false,
     rulings: [],
     pending: Promise.resolve(),

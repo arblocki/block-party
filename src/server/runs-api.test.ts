@@ -34,7 +34,7 @@ function runInput(projectId: string, over: Partial<RunInput> = {}): RunInput {
     planPath: '/runs/a/plans/v1.md',
     planHash: 'hash1',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
     ownerPid: null,
     ownerHost: null,
     createdAt: '2026-01-01T00:00:00.000Z',

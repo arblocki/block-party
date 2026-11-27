@@ -26,16 +26,19 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
+import { DecisionDismissedError } from './wait.js';
 import { assertTransition, isResting, isTerminal } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
   failedChecks,
+  failedCiChecks,
   interruptedBody,
   InterruptedError,
   isShutdown,
   mergedPriorFindings,
   renderCheckFailures,
+  renderCiFailures,
   type ShutdownError,
   throwIfAborted,
   titleFromDescription,
@@ -77,7 +80,7 @@ import { triageOf } from './triage.js';
 import { ReportObjectSchema, readReport, type Report } from './report.js';
 import { loadRunState, saveRunState, type RunState } from './run-state.js';
 import type { CiCheck } from '../github/types.js';
-import type { RunStore, StageKind, StageState } from '../store/runs.js';
+import type { DecisionOption, RunStore, StageKind, StageState } from '../store/runs.js';
 
 /** What a run starts from: a plan file, or a description the planner turns into a plan. */
 export type RunSource =
@@ -305,7 +308,7 @@ async function finishRun(ctx: Ctx): Promise<void> {
   if (!ctx.input.config.publish) {
     await restForReview(ctx, 'Publishing disabled (--no-publish); stopped after review');
   } else {
-    await publish(ctx);
+    await publishAndWait(ctx);
   }
 }
 
@@ -424,7 +427,7 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     implementer: null,
     planner: null,
     sessionEnded: false,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
     prNumber: null,
     createdAt: ts,
     updatedAt: ts,
@@ -908,7 +911,7 @@ async function judgeTurn(
 
 async function fixTurn(
   ctx: Ctx,
-  kind: 'check-fix' | 'review-fix' | 'feedback',
+  kind: 'check-fix' | 'review-fix' | 'ci-fix' | 'feedback',
   n: number,
   findingsPath: string,
   extra: TurnChecks,
@@ -1165,8 +1168,97 @@ async function restForReview(ctx: Ctx, note: string | null): Promise<void> {
   );
 }
 
-/** Step 8: push, draft PR, then wait for GitHub CI. */
-async function publish(ctx: Ctx): Promise<void> {
+const CI_GAP_OPTIONS: DecisionOption[] = [
+  { id: 'retry', label: 'Try another fix round' },
+  { id: 'stop', label: 'Stop' },
+];
+
+/**
+ * Step 8: push, draft PR, then wait for GitHub CI. When CI fails on a head that passed local
+ * CI, the implementer gets the failures in a `ci-fix` round, local CI and review run again,
+ * and the push repeats. Rounds are counted per pass (against `fixBase`); past the budget the
+ * owner is asked whether to try another round or stop.
+ */
+async function publishAndWait(ctx: Ctx): Promise<void> {
+  for (;;) {
+    const failure = await publishOnce(ctx);
+    if (!failure) return;
+    const { input } = ctx;
+    const max = input.config.policy.maxCiFixRounds;
+    const used = ctx.st.rounds.ciFix - ctx.fixBase.ciFix;
+    if (used >= max) await askCiGap(ctx, failure, used);
+    const n = ctx.st.rounds.ciFix + 1;
+    await patchState(ctx, { rounds: { ...ctx.st.rounds, ciFix: n } });
+    const file = await writeArtifact(
+      ctx.runDir,
+      `inputs/ci-failures-${n}.md`,
+      renderCiFailures(failure.checks, failure.head, ctx.lastChecks?.results ?? []),
+    );
+    await fixTurn(ctx, 'ci-fix', n, file.path, {});
+    await verifyLoop(ctx);
+  }
+}
+
+interface CiFailure {
+  head: string;
+  prNumber: number;
+  checks: CiCheck[];
+}
+
+/** Opens the once-per-head informational `ci_gap` item. */
+function openCiGapInfo(ctx: Ctx, failure: CiFailure, names: string): void {
+  const short = failure.head.slice(0, 7);
+  const title = `GitHub CI failed on ${short}`;
+  const seen = ctx.deps.store?.listDecisions({ runId: ctx.st.id }) ?? [];
+  if (seen.some((d) => d.kind === 'ci_gap' && d.title === title)) return;
+  ctx.rec.openDecision(
+    'ci_gap',
+    title,
+    `GitHub CI failed on ${short} after local CI passed: ${names}.`,
+    attachCommand(ctx),
+  );
+}
+
+/** Past the CI fix budget: asks whether to try another round; `stop` or a dismissal blocks. */
+async function askCiGap(ctx: Ctx, failure: CiFailure, used: number): Promise<void> {
+  await setStage(ctx, 'awaiting_decision', 'GitHub CI keeps failing');
+  const id = ctx.rec.openDecision(
+    'ci_gap',
+    'GitHub CI still failing',
+    `GitHub CI still fails on ${failure.head.slice(0, 7)} after ${used} fix round(s) ` +
+      `(PR #${failure.prNumber}). Try another fix round, or stop?`,
+    attachCommand(ctx),
+    CI_GAP_OPTIONS,
+  );
+  if (id === null) {
+    throw new Halt(
+      'blocked',
+      `GitHub CI still failing after ${used} fix round(s), and the run database is unavailable to ask.${describeSession(ctx)}`,
+      true,
+    );
+  }
+  let answer;
+  try {
+    answer = await ctx.rec.awaitDecision(id, ctx.input.signal);
+  } catch (e) {
+    if (e instanceof DecisionDismissedError) {
+      throw new Halt(
+        'blocked',
+        `The question about failing GitHub CI was dismissed.${describeSession(ctx)}`,
+      );
+    }
+    throw e;
+  }
+  if (answer.choice !== 'retry') {
+    throw new Halt(
+      'blocked',
+      `Stopped at your request: GitHub CI keeps failing (PR #${failure.prNumber}).${describeSession(ctx)}`,
+    );
+  }
+}
+
+/** One push and CI wait. Returns the failure when GitHub CI failed; rests or halts otherwise. */
+async function publishOnce(ctx: Ctx): Promise<CiFailure | null> {
   const { deps, st, input } = ctx;
   const wt = st.worktreePath;
   const head = await deps.git.headSha(wt);
@@ -1231,7 +1323,10 @@ async function publish(ctx: Ctx): Promise<void> {
     },
     (p) => ({ output: { prNumber: p.prNumber, url: p.url } }),
   );
-  if (!input.config.waitForCi) return restForReview(ctx, `PR #${pr.prNumber} ${pr.url}`);
+  if (!input.config.waitForCi) {
+    await restForReview(ctx, `PR #${pr.prNumber} ${pr.url}`);
+    return null;
+  }
 
   await setStage(ctx, 'waiting_ci', `PR #${pr.prNumber}`);
   const ci = await inStage(
@@ -1247,10 +1342,19 @@ async function publish(ctx: Ctx): Promise<void> {
     }),
   );
   if (ci.state === 'failure') {
-    throw new Halt(
-      'blocked',
-      `GitHub CI failed after local CI passed: parity gap (PR #${pr.prNumber}).${describeSession(ctx)}`,
+    const names = failedCiChecks(ci.checks)
+      .map((c) => c.name)
+      .join(', ');
+    ctx.rec.event('ci.failed', {
+      head: head.slice(0, 7),
+      checks: failedCiChecks(ci.checks).map((c) => c.name),
+    });
+    openCiGapInfo(
+      ctx,
+      { head, prNumber: pr.prNumber, checks: ci.checks },
+      names || 'unnamed check',
     );
+    return { head, prNumber: pr.prNumber, checks: ci.checks };
   }
   if (ci.state === 'timeout') {
     throw new Halt(
@@ -1258,7 +1362,8 @@ async function publish(ctx: Ctx): Promise<void> {
       `Timed out waiting for GitHub CI on PR #${pr.prNumber}.${describeSession(ctx)}`,
     );
   }
-  return restForReview(ctx, `PR #${pr.prNumber} ${pr.url} (CI: ${ci.state})`);
+  await restForReview(ctx, `PR #${pr.prNumber} ${pr.url} (CI: ${ci.state})`);
+  return null;
 }
 
 export type ContinueEntry =

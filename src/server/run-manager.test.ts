@@ -66,7 +66,7 @@ function createRow() {
     planPath: '/p',
     planHash: 'h',
     implementer: null,
-    rounds: { checkFix: 0, reviewFix: 0, feedback: 0, checkRuns: 0 },
+    rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
     ownerPid: process.pid,
     ownerHost: 'h',
   });

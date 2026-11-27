@@ -28,6 +28,7 @@ const FORWARD: [RunStage, RunStage][] = [
   ['reviewing', 'complete'],
   ['publishing', 'waiting_ci'],
   ['publishing', 'complete'],
+  ['waiting_ci', 'fixing'],
   ['waiting_ci', 'complete'],
   ['waiting_ci', 'awaiting_review'],
   ['publishing', 'awaiting_review'],

@@ -72,7 +72,13 @@ export async function readReport(path: string): Promise<ReadReportResult> {
 }
 
 /** The kinds of stage that produce an implementer report, in their fallback order. */
-export const TURN_KINDS: readonly string[] = ['implement', 'check-fix', 'review-fix', 'feedback'];
+export const TURN_KINDS: readonly string[] = [
+  'implement',
+  'check-fix',
+  'review-fix',
+  'ci-fix',
+  'feedback',
+];
 
 /**
  * Puts reports in turn order: the order of the run's stage rows, then any report the rows do

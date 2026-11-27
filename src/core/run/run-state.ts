@@ -43,6 +43,8 @@ export const RunStateSchema = z.strictObject({
   rounds: z.strictObject({
     checkFix: z.number().int(),
     reviewFix: z.number().int(),
+    /** Fix turns that answered a GitHub CI failure. */
+    ciFix: z.number().int().default(0),
     /** Fix turns that answered the human's send-back feedback. */
     feedback: z.number().int().default(0),
     /** Local CI runs so far (the round of the next `checks` stage). */

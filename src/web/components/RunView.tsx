@@ -84,6 +84,7 @@ function Strip({
           <span className="text-xs">
             {i.state}
             {i.count > 1 ? ` x${i.count}` : ''}
+            {i.ciFixes ? ` · ${i.ciFixes} CI fix${i.ciFixes === 1 ? '' : 'es'}` : ''}
             {i.met ? ` · criteria ${i.met.met}/${i.met.total}` : ''}
           </span>
         </li>

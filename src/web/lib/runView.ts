@@ -12,13 +12,15 @@ export interface StripItem {
   count: number;
   /** Acceptance criteria met, on the cells that produce implementer reports (Implement, Fix). */
   met?: { met: number; total: number };
+  /** CI fix rounds, on the CI cell. */
+  ciFixes?: number;
 }
 
 const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
   { key: 'implement', label: 'Implement', kinds: ['implement'] },
   { key: 'checks', label: 'Local CI', kinds: ['checks'] },
   { key: 'review', label: 'Codex', kinds: ['review'] },
-  { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix', 'feedback'] },
+  { key: 'fix', label: 'Fix', kinds: ['check-fix', 'review-fix', 'ci-fix', 'feedback'] },
   { key: 'publish', label: 'Publish', kinds: ['publish'] },
   { key: 'ci', label: 'CI', kinds: ['wait-ci'] },
 ];
@@ -46,7 +48,15 @@ export function stageStrip(
     if (!last) state = run.stage === 'complete' ? 'skipped' : 'pending';
     else if (execs.some((s) => s.state === 'running')) state = finished ? 'stopped' : 'running';
     else state = last.state === 'succeeded' ? 'done' : (last.state as StripState);
-    return { key, label, state, count: execs.length, ...(key === metKey && met ? { met } : {}) };
+    const ciFixes = key === 'ci' ? stages.filter((s) => s.kind === 'ci-fix').length : 0;
+    return {
+      key,
+      label,
+      state,
+      count: execs.length,
+      ...(key === metKey && met ? { met } : {}),
+      ...(ciFixes > 0 ? { ciFixes } : {}),
+    };
   });
 }
 
@@ -145,6 +155,10 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
     }
     case 'checks.result':
       return `Local CI ${p.passed === true ? 'passed' : 'failed'}${s('head') ? ` on ${s('head')}` : ''}`;
+    case 'ci.failed': {
+      const names = Array.isArray(p.checks) ? p.checks.filter((c) => typeof c === 'string') : [];
+      return `GitHub CI failed${s('head') ? ` on ${s('head')}` : ''}${names.length ? `: ${names.join(', ')}` : ''}`;
+    }
     case 'checks.warning':
     case 'drift.warning':
       return s('warning') ?? type;

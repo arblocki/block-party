@@ -54,6 +54,24 @@ describe('stageStrip', () => {
     expect(strip.find((i) => i.key === 'checks')!.count).toBe(2);
   });
 
+  it('counts CI fix rounds on the CI cell', () => {
+    const strip = stageStrip(
+      [
+        stage('implement', 'succeeded'),
+        stage('publish', 'succeeded'),
+        stage('wait-ci', 'failed'),
+        stage('ci-fix', 'succeeded'),
+        stage('publish', 'succeeded'),
+        stage('wait-ci', 'succeeded'),
+      ],
+      run('awaiting_review'),
+    );
+    const ci = strip.find((i) => i.key === 'ci')!;
+    expect(ci).toMatchObject({ state: 'done', count: 2, ciFixes: 1 });
+    expect(strip.find((i) => i.key === 'fix')!.state).toBe('done');
+    expect(strip.find((i) => i.key === 'publish')!).not.toHaveProperty('ciFixes');
+  });
+
   it('marks steps that never ran as skipped once complete (no-publish run)', () => {
     const stages = [
       stage('implement', 'succeeded'),
@@ -163,6 +181,10 @@ describe('summarizeEvent', () => {
     expect(sum('checks.result', { head: 'abc1234', passed: false })).toBe(
       'Local CI failed on abc1234',
     );
+    expect(sum('ci.failed', { head: 'abc1234', checks: ['build', 'e2e'] })).toBe(
+      'GitHub CI failed on abc1234: build, e2e',
+    );
+    expect(sum('ci.failed', {})).toBe('GitHub CI failed');
     expect(sum('checks.warning', { warning: 'no lint' })).toBe('no lint');
     expect(sum('drift.stale', { check: 'test', ref: 'ci.yml' })).toBe(
       'Check test is stale (ci.yml)',

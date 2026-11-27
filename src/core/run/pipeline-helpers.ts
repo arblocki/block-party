@@ -1,3 +1,4 @@
+import type { CiCheck } from '../github/types.js';
 import type { CheckResult } from '../checks/run.js';
 import { tailLog } from '../checks/run.js';
 import type { PriorFinding } from '../reviewer/prompt.js';
@@ -72,6 +73,38 @@ export function renderCheckFailures(results: CheckResult[], headSha: string): st
     out.push(`## ${r.name} (${how})`, '', `Command: \`${r.command}\``, '');
     out.push('Last 80 log lines:', '', '```', tailLog(r.logPath, 80), '```', '');
   }
+  return out.join('\n');
+}
+
+const CI_OK = new Set(['success', 'neutral', 'skipped']);
+
+/** GitHub checks that finished without success (a check still running is not a failure). */
+export function failedCiChecks(checks: CiCheck[]): CiCheck[] {
+  return checks.filter((c) => c.conclusion !== null && !CI_OK.has(c.conclusion));
+}
+
+/** Markdown for the implementer: failing GitHub checks, and the local checks that passed. */
+export function renderCiFailures(
+  checks: CiCheck[],
+  headSha: string,
+  localChecks: CheckResult[],
+): string {
+  const failed = failedCiChecks(checks);
+  const out = [`# GitHub CI failed on ${headSha.slice(0, 7)} after local CI passed`, ''];
+  out.push('## Failed GitHub checks', '');
+  if (failed.length === 0) out.push('(GitHub reported a failure without naming a check.)');
+  for (const c of failed) out.push(`- ${c.name}: ${c.conclusion}${c.url ? ` (${c.url})` : ''}`);
+  out.push('', '## Local checks that passed on the same commit', '');
+  const passed = localChecks.filter((r) => r.exitCode === 0 && !r.timedOut);
+  if (passed.length === 0) out.push('(none)');
+  for (const r of passed) out.push(`- ${r.name}: \`${r.command}\``);
+  out.push(
+    '',
+    'The URLs are for reference; you may not have network access, so logs are not included.',
+    'A GitHub check with no local equivalent is a parity gap: say so in the report summary,',
+    'and make the failure reproducible locally where you can.',
+    '',
+  );
   return out.join('\n');
 }
 

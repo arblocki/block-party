@@ -43,7 +43,7 @@ const FORWARD: Record<ActiveStage, readonly RunStage[]> = {
   // `complete` straight from review is the --no-publish path.
   reviewing: ['fixing', 'publishing', 'complete', 'awaiting_review'],
   publishing: ['waiting_ci', 'complete', 'awaiting_review'],
-  waiting_ci: ['complete', 'awaiting_review'],
+  waiting_ci: ['fixing', 'complete', 'awaiting_review'],
   // A question the pipeline waits on; the run goes back to whichever stage can resume.
   awaiting_decision: ['fixing', 'checking', 'reviewing', 'publishing'],
 };
