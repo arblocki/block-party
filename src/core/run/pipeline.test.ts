@@ -2671,22 +2671,37 @@ describe('resume', () => {
     expect(resumed?.payload).toMatchObject({ from: 'interrupted', point: 'publish' });
   });
 
-  it('asks instead of resuming when the worktree has uncommitted changes', async () => {
+  it('resumes a mid-turn dirty worktree without asking, telling the agent about it', async () => {
     const store = openStore(':memory:').runs;
     const { h, out } = await interruptedMidImplement(store);
     h.git.dirty = true;
     const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sends[0]).toContain('uncommitted changes from before the interruption');
+    expect(h.calls.sends[0]).toContain('git status');
+    expect(store.listDecisions({ runId: out.runId }).map((d) => d.kind)).not.toContain(
+      'resume_conflict',
+    );
+  });
+
+  it('asks instead of resuming when the worktree is dirty after the agent turn', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedAtPublish(store);
+    h.git.dirty = true;
+    const next = await resume(h, out.runId);
     expect(next.stage).toBe('interrupted');
     expect(h.calls.sends).toHaveLength(0);
+    expect(h.calls.published).toHaveLength(1);
     const open = store.listDecisions({ runId: out.runId, status: 'open' });
     expect(open.map((d) => d.kind)).toEqual(['resume_conflict']);
     expect(open[0]!.body).toContain('a.ts');
     expect(open[0]!.options?.map((o) => o.id)).toEqual(['keep', 'cancel']);
     expect(store.getRun(out.runId)?.ownerPid).toBeNull();
     // Keeping them goes on from there.
+    h.git.dirty = false;
     const kept = await resume(h, out.runId, true);
     expect(kept.stage).toBe('awaiting_review');
-    expect(h.calls.sends).toHaveLength(1);
   });
 
   it('asks when HEAD moved since the run stopped, and keep re-records the head', async () => {

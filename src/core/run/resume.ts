@@ -42,7 +42,14 @@ export type ResumePoint =
   /** The run never got an approved plan: plan again, with the last feedback. */
   | { kind: 'plan'; feedback: string | null }
   /** The last agent turn has no accepted report. `reportPending`: it wrote one, not judged. */
-  | { kind: 'turn'; turnKind: TurnKind; n: number; reportPending: boolean }
+  | {
+      kind: 'turn';
+      turnKind: TurnKind;
+      n: number;
+      reportPending: boolean;
+      /** The worktree holds the turn's uncommitted work from before the interruption. */
+      dirty: boolean;
+    }
   | { kind: 'checks' }
   | { kind: 'review' }
   | { kind: 'publish' }
@@ -109,7 +116,7 @@ function lastTurn(stages: StageEvidence[]): StageEvidence | undefined {
  * Where a stopped run picks up again, from its stage history and the worktree. Pure. The rules,
  * in order:
  *
- * 1. Uncommitted changes, or a HEAD that moved with no turn in progress to explain it, ask
+ * 1. Uncommitted changes, or a HEAD that moved, when no unfinished turn explains them, ask
  *    (unless the owner chose to `keep`). A missing worktree always asks.
  * 2. No approved plan: plan.
  * 3. The last agent turn has no accepted report: that turn again.
@@ -130,7 +137,8 @@ export function resumePoint(ev: ResumeEvidence, opts: ResumeOptions = {}): Resum
 
   if (!opts.keep) {
     const problems: string[] = [];
-    if (ev.dirtyFiles.length > 0) {
+    // An unfinished turn explains uncommitted changes and new commits: they are its own work.
+    if (ev.dirtyFiles.length > 0 && !turnOpen) {
       problems.push(`The working folder has uncommitted changes: ${listFiles(ev.dirtyFiles)}.`);
     }
     // Commits made while a turn was running belong to that turn; any others are unexplained.
@@ -163,6 +171,7 @@ export function resumePoint(ev: ResumeEvidence, opts: ResumeOptions = {}): Resum
       turnKind: (last?.kind ?? 'implement') as TurnKind,
       n: last?.round ?? 1,
       reportPending: ev.reportPending,
+      dirty: ev.dirtyFiles.length > 0,
     };
   }
 
@@ -629,7 +638,10 @@ export async function resumeTurn(
   // The head the turn started from: the last accepted one (the base before any turn).
   const prevHead = st.headSha ?? st.baseSha;
   const why = blockedBy ? ` The run had stopped because: ${blockedBy}` : '';
-  const message = `You were interrupted. Continue the task in ${brief}; write the report when done.${why}`;
+  const left = point.dirty
+    ? ' The worktree still has your uncommitted changes from before the interruption: check `git status` and carry on from them.'
+    : '';
+  const message = `You were interrupted. Continue the task in ${brief}; write the report when done.${left}${why}`;
   const session = ctx.session;
   const report = await steps.inStage(
     ctx,

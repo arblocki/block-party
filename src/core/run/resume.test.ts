@@ -48,7 +48,7 @@ describe('resumePoint', () => {
   it('resumes the turn when the last agent turn did not finish', () => {
     expect(
       resumePoint(ev({ recordedHead: null, stages: [st('implement', 1, 'cancelled')] })),
-    ).toEqual({ kind: 'turn', turnKind: 'implement', n: 1, reportPending: false });
+    ).toEqual({ kind: 'turn', turnKind: 'implement', n: 1, reportPending: false, dirty: false });
     expect(
       resumePoint(
         ev({
@@ -56,7 +56,7 @@ describe('resumePoint', () => {
           reportPending: true,
         }),
       ),
-    ).toEqual({ kind: 'turn', turnKind: 'check-fix', n: 2, reportPending: true });
+    ).toEqual({ kind: 'turn', turnKind: 'check-fix', n: 2, reportPending: true, dirty: false });
   });
 
   it('starts the first turn again when none was recorded', () => {
@@ -65,6 +65,7 @@ describe('resumePoint', () => {
       turnKind: 'implement',
       n: 1,
       reportPending: false,
+      dirty: false,
     });
   });
 
@@ -178,10 +179,20 @@ describe('resumePoint', () => {
       expect((p as { reason: string }).reason).toContain('moved');
     });
 
-    it('even in the middle of a turn when the worktree is dirty', () => {
+    it('on a dirty worktree once past the agent turn', () => {
+      for (const stages of [
+        [st('implement', 1)],
+        [st('implement', 1), checks()],
+        [st('implement', 1), checks(), review(), publish()],
+      ]) {
+        expect(resumePoint(ev({ dirtyFiles: [' M a.ts'], stages })).kind).toBe('ask');
+      }
+    });
+
+    it('but not in the middle of a turn: its uncommitted work is its own', () => {
       expect(
-        resumePoint(ev({ dirtyFiles: [' M a.ts'], stages: [st('implement', 1, 'running')] })).kind,
-      ).toBe('ask');
+        resumePoint(ev({ dirtyFiles: [' M a.ts'], stages: [st('implement', 1, 'running')] })),
+      ).toMatchObject({ kind: 'turn', dirty: true });
     });
 
     it('and does not let the owner keep a missing worktree', () => {
