@@ -1,6 +1,6 @@
 import { lazy, Suspense, useState } from 'react';
 import type { RunStage } from '../../core/run/machine';
-import { liveSession, type CloseNotice } from '../lib/terminal';
+import { liveSession, sessionWho, type CloseNotice } from '../lib/terminal';
 import type { RunEvent } from '../types';
 import { AttachCommand } from './AttachCommand';
 import { headingText } from './AppShell';
@@ -27,7 +27,6 @@ export function RunTerminalSection({
   const [session, setSession] = useState<number | null>(null);
   const [notice, setNotice] = useState<CloseNotice | null>(null);
   if (!live) return null;
-  const who = live.role === 'planner' ? 'planner' : 'agent';
   return (
     <section className="mb-8" aria-labelledby="terminal">
       <div className="mb-2 flex items-baseline gap-3">
@@ -57,7 +56,9 @@ export function RunTerminalSection({
           >
             {notice?.kind === 'ended' ? 'Reconnect' : 'Open terminal'}
           </button>
-          <span className="ml-2 text-sm text-muted">Watch the {who} live and type to it.</span>
+          <span className="ml-2 text-sm text-muted">
+            Watch {sessionWho(live.role)} live and type to it.
+          </span>
           {live.attach && <AttachCommand command={live.attach} />}
         </div>
       ) : (

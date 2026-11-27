@@ -269,8 +269,13 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
         let argv: string[];
         try {
           argv = await deps.host.attachArgv(pane);
-        } catch {
-          return end(4404, "The agent session isn't running.");
+        } catch (e) {
+          return end(
+            4404,
+            (e as { code?: unknown }).code === 'ambiguous_pane'
+              ? "Couldn't tell which terminal belongs to this run."
+              : "The agent session isn't running.",
+          );
         }
         if (closed) return;
         const [file, ...args] = argv;
@@ -288,7 +293,9 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
         proc = p;
         arm();
         let head = '';
+        const spawnedAt = Date.now();
         let paused: NodeJS.Timeout | undefined;
+        ws.once('close', () => clearInterval(paused));
         p.onData((d) => {
           if (head.length < 2048) head += d;
           if (ws.readyState !== ws.OPEN) return;
@@ -303,12 +310,13 @@ export function createTerminal(deps: TerminalDeps): TerminalEndpoint {
               p.resume?.();
             }, 50);
             paused.unref?.();
-            ws.once('close', () => clearInterval(paused));
           }
         });
         p.onExit(() =>
           // herdr refuses a second writable client and exits at once, saying so.
-          /already has an attached client/.test(head)
+          // Only herdr's own startup error counts: it exits right away, so the text must
+          // be in the first output and the exit within 2 s (pane content can't fake that).
+          Date.now() - spawnedAt < 2000 && /already has an attached client/.test(head)
             ? end(4429, 'This agent is already open in another terminal (maybe your own herdr).')
             : end(1000, 'The terminal session ended.'),
         );

@@ -449,6 +449,25 @@ describe('terminal websocket: the pty', () => {
     expect(r.reason).toContain('already open');
   });
 
+  it('refuses with 4404 when the host cannot tell which pane is the run', async () => {
+    host.attachArgv = async () => {
+      throw Object.assign(new Error('several'), { code: 'ambiguous_pane' });
+    };
+    expect(await connect().closed).toMatchObject({
+      code: 4404,
+      reason: "Couldn't tell which terminal belongs to this run.",
+    });
+    expect(ptys).toEqual([]);
+  });
+
+  it('ignores the already-attached text when the pty has been running a while', async () => {
+    const c = await ready();
+    await sleep(2100);
+    ptys[0]!.emit('echo already has an attached client\n');
+    ptys[0]!.end();
+    expect((await c.closed).code).toBe(1000);
+  });
+
   it('pauses the pty while the viewer is far behind and resumes when it drains', async () => {
     const c = await ready();
     c.ws.pause();

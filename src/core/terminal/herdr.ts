@@ -170,9 +170,24 @@ export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
     // whole shared session, and `agent attach` refuses a pane herdr hasn't detected an agent
     // in.) Only one writable client owns a terminal, so a second attach exits with an error.
     async attachArgv(pane) {
-      const id = await need(pane);
-      const found = (await panes()).find((p) => p.paneId === id);
-      if (!found?.terminalId) {
+      if (pane.session !== session) {
+        throw new HerdrError('wrong_session', `pane belongs to session ${pane.session}`);
+      }
+      const want = await real(pane.cwd);
+      const matches: RawPane[] = [];
+      for (const p of await panes()) {
+        if (p.label === pane.label && (await real(p.cwd)) === want) matches.push(p);
+      }
+      if (matches.length === 0) {
+        throw new HerdrError('pane_not_found', `no pane labelled ${pane.label} in ${pane.cwd}`);
+      }
+      // Never guess which of several panes is the run's: attaching the wrong one would put
+      // the viewer in someone else's agent.
+      if (matches.length > 1) {
+        throw new HerdrError('ambiguous_pane', `several panes are labelled ${pane.label}`);
+      }
+      const found = matches[0] as RawPane;
+      if (!found.terminalId) {
         throw new HerdrError('pane_not_found', `pane ${pane.label} has no terminal id`);
       }
       return ['herdr', '--session', pane.session, 'terminal', 'attach', found.terminalId];

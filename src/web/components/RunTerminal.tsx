@@ -6,6 +6,7 @@ import {
   closeNotice,
   resizeFrame,
   terminalSocketUrl,
+  sessionWho,
   terminalTheme,
   type CloseNotice,
 } from '../lib/terminal';
@@ -111,8 +112,8 @@ export default function RunTerminal({
   return (
     <div>
       <p className="mb-2 rounded-md bg-warning-soft px-3 py-2 text-sm text-warning">
-        You&apos;re typing into the {role} for this run. It sees what you type. Opening this may
-        resize the session to fit this window.
+        You&apos;re typing into {sessionWho(role)}. It sees what you type. Opening this may resize
+        the session to fit this window.
       </p>
       <div className="mb-2 flex items-center gap-3 text-sm text-muted">
         <span role="status">

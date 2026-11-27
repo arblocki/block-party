@@ -13,7 +13,6 @@ export interface LiveSession {
  * implementer's. Only a session that runs in a terminal ("pane" mode) counts, and not for a
  * finished run. The server makes the final call (the agent may have stopped).
  */
-
 export function liveSession(stage: RunStage, events: readonly RunEvent[]): LiveSession | null {
   if (isTerminal(stage)) return null;
   const type = stage === 'planning' ? 'planner.session' : 'implementer.session';
@@ -89,4 +88,9 @@ export function terminalTheme(read: (name: string) => string): {
     cursorAccent: v('--color-code-bg', '#0c1011'),
     selectionBackground: v('--color-accent-soft', '#203e37'),
   };
+}
+
+/** Who the terminal talks to, in words for someone new to block-party. */
+export function sessionWho(role: LiveSession['role']): string {
+  return role === 'planner' ? 'the agent writing the plan' : 'the agent building this run';
 }

@@ -260,6 +260,13 @@ describe('createHerdrHost', () => {
     ]);
     fake.on('pane.list', { panes: [] });
     await expect(host.attachArgv(pane)).rejects.toThrow(/no pane labelled/);
+    fake.on('pane.list', {
+      panes: [
+        { pane_id: 'w1:p1', terminal_id: 't1', label: 'bp-run-impl', cwd },
+        { pane_id: 'w2:p1', terminal_id: 't2', label: 'bp-run-impl', cwd },
+      ],
+    });
+    await expect(host.attachArgv(pane)).rejects.toMatchObject({ code: 'ambiguous_pane' });
   });
 
   it('read, agentState, list, attachCommand', async () => {
