@@ -1264,6 +1264,46 @@ describe('RunManager limits and queue', () => {
     await m2.shutdown();
   });
 
+  it('does not requeue a claimed resume that moved and was then interrupted again', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      continuePipeline: (runId, _entry, signal) => {
+        // It leaves `interrupted` (a stage event), works, and is interrupted by the shutdown.
+        store.runs.appendEvent({
+          runId,
+          ts: 't',
+          type: 'stage',
+          payload: { stage: 'implementing' },
+        });
+        store.runs.updateRun(runId, { stage: 'implementing' });
+        return new Promise((resolve) =>
+          signal.addEventListener('abort', () => {
+            store.runs.appendEvent({
+              runId,
+              ts: 't',
+              type: 'stage',
+              payload: { stage: 'interrupted' },
+            });
+            store.runs.updateRun(runId, { stage: 'interrupted' });
+            resolve({ runId, runDir: '/r', stage: 'interrupted', note: null, prNumber: null });
+          }),
+        );
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    const id = newId();
+    addRun(id, 'interrupted');
+    await m.start(startReq());
+    expect(m.resume(id)).toBe('started');
+    expect(stageOf(id)).toBe('queued');
+    fake.calls[0]!.gate.resolve();
+    await vi.waitFor(() => expect(stageOf(id)).toBe('implementing'));
+    await m.shutdown();
+    expect(stageOf(id)).toBe('interrupted');
+    expect(queuedIds()).not.toContain(id);
+  });
+
   it('skips git work for a run that was stopped while it waited for the project lock', async () => {
     let ran = false;
     let failure: unknown;
@@ -1313,7 +1353,8 @@ describe('RunManager limits and queue', () => {
         (id) => (outcome = id),
         (e: Error) => (outcome = e),
       );
-      await vi.advanceTimersByTimeAsync(900);
+      // The wait is longer than the timeout, and the start still succeeds.
+      await vi.advanceTimersByTimeAsync(5000);
       expect(outcome).toBeUndefined();
       gate.resolve();
       await vi.advanceTimersByTimeAsync(0);

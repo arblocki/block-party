@@ -164,8 +164,9 @@ interface Entry {
   held: boolean;
   /** The run this entry drives, once known (a start learns it in `onStarted`). */
   runId?: string;
-  /** Told how long the entry waited for the project lock (a start's timeout excludes it). */
-  onLockWait?: (ms: number) => void;
+  /** The entry starts waiting for the project lock / was granted it (a start's timeout pauses between). */
+  onLockBegin?: () => void;
+  onLockEnd?: () => void;
 }
 
 /** What a queued start keeps: the pipeline's input without the parts that only live in memory. */
@@ -320,9 +321,9 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       },
     },
     lockProject: (fn, signal) => {
-      const asked = Date.now();
+      entry.onLockBegin?.();
       return withProjectLock(entry.projectId ?? '', () => {
-        entry.onLockWait?.(Date.now() - asked);
+        entry.onLockEnd?.();
         // Stopped while it waited for its turn: do not touch the clone.
         if (signal?.aborted) throw signal.reason;
         return fn();
@@ -399,11 +400,19 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     const entryRec: Entry = { ac, done: Promise.resolve(), projectId, held: takesSlot, runId };
     live.add(entryRec);
     byId.set(runId, entryRec);
-    /** Shutdown came before the continuation moved the run: keep the answer for the next start. */
+    // Where the run's events stood at the claim: a `stage` event after it means it moved.
+    const baseline = fromQueue === undefined ? 0 : (runs.listEvents(runId).at(-1)?.id ?? 0);
+    const moved = (): boolean =>
+      runs.listEvents(runId, { afterId: baseline }).some((e) => e.type === 'stage');
+    /**
+     * Shutdown came before the continuation moved the run out of its stage: keep the answer for
+     * the next start. A run that moved and came back to the same stage (a resumed run that was
+     * interrupted again) has acted on the answer, so it is not queued.
+     */
     const requeue = (): boolean => {
       if (fromQueue === undefined || !(ac.signal.reason instanceof ShutdownError)) return false;
       try {
-        return stageNow(runId) === fromQueue && runs.queueRun(runId, fromQueue, entry);
+        return !moved() && stageNow(runId) === fromQueue && runs.queueRun(runId, fromQueue, entry);
       } catch {
         return false;
       }
@@ -725,9 +734,10 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         };
         let timer = setTimeout(onTimeout, startTimeoutMs);
         // Time spent waiting for another run's git work on the project is not the run's own
-        // slowness: the timeout starts over for it.
-        entry.onLockWait = (ms) => {
-          if (settled || ms <= 0) return;
+        // slowness: the timeout pauses while it waits and starts over once it holds the lock.
+        entry.onLockBegin = () => clearTimeout(timer);
+        entry.onLockEnd = () => {
+          if (settled) return;
           clearTimeout(timer);
           timer = setTimeout(onTimeout, startTimeoutMs);
         };
