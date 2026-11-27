@@ -8,6 +8,19 @@ export const FINAL_REVIEW_OPTIONS: DecisionOption[] = [
   { id: 'send_back', label: 'Send back' },
 ];
 
+/** What a stopped (`interrupted` or `blocked`) run's question offers. */
+export const RESUME_OPTIONS: DecisionOption[] = [
+  { id: 'resume', label: 'Resume' },
+  { id: 'dismiss', label: 'Dismiss' },
+];
+
+export const RESUME_CONFLICT_TITLE = 'Check before resuming';
+
+export const RESUME_CONFLICT_OPTIONS: DecisionOption[] = [
+  { id: 'keep', label: 'Keep the changes and continue' },
+  { id: 'cancel', label: 'Cancel' },
+];
+
 export const PLAN_APPROVAL_TITLE = 'Plan ready for your approval';
 
 export const PLAN_APPROVAL_OPTIONS: DecisionOption[] = [

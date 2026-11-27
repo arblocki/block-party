@@ -39,11 +39,11 @@ vi.mock('./machine.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('./machine.js')>();
   return {
     ...real,
-    assertTransition: (from: RunStage, to: RunStage) => {
+    assertTransition: (from: RunStage, to: RunStage, opts?: { resume?: boolean }) => {
       if (forced.illegal?.[0] === from && forced.illegal[1] === to) {
         throw new real.IllegalTransitionError(from, to);
       }
-      real.assertTransition(from, to);
+      real.assertTransition(from, to, opts);
     },
   };
 });
@@ -232,6 +232,7 @@ function harness(o: Opts) {
       },
       headSha: async () => git.head,
       isClean: async () => !git.dirty,
+      statusLines: async () => (git.dirty ? [' M a.ts'] : []),
       commitsBetween: async (_c, base, head) =>
         base === head ? [] : [{ sha: head, subject: 'c' }],
       diffFiles: async () => ({

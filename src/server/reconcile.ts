@@ -1,5 +1,5 @@
 import { hostname as osHostname } from 'node:os';
-import { reopenRestDecision } from '../core/run/rest-decision.js';
+import { reopenRestDecision, RESUME_OPTIONS } from '../core/run/rest-decision.js';
 import { interruptedBody } from '../core/run/pipeline-helpers.js';
 import type { RunStore } from '../core/store/runs.js';
 
@@ -65,6 +65,7 @@ export function reconcileRuns(opts: ReconcileOptions): string[] {
       title: 'Run interrupted',
       body: interruptedBody(run.stage, run.stageNote, note),
       attach,
+      options: RESUME_OPTIONS,
     });
     changed.push(run.id);
   }

@@ -60,10 +60,12 @@ import {
   FINAL_REVIEW_TITLE,
   PLAN_APPROVAL_OPTIONS,
   PLAN_APPROVAL_TITLE,
+  RESUME_OPTIONS,
   restDecisionFor,
 } from './rest-decision.js';
 import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
+import { reopenStopped, resumeRun, type ResumeSteps } from './resume.js';
 import {
   askTriage,
   awaitAnswers,
@@ -128,6 +130,7 @@ export interface PipelineDeps {
     | 'createWorktree'
     | 'headSha'
     | 'isClean'
+    | 'statusLines'
     | 'commitsBetween'
     | 'diffFiles'
     | 'pushBranch'
@@ -173,8 +176,13 @@ const PROMPT_FIX = (p: string) => `Read the fix brief at ${p} and follow it.`;
 /** The parts of a run that moving between stages needs. */
 type StageCtx = Pick<Ctx, 'st' | 'runDir' | 'rec' | 'deps'>;
 
-async function setStage(ctx: StageCtx, stage: RunState['stage'], note: string | null = null) {
-  assertTransition(ctx.st.stage, stage);
+async function setStage(
+  ctx: StageCtx,
+  stage: RunState['stage'],
+  note: string | null = null,
+  resume = false,
+) {
+  assertTransition(ctx.st.stage, stage, { resume });
   const next: RunState = {
     ...ctx.st,
     stage,
@@ -255,9 +263,15 @@ function openEndDecision(ctx: Ctx, e: unknown): void {
   const note = (e as Error).message;
   if (e instanceof Halt && e.stage === 'blocked') {
     if (e.capReached) {
-      ctx.rec.openDecision('cap_reached', 'Fix-round cap reached', note, attachCommand(ctx));
+      ctx.rec.openDecision(
+        'cap_reached',
+        'Fix-round cap reached',
+        note,
+        attachCommand(ctx),
+        RESUME_OPTIONS,
+      );
     } else {
-      ctx.rec.openDecision('blocked', 'Run blocked', note, attachCommand(ctx));
+      ctx.rec.openDecision('blocked', 'Run blocked', note, attachCommand(ctx), RESUME_OPTIONS);
     }
   } else {
     ctx.rec.openDecision('failed', 'Run failed', note, null);
@@ -331,6 +345,12 @@ function outcomeOf(ctx: Ctx): RunOutcome {
 async function endRun(ctx: Ctx, e: unknown): Promise<void> {
   const { input } = ctx;
   await ctx.pending.catch(() => undefined);
+  if (isTerminal(ctx.st.stage)) {
+    // A resume that failed before the run left its stopped stage: it stays stopped, and the
+    // question comes back saying why.
+    reopenStopped(ctx, e);
+    return;
+  }
   if (isResting(ctx.st.stage)) {
     // A continuation that failed before leaving rest: the run has not moved, so it cannot end
     // (a resting run only leaves by its own moves).
@@ -350,6 +370,7 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
       'Run interrupted',
       interruptedBody(last, lastNote, reason),
       attachCommand(ctx),
+      RESUME_OPTIONS,
     );
   } else if (input.signal?.aborted || e instanceof InterruptedError) {
     // Cancellation wins over whatever failure the killed work produced.
@@ -1024,12 +1045,15 @@ async function checksGreen(ctx: Ctx): Promise<void> {
 }
 
 /** Steps 6-7: Codex review, triage, and one (configurable) fix round for the fix set. */
-async function verifyLoop(ctx: Ctx): Promise<void> {
+async function verifyLoop(ctx: Ctx, opts: { skipChecks?: boolean } = {}): Promise<void> {
   const { deps, input } = ctx;
   const policy = input.config.policy;
+  // A resume at the review has local CI passing on this head already: the first pass skips it.
+  let skipChecks = opts.skipChecks === true;
   // A continuation numbers its reviews after the ones already done.
   for (let round = Math.max(0, ...ctx.rounds.map((r) => r.round)) + 1; ; round++) {
-    await checksGreen(ctx);
+    if (skipChecks) skipChecks = false;
+    else await checksGreen(ctx);
     const head = await deps.git.headSha(ctx.st.worktreePath);
     await setStage(ctx, 'reviewing', `round ${round}`);
     const outDir = join(ctx.runDir, 'reviews', `round-${round}`);
@@ -1184,9 +1208,12 @@ const CI_GAP_OPTIONS: DecisionOption[] = [
  * and the push repeats. Rounds are counted per pass (against `fixBase`); past the budget the
  * owner is asked whether to try another round or stop.
  */
-async function publishAndWait(ctx: Ctx): Promise<void> {
+async function publishAndWait(ctx: Ctx, opts: { startAtCi?: boolean } = {}): Promise<void> {
+  // A resume after the push goes straight to waiting for CI.
+  let pushed = opts.startAtCi === true;
   for (;;) {
-    const failure = await publishOnce(ctx);
+    const failure = pushed ? await waitForPushedCi(ctx) : await publishOnce(ctx);
+    pushed = false;
     if (!failure) return;
     const { input } = ctx;
     const max = input.config.policy.maxCiFixRounds;
@@ -1248,6 +1275,15 @@ async function askCiGap(ctx: Ctx, failure: CiFailure, used: number): Promise<voi
       `Stopped at your request: GitHub CI keeps failing (PR #${failure.prNumber}).${describeSession(ctx)}`,
     );
   }
+}
+
+/** The CI wait of a head that is already pushed (a resume after the push). */
+async function waitForPushedCi(ctx: Ctx): Promise<CiFailure | null> {
+  const { st } = ctx;
+  if (st.prNumber === null) throw new Halt('blocked', 'The run has no pull request to wait on.');
+  const head = await ctx.deps.git.headSha(st.worktreePath);
+  const url = `https://github.com/${st.owner}/${st.repo}/pull/${st.prNumber}`;
+  return afterPublish(ctx, { prNumber: st.prNumber, url }, head);
 }
 
 /** One push and CI wait. Returns the failure when GitHub CI failed; rests or halts otherwise. */
@@ -1316,6 +1352,18 @@ async function publishOnce(ctx: Ctx): Promise<CiFailure | null> {
     },
     (p) => ({ output: { prNumber: p.prNumber, url: p.url } }),
   );
+  return afterPublish(ctx, pr, head);
+}
+
+/** What follows a push: rest for review, or wait for GitHub CI. Returns the failure of a red CI. */
+async function afterPublish(
+  ctx: Ctx,
+  pr: { prNumber: number; url: string },
+  head: string,
+): Promise<CiFailure | null> {
+  const { deps, st, input } = ctx;
+  const github = await deps.github();
+  const repo = { owner: st.owner, repo: st.repo };
   if (!input.config.waitForCi) {
     await restForReview(ctx, `PR #${pr.prNumber} ${pr.url}`);
     return null;
@@ -1365,7 +1413,12 @@ export type ContinueEntry =
   | { kind: 'plan_approve' }
   | { kind: 'plan_revise'; note: string }
   /** Ends a resting run: moves it to `cancelled` and closes its open question. */
-  | { kind: 'cancel' };
+  | { kind: 'cancel' }
+  /**
+   * Picks up an `interrupted` or `blocked` run where its evidence says it got to. `keep`
+   * accepts the worktree as it is (uncommitted changes, moved HEAD) after the owner was asked.
+   */
+  | { kind: 'resume'; keep?: boolean };
 
 /** Header of a feedback file: what the implementer is asked to do with the text below it. */
 function feedbackHeader(withFindings: boolean): string {
@@ -1399,6 +1452,24 @@ note. Reviewer comments need no resolution.`
  * `runPipeline`; a failure before that reopens the question (the final review or the plan
  * approval), so the answer can be retried.
  */
+/** What the resume logic (`resume.ts`) borrows from this file. */
+const resumeSteps: ResumeSteps = {
+  setStage,
+  patchState,
+  planStep,
+  implement,
+  judgeTurn,
+  inStage,
+  turnEnded,
+  verifyLoop,
+  finishRun,
+  publishAndWait,
+  restForReview,
+  loopEnv: env,
+  halt: (note) => new Halt('blocked', note),
+  describeSession: (ctx) => describeSession(ctx),
+};
+
 export async function continueRun(
   runId: string,
   entry: ContinueEntry,
@@ -1433,6 +1504,14 @@ export async function continueRun(
       // Closes the open question too (a terminal stage).
       await setStage(light, 'cancelled', 'Cancelled while waiting for review');
       return outcomeFromState(light.st, runDir);
+    }
+    if (entry.kind === 'resume') {
+      ctx = await loadContext(runId, deps, signal, 'resumable');
+      // The owner is claimed now; a resume that stops before the run moves releases it again.
+      ctx.rec.resume(ctx.st);
+      throwIfAborted(signal);
+      await resumeRun(ctx, entry, resumeSteps);
+      return outcomeOf(ctx);
     }
     if (entry.kind === 'plan_approve' || entry.kind === 'plan_revise') {
       ctx = await loadContext(runId, deps, signal);

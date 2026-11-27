@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   ACTIVE_STAGES,
   assertTransition,
+  canResume,
   canTransition,
   IllegalTransitionError,
   isResting,
@@ -138,5 +139,68 @@ describe('run stage machine', () => {
     expect(err).toMatchObject({ from, to });
     expect((err as Error).message).toContain(from);
     expect((err as Error).message).toContain(to);
+  });
+
+  describe('resume', () => {
+    const TARGETS = [
+      'setup',
+      'planning',
+      'implementing',
+      'checking',
+      'reviewing',
+      'fixing',
+      'publishing',
+      'waiting_ci',
+    ] as const;
+
+    it('is possible only from interrupted and blocked', () => {
+      for (const s of RUN_STAGES) {
+        expect(canResume(s), s).toBe(s === 'interrupted' || s === 'blocked');
+      }
+      for (const s of ['failed', 'cancelled', 'complete'] as const)
+        expect(canResume(s)).toBe(false);
+    });
+
+    it.each(['interrupted', 'blocked'] as const)(
+      'lets %s resume into each active stage',
+      (from) => {
+        for (const to of TARGETS) {
+          expect(canTransition(from, to, { resume: true }), `${from} -> ${to}`).toBe(true);
+          expect(() => assertTransition(from, to, { resume: true })).not.toThrow();
+        }
+      },
+    );
+
+    it('allows resume moves into the listed stages and nothing else', () => {
+      for (const from of ['interrupted', 'blocked'] as const) {
+        for (const to of RUN_STAGES) {
+          expect(canTransition(from, to, { resume: true }), `${from} -> ${to}`).toBe(
+            (TARGETS as readonly string[]).includes(to),
+          );
+        }
+      }
+    });
+
+    it('never resumes failed, cancelled or complete', () => {
+      for (const from of ['failed', 'cancelled', 'complete'] as const) {
+        for (const to of RUN_STAGES) {
+          expect(canTransition(from, to, { resume: true }), `${from} -> ${to}`).toBe(false);
+        }
+      }
+    });
+
+    it('keeps ordinary moves out of interrupted and blocked illegal', () => {
+      for (const from of ['interrupted', 'blocked'] as const) {
+        for (const to of TARGETS) expect(canTransition(from, to), `${from} -> ${to}`).toBe(false);
+      }
+    });
+
+    it('does not let a resume move leave an active or resting stage', () => {
+      for (const from of [...ACTIVE_STAGES, ...RESTING_STAGES]) {
+        for (const to of RUN_STAGES) {
+          expect(canTransition(from, to, { resume: true }), `${from} -> ${to}`).toBe(false);
+        }
+      }
+    });
   });
 });

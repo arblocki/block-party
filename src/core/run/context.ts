@@ -8,7 +8,7 @@ import type { ChecksRunResult } from '../checks/run.js';
 import { ReviewerOutputSchema } from '../reviewer/findings.js';
 import { RunConfigSchema, type RunConfig } from './config.js';
 import { runDir as defaultRunDir } from './paths.js';
-import { isResting } from './machine.js';
+import { canResume, isResting } from './machine.js';
 import type { PipelineDeps, RunInput } from './pipeline.js';
 import { parsePlan, type Plan } from './plan.js';
 import type { FindingRow } from '../store/runs.js';
@@ -274,17 +274,23 @@ async function loadReports(
 /**
  * Rebuilds the context of a resting run from its run directory: run.json, the resolved
  * config, the plan, the project's checks, the review rounds and the latest report.
- * Refuses a run that is not resting.
+ * Refuses a run that is not resting (or, with `allow: 'resumable'`, one that did not stop as
+ * `interrupted` or `blocked`).
  */
 export async function loadContext(
   runId: string,
   deps: PipelineDeps,
   signal?: AbortSignal,
+  allow: 'resting' | 'resumable' = 'resting',
 ): Promise<Ctx> {
   const runDir = (deps.paths?.runDir ?? ((id: string) => defaultRunDir(id)))(runId);
   const st = await loadRunState(runDir);
-  if (!isResting(st.stage)) {
-    throw new Error(`Run ${runId} is not resting (stage: ${st.stage})`);
+  if (allow === 'resumable' ? !canResume(st.stage) : !isResting(st.stage)) {
+    throw new Error(
+      allow === 'resumable'
+        ? `Run ${runId} did not stop where it can resume (stage: ${st.stage})`
+        : `Run ${runId} is not resting (stage: ${st.stage})`,
+    );
   }
   const rawConfig = await readJson(join(runDir, 'inputs', 'config.json'));
   const parsedConfig = RunConfigSchema.safeParse(rawConfig);

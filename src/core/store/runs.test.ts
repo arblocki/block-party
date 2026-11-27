@@ -371,6 +371,27 @@ describe('run store', () => {
       expect(runs.getDecision(id)?.status).toBe('open');
     });
 
+    it('answers a decision of a run that stopped and can resume, but not one that cannot', () => {
+      for (const [stage, expected] of [
+        ['interrupted', 'answered'],
+        ['blocked', 'answered'],
+        ['cancelled', 'run_ended'],
+        ['complete', 'run_ended'],
+      ] as const) {
+        const runId = `r-${stage}`;
+        runs.createRun(runInput(projectId, { id: runId, stage: 'implementing' }));
+        const id = runs.openDecision({
+          runId,
+          kind: 'interrupted',
+          title: 'Q',
+          body: 'b',
+          options,
+        });
+        runs.updateRun(runId, { stage });
+        expect(runs.answerDecision(id, { choice: 'yes', note: null }), stage).toBe(expected);
+      }
+    });
+
     it('does not answer unknown, dismissed or option-less decisions', () => {
       runs.createRun(runInput(projectId, { id: 'a' }));
       const plain = runs.openDecision({ runId: 'a', kind: 'blocked', title: 'Q', body: 'b' });

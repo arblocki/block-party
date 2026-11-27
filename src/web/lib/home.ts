@@ -52,6 +52,7 @@ const DECISION_LABELS: Record<DecisionKind, string> = {
   broad_fix: 'Large fix',
   final_review: 'Review the PR',
   ci_gap: 'Missing CI check',
+  resume_conflict: 'Check before resuming',
 };
 
 export function decisionLabel(kind: DecisionKind): string {

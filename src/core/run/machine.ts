@@ -68,9 +68,37 @@ export function isTerminal(stage: RunStage): stage is TerminalStage {
   return (TERMINAL_STAGES as readonly RunStage[]).includes(stage);
 }
 
-export function canTransition(from: RunStage, to: RunStage): boolean {
-  // Terminal stages have no outgoing moves (no resume yet).
-  if (isTerminal(from)) return false;
+/** Stages a run that stopped can be picked up again from (the run's own evidence decides where). */
+const RESUMABLE_STAGES: readonly RunStage[] = ['interrupted', 'blocked'];
+
+/** Where a resume may re-enter: the active stages a run does work in. */
+const RESUME_TARGETS: readonly RunStage[] = [
+  'setup',
+  'planning',
+  'implementing',
+  'checking',
+  'reviewing',
+  'fixing',
+  'publishing',
+  'waiting_ci',
+];
+
+/** `interrupted` and `blocked` runs can resume; `failed`, `cancelled` and `complete` never do. */
+export function canResume(stage: RunStage): boolean {
+  return RESUMABLE_STAGES.includes(stage);
+}
+
+export interface TransitionOptions {
+  /** The move is a resume: the only way out of `interrupted` and `blocked`. */
+  resume?: boolean;
+}
+
+export function canTransition(from: RunStage, to: RunStage, opts: TransitionOptions = {}): boolean {
+  // Terminal stages have no ordinary outgoing moves; a resume is the one exception.
+  if (isTerminal(from))
+    return opts.resume === true && canResume(from) && RESUME_TARGETS.includes(to);
+  // A resume only leaves a stopped run.
+  if (opts.resume) return false;
   // Nothing owns a resting run, so it only leaves (no self-moves).
   if (isResting(from)) return FROM_RESTING[from].includes(to);
   // Self-moves update the stage note.
@@ -88,6 +116,6 @@ export class IllegalTransitionError extends Error {
   }
 }
 
-export function assertTransition(from: RunStage, to: RunStage): void {
-  if (!canTransition(from, to)) throw new IllegalTransitionError(from, to);
+export function assertTransition(from: RunStage, to: RunStage, opts: TransitionOptions = {}): void {
+  if (!canTransition(from, to, opts)) throw new IllegalTransitionError(from, to);
 }

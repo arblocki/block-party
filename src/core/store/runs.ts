@@ -1,6 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import { ACTIVE_STAGES, isTerminal, RESTING_STAGES, type RunStage } from '../run/machine.js';
+import {
+  ACTIVE_STAGES,
+  canResume,
+  isTerminal,
+  RESTING_STAGES,
+  type RunStage,
+} from '../run/machine.js';
 import type { RunState } from '../run/run-state.js';
 
 /** A local checkout block-party runs against. Keyed by `localPath`. */
@@ -93,7 +99,8 @@ export type DecisionKind =
   | 'dispute'
   | 'broad_fix'
   | 'final_review'
-  | 'ci_gap';
+  | 'ci_gap'
+  | 'resume_conflict';
 export type DecisionStatus = 'open' | 'answered' | 'resolved' | 'dismissed';
 
 /** One choice a decision offers. */
@@ -807,7 +814,8 @@ export function createRunStore(db: Database.Database): RunStore {
           const row = decisionById.get(id);
           if (!row || row.status !== 'open') return 'not_open';
           const stage = runById.get(row.run_id)?.stage as RunStage | undefined;
-          if (stage && isTerminal(stage)) return 'run_ended';
+          // A stopped run that can resume still has questions worth answering.
+          if (stage && isTerminal(stage) && !canResume(stage)) return 'run_ended';
           const options = fromJson(row.options_json) as DecisionOption[] | null;
           if (!options?.some((o) => o.id === answer.choice)) return 'bad_choice';
           const stored: DecisionAnswer = { choice: answer.choice, note: answer.note ?? null };
