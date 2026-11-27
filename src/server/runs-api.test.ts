@@ -1947,6 +1947,34 @@ describe('POST /api/runs/:id/resume', () => {
     expect(open[0]!.body).toContain('could not be carried out');
   });
 
+  it('reopens the question when a resume answer is refused', async () => {
+    // Another resume is already under way: this one is refused as busy.
+    runs.createRun(runInput(projectId, { stage: 'blocked' }));
+    const fake = fakeManager();
+    fake.manager.resume(RUN_A);
+    const opts = [
+      { id: 'resume', label: 'Resume' },
+      { id: 'dismiss', label: 'Dismiss' },
+    ];
+    const q = runs.openDecision({
+      runId: RUN_A,
+      kind: 'interrupted',
+      title: 't',
+      body: 'b',
+      options: opts,
+    });
+    const res = await post(
+      `/api/inbox/${q}/answer`,
+      { choice: 'resume' },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(409);
+    const open = runs.listDecisions({ runId: RUN_A, status: 'open' });
+    expect(open).toHaveLength(1);
+    expect(open[0]).toMatchObject({ kind: 'resume_conflict', options: opts });
+    expect(open[0]!.body).toContain('could not be carried out');
+  });
+
   it('answers 202 while a cancel is still settling', async () => {
     runs.createRun(runInput(projectId, { stage: 'blocked' }));
     const fake = fakeManager({ cancelResult: 'pending' });

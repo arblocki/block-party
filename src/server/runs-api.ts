@@ -648,6 +648,23 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     return c.json({ changed: runs.dismissDecision(id) });
   });
 
+  /** Asks a stopped run's question again when the answer to it could not be carried out. */
+  const reopenStoppedQuestion = (
+    existing: NonNullable<ReturnType<typeof runs.getDecision>>,
+    reason: string,
+  ): void => {
+    const open = runs.listDecisions({ runId: existing.runId, status: 'open' });
+    if (open.some((d) => d.kind === 'resume_conflict')) return;
+    runs.openDecision({
+      runId: existing.runId,
+      kind: 'resume_conflict',
+      title: existing.title,
+      body: `${existing.body} Your answer could not be carried out: ${reason}.`,
+      attach: existing.attach,
+      options: existing.options,
+    });
+  };
+
   const resumeRefused = (c: Context, why: 'busy' | 'not_resumable'): Response =>
     c.json(
       {
@@ -727,17 +744,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       if (cancelled === false) {
         // Nothing was cancelled: the question is asked again, as for any answer that fails.
         const reason = 'the run is no longer stopped, or is busy';
-        const open = runs.listDecisions({ runId: existing.runId, status: 'open' });
-        if (!open.some((d) => d.kind === 'resume_conflict')) {
-          runs.openDecision({
-            runId: existing.runId,
-            kind: 'resume_conflict',
-            title: existing.title,
-            body: `${existing.body} Your answer could not be carried out: ${reason}.`,
-            attach: existing.attach,
-            options: existing.options,
-          });
-        }
+        reopenStoppedQuestion(existing, reason);
         return c.json({ error: `The run could not be cancelled: ${reason}.` }, 409);
       }
       if (cancelled === 'pending') {
@@ -753,7 +760,14 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         existing.runId,
         choice === 'keep' ? { keep: true } : undefined,
       );
-      if (started !== 'started') return resumeRefused(c, started);
+      if (started !== 'started') {
+        // The answer is recorded but nothing carries it out: the question is asked again.
+        reopenStoppedQuestion(
+          existing,
+          started === 'busy' ? 'the run is already being resumed' : 'the run is no longer stopped',
+        );
+        return resumeRefused(c, started);
+      }
       continued = true;
     }
     if (continued === false) {
