@@ -259,6 +259,8 @@ describe('createHerdrHost', () => {
     expect(await host.list()).toEqual([pane]);
     expect(host.attachCommand(pane)).toContain('herdr --session bp-x');
     expect(host.attachCommand(pane)).toContain('bp-run-impl');
+    // An argv for a pty, with the session only ever taken from the pane (no shell string).
+    expect(host.attachArgv(pane)).toEqual(['herdr', '--session', 'bp-x']);
   });
 
   it('isAlive is false when the pane is gone or the server is down; close is a no-op then', async () => {

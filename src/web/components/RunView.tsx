@@ -29,6 +29,7 @@ import { DecisionItem } from './DecisionItem';
 import { PlanPanel, panelHasControls } from './PlanPanel';
 import { listClass } from './PickerShell';
 import { AcceptanceSection, EvidenceSection, PlanSection } from './RunEvidence';
+import { RunTerminalSection } from './RunTerminalSection';
 import { StageBadge } from './StageBadge';
 
 const EVENT_PAGE = 2000;
@@ -556,6 +557,7 @@ export function RunView({ id }: { id: string }) {
         findingsError={findingsError}
         headSummary={headSummary}
       />
+      <RunTerminalSection runId={run.id} stage={run.stage} events={events} />
       <Activity events={events} />
     </div>
   );

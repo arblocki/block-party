@@ -363,8 +363,9 @@ see [5.2.1](#521-terminal-host-herdr-or-tmux)), not a headless pipe:
 - **Launch:** the terminal host opens a pane in the worktree and runs
   `claude --model <opus> --session-id <uuid> --settings <run settings> --agents '<agents JSON>' "<prompt>"`.
   The session ID is chosen by block-party so it can resume or locate the transcript later.
-- **Attach:** the UI shows the host's attach command with a copy button (and later, possibly
-  an embedded terminal via `xterm.js` + `node-pty`). Attaching doesn't disturb the run.
+- **Attach:** the UI shows the host's attach command with a copy button, and the run view's
+  Terminal panel embeds the session (`xterm.js` + `node-pty`, see [9](#9-security-and-safety)).
+  Attaching doesn't disturb the run.
 - **Structured events come from Claude Code hooks**, not from scraping the terminal. The
   per-run settings file registers hooks (`SessionStart`, `PostToolUse`, `SubagentStop`,
   `Notification`, `Stop`, `SessionEnd`) that call a tiny `block-party hook` command. It
@@ -424,6 +425,7 @@ interface TerminalHost {
   agentState?(pane: PaneRef): Promise<'idle' | 'working' | 'blocked' | 'unknown'>;
   close(pane: PaneRef): Promise<void>;
   attachCommand(pane: PaneRef): string;
+  attachArgv(pane: PaneRef): string[];                     // for the embedded terminal's pty
   list(): Promise<PaneRef[]>;                              // for reconciliation on restart
 }
 ```
@@ -834,6 +836,17 @@ Test coverage), each a different stage list on the same engine.
 
 - **Localhost only**, with the existing session token and Host/Origin checks on all new
   endpoints (including SSE).
+- **The embedded terminal** (`GET /api/runs/:id/terminal`, a WebSocket) sits under `/api/*`
+  like every other endpoint: Host/Origin guard, then the session token (the cookie, since
+  browsers can't set headers on a WebSocket; a cookie-only request must be same-origin). It
+  spawns, through `node-pty` and with no shell, only the argv that the terminal host builds
+  from the run's recorded pane (`TerminalHost.attachArgv`), in the run's worktree with the
+  agent-scrubbed environment. Nothing the client sends (path, query, messages) reaches the
+  argv; a message is typed input or a validated `resize` (1-500). At most 2 terminals per
+  run and 8 in total, closed after 30 minutes idle. Closing the socket kills only the
+  attached client, so the pane and the agent keep running. Typing into it is typing into
+  the agent, so it is exactly as trusted as the token. If `node-pty` can't load, the server
+  runs and the panel falls back to the copy-and-paste attach command.
 - **Agents are trusted code running as me.** Worktrees isolate checkouts, not the machine.
   Mitigations, in order of adoption: per-role permission profiles (allowlisted commands,
   no writes outside the worktree), Codex read-only sandbox for review, never passing
