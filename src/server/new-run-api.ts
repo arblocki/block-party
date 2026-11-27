@@ -247,21 +247,21 @@ export function registerNewRunApi(app: Hono, deps: NewRunApiDeps): void {
       return existing.find((p) => p.localPath === wanted);
     };
 
-    // Access first. When GitHub cannot be reached, a repo that is already set up still works.
+    // A registered project stays usable even if GitHub's list leaves its repo out (e.g. org
+    // repos): constraint 4 accepts registered projects. Access is checked only to register or clone.
+    const known = registered();
+    if (known) return known;
+
     let listed;
     try {
       listed = await github.listRepos();
     } catch (e) {
-      const known = registered();
-      if (known) return known;
       throw new PrepareError(`could not list your repositories: ${errorMessage(e)}`, 502);
     }
     const canonical = listed.find((r) => key(r.owner, r.name) === k);
     if (!canonical) {
       throw new PrepareError(`${owner}/${repo} is not one of the repositories you can access`, 403);
     }
-    const known = registered();
-    if (known) return known;
 
     const copiesOf = async (): Promise<LocalClone[]> => {
       let { clones } = await locate(false);

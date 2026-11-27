@@ -267,14 +267,14 @@ describe('POST /api/new-run/prepare', () => {
     expect((await prepare({ owner: 'me', repo: 'other' })).status).toBe(502);
   });
 
-  it('checks access before returning an existing project', async () => {
-    store.runs.upsertProject({
+  it('returns a registered project even when GitHub does not list its repo', async () => {
+    const p = store.runs.upsertProject({
       owner: 'gone',
       repo: 'x',
       localPath: '/p/x',
       defaultBase: 'main',
     });
-    expect((await prepare({ owner: 'gone', repo: 'x' })).status).toBe(403);
+    expect((await asProject(await prepare({ owner: 'gone', repo: 'x' }))).id).toBe(p.id);
   });
 
   it('registers the only clone on this computer', async () => {
