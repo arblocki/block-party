@@ -357,6 +357,10 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
         path.join(dir, st.role === 'plan' ? 'pane-final-plan.txt' : 'pane-final.txt'),
         text,
       );
+      // The same screen next to the run's other logs, named after the pane.
+      const logs = path.join(st.runDir, 'logs');
+      await mkdir(logs, { recursive: true });
+      await writeFile(path.join(logs, `${st.pane.label}-final.txt`), text);
     } catch {
       // pane already gone or unreadable; nothing to save
     }
@@ -480,8 +484,44 @@ export function createPaneClaude(opts: PaneClaudeOptions): ImplementerAdapter {
       return awaitTurn(pane, session.sessionId, input, offset);
     },
 
+    async reattach(session, input) {
+      const label = session.paneLabel ?? `bp-${input.runId}-${input.role ?? 'impl'}`;
+      const found = await findPane(label, session.cwd);
+      if (!found || !(await alive(found))) return null;
+      if ((await host.agentState(found)) !== 'working') return null;
+      const m = /-r(\d+)$/.exec(label);
+      sessions.set(session.sessionId, {
+        pane: found,
+        runId: input.runId,
+        runDir: input.runDir,
+        eventsPath: input.eventsPath,
+        resumes: m ? Number(m[1]) : 1,
+        role: input.role ?? 'impl',
+        known: true,
+      });
+      emit(input, 'agent.reattached', { label, sessionId: session.sessionId });
+      // Only events from now on count: the turn that is running ends with a later Stop.
+      return awaitTurn(found, session.sessionId, input, fileSize(input.eventsPath));
+    },
+
     async stop(session, stopOpts) {
-      const st = sessions.get(session.sessionId);
+      let st = sessions.get(session.sessionId);
+      if (!st && session.paneLabel !== undefined && stopOpts?.runDir && stopOpts.eventsPath) {
+        // A session this adapter never saw (the server restarted): its pane may still be
+        // open, found by its label.
+        const found = await findPane(session.paneLabel, session.cwd);
+        if (found) {
+          st = {
+            pane: found,
+            runId: '',
+            runDir: stopOpts.runDir,
+            eventsPath: stopOpts.eventsPath,
+            resumes: 1,
+            role: /-plan(-r\d+)?$/.test(session.paneLabel) ? 'plan' : 'impl',
+            known: true,
+          };
+        }
+      }
       if (!st || st.known === false) return;
       const { pane } = st;
       await saveFinal(st);

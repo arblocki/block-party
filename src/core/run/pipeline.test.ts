@@ -143,6 +143,12 @@ interface Opts {
   onStart?: (input: ImplementerStartInput) => void;
   /** Start from a description instead of a plan file. */
   description?: string;
+  /** The agent sessions are panes (the label is `bp-pane`). */
+  pane?: boolean;
+  /** Never answer these calls (until the run is aborted, which stops waiting for them). */
+  hang?: ('checks' | 'review' | 'ci')[];
+  /** What a resume's `reattach` finds: an agent still working in its pane, or nothing. */
+  reattach?: 'working' | 'none';
 }
 
 function harness(o: Opts) {
@@ -159,6 +165,8 @@ function harness(o: Opts) {
     sendInputs: [] as ImplementerStartInput[],
     stops: 0,
     stoppedSessions: [] as string[],
+    stopOpts: [] as unknown[],
+    reattaches: [] as string[],
     reviews: [] as {
       round: number;
       prior: number;
@@ -192,7 +200,12 @@ function harness(o: Opts) {
     }
     return t.outcome ?? { kind: 'report' };
   };
-  const session: ImplementerSession = { mode: 'headless', sessionId: 's1', cwd: root };
+  const session: ImplementerSession = {
+    mode: o.pane ? 'pane' : 'headless',
+    sessionId: 's1',
+    cwd: root,
+    ...(o.pane ? { paneLabel: 'bp-pane' } : {}),
+  };
   const plannerSession: ImplementerSession = { ...session, sessionId: 'planner-1' };
   const adapter: ImplementerAdapter = {
     async start(input) {
@@ -211,10 +224,19 @@ function harness(o: Opts) {
       calls.sendInputs.push(input);
       return doTurn(input);
     },
-    async stop(s) {
+    async stop(s, stopOpts) {
       calls.stops++;
       calls.stoppedSessions.push(s.sessionId);
+      calls.stopOpts.push(stopOpts);
     },
+    ...(o.reattach !== undefined
+      ? {
+          async reattach(s: ImplementerSession, input: ImplementerStartInput) {
+            calls.reattaches.push(s.sessionId);
+            return o.reattach === 'working' ? doTurn(input) : null;
+          },
+        }
+      : {}),
     describe: () => 'attach-cmd',
   };
   const reviews = [...(o.reviews ?? [review([])])];
@@ -251,6 +273,7 @@ function harness(o: Opts) {
     },
     runChecks: async (opts): Promise<ChecksRunResult> => {
       calls.checks++;
+      if (o.hang?.includes('checks')) await new Promise(() => undefined);
       let passed = checkPlan.length ? checkPlan.shift()! : true;
       if (o.abortAt?.step === 'checks') {
         o.abortAt.ac.abort();
@@ -294,6 +317,7 @@ function harness(o: Opts) {
         planPath: opts.planPath,
       });
       o.onReview?.(git);
+      if (o.hang?.includes('review')) await new Promise(() => undefined);
       if (o.abortAt?.step === 'review') {
         o.abortAt.ac.abort();
         return { ok: false, error: 'codex killed', attempts: 1 };
@@ -321,6 +345,7 @@ function harness(o: Opts) {
     },
     waitForCi: async (w) => {
       calls.ciWaits.push(w.sha);
+      if (o.hang?.includes('ci')) await new Promise(() => undefined);
       if (o.ciSeq) {
         const r = o.ciSeq[Math.min(calls.ciWaits.length - 1, o.ciSeq.length - 1)]!;
         return { state: r.state, checks: r.checks ?? [] };
@@ -694,7 +719,9 @@ describe('runPipeline', () => {
       implementer: { sessionId: string } | null;
     };
     expect(st.implementer?.sessionId).toBe('s1');
-    expect(h.calls.stops).toBe(0);
+    // A cancel closes the agent for good (no polite exit).
+    expect(h.calls.stoppedSessions).toEqual(['s1']);
+    expect(h.calls.stopOpts[0]).toMatchObject({ force: true, runDir: out.runDir });
     expect(readFileSync(join(out.runDir, 'run-events.jsonl'), 'utf8')).toContain(
       'implementer.session',
     );
@@ -1860,10 +1887,13 @@ describe('final review and continuations', () => {
     expect(store.listDecisions({ runId: out.runId, status: 'open' })).toEqual([]);
   });
 
-  it('refuses to cancel a run that is not resting', async () => {
-    const h = harness({ turns: [{}], ci: 'timeout' });
+  it('refuses to cancel a run that is complete', async () => {
+    const h = harness({ turns: [{}] });
     const out = await h.run();
-    await expect(continueRun(out.runId, { kind: 'cancel' }, h.deps)).rejects.toThrow(/not resting/);
+    await continueRun(out.runId, { kind: 'approve' }, h.deps);
+    await expect(continueRun(out.runId, { kind: 'cancel' }, h.deps)).rejects.toThrow(
+      /not resting or stopped/,
+    );
   });
 
   it('keeps a resting run resting, with its question reopened, when shutdown aborts the continuation first', async () => {
@@ -2876,5 +2906,183 @@ describe('resume', () => {
     await resume(h, out.runId);
     const open = store.listDecisions({ runId: out.runId, status: 'open' });
     expect(open.filter((d) => d.kind === 'interrupted')).toHaveLength(1);
+  });
+});
+
+describe('cancel at any stage', () => {
+  /** Runs `h` until `ready`, aborts it plainly, and returns the outcome. */
+  async function cancelledDuring(h: ReturnType<typeof harness>, wait = 80) {
+    const ac = new AbortController();
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, wait));
+    ac.abort();
+    return p;
+  }
+
+  /** What every cancelled run leaves: one cancelled run, closed stages and questions. */
+  function expectConsistent(store: RunStore, out: RunOutcome, stage: string) {
+    expect(out.stage).toBe('cancelled');
+    expect(store.getRun(out.runId)?.stage).toBe('cancelled');
+    expect(store.listStages(out.runId).filter((s) => s.state === 'running')).toEqual([]);
+    expect(store.listDecisions({ runId: out.runId, status: 'open' })).toEqual([]);
+    const ev = store.listEvents(out.runId).find((e) => e.type === 'run.cancelled');
+    expect(ev?.payload).toEqual({ stage });
+  }
+
+  it.each([
+    ['headless', false],
+    ['pane', true],
+  ])('cancels an implementer turn in a %s session and stops the agent', async (_n, pane) => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [], hangFirstTurn: true, pane });
+    const out = await cancelledDuring(h);
+    expectConsistent(store, out, 'implementing');
+    expect(stagesOf(store, out)).toEqual([['implement', 1, 'cancelled']]);
+    expect(h.calls.stoppedSessions).toEqual(['s1']);
+    expect(h.calls.stopOpts[0]).toMatchObject({ force: true });
+  });
+
+  it('cancels while local CI runs', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}], hang: ['checks'] });
+    const out = await cancelledDuring(h);
+    expectConsistent(store, out, 'checking');
+    expect(stagesOf(store, out)).toEqual([
+      ['implement', 1, 'succeeded'],
+      ['checks', 1, 'cancelled'],
+    ]);
+    expect(h.calls.stoppedSessions).toEqual(['s1']);
+  });
+
+  it('cancels while the reviewer runs', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}], hang: ['review'] });
+    const out = await cancelledDuring(h);
+    expectConsistent(store, out, 'reviewing');
+    expect(stagesOf(store, out).at(-1)).toEqual(['review', 1, 'cancelled']);
+  });
+
+  it('cancels while waiting for GitHub CI, keeping the PR number', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}], hang: ['ci'] });
+    const out = await cancelledDuring(h);
+    expectConsistent(store, out, 'waiting_ci');
+    expect(stagesOf(store, out).at(-1)).toEqual(['wait-ci', 1, 'cancelled']);
+    expect(store.getRun(out.runId)?.prNumber).toBe(7);
+  });
+
+  it('cancels while a question waits, dismissing it', async () => {
+    const ac = new AbortController();
+    const real = openStore(':memory:').runs;
+    const store: RunStore = new Proxy(real, {
+      get(target, prop, recv) {
+        if (prop === 'openDecision') {
+          return (input: Parameters<RunStore['openDecision']>[0]) => {
+            const id = target.openDecision(input);
+            if (input.kind === 'finding_triage') ac.abort();
+            return id;
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    const reviews = [review([finding('f_1_2', 'P2', 'Missing test')])];
+    const out = await harness({ store, turns: [{}], reviews }).run(ac.signal);
+    expectConsistent(store, out, 'awaiting_decision');
+  });
+
+  it('cancels a planner that is still planning, stopping its session', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [],
+      hangFirstTurn: true,
+      pane: true,
+      description: 'Add widgets',
+    });
+    const out = await cancelledDuring(h);
+    expectConsistent(store, out, 'planning');
+    expect(h.calls.stoppedSessions).toEqual(['planner-1']);
+  });
+
+  it('closes a stage a dead owner left running when it cancels a stopped run', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [], hangFirstTurn: true, pane: true });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    expect(out.stage).toBe('interrupted');
+    // The server stopped: the agent's terminal was left running.
+    expect(h.calls.stops).toBe(0);
+    const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
+    expect(next.stage).toBe('cancelled');
+    expectConsistent(store, next, 'interrupted');
+    // The still-open terminal is closed with the run.
+    expect(h.calls.stoppedSessions).toEqual(['s1']);
+    expect(h.calls.stopOpts[0]).toMatchObject({ force: true, runDir: out.runDir });
+    // The worktree and run directory are left alone.
+    expect(existsSync(join(out.runDir, 'run.json'))).toBe(true);
+  });
+
+  it('cancels a blocked run, closing its resume question', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{ report: report({ status: 'blocked', questions: ['?'] }) }],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
+    expect(next.stage).toBe('cancelled');
+    expectConsistent(store, next, 'blocked');
+  });
+
+  it('a cancel that reaches a resume before it leaves the stopped stage still cancels', async () => {
+    const store = openStore(':memory:').runs;
+    const ac0 = new AbortController();
+    const h = harness({ store, turns: [{}], hangFirstTurn: true });
+    const p = h.run(ac0.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac0.abort(new ShutdownError());
+    const out = await p;
+    const ac = new AbortController();
+    ac.abort();
+    const next = await continueRun(out.runId, { kind: 'resume' }, h.deps, ac.signal);
+    expect(next.stage).toBe('cancelled');
+    expectConsistent(store, next, 'interrupted');
+  });
+});
+
+describe('resume of a pane whose agent is still alive', () => {
+  async function interrupted(o: Partial<Opts>) {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}, {}], hangFirstTurn: true, pane: true, ...o });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    return { h, out, store };
+  }
+
+  it('waits on the working agent instead of sending anything', async () => {
+    const { h, out, store } = await interrupted({ reattach: 'working' });
+    const next = await continueRun(out.runId, { kind: 'resume' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.reattaches).toEqual(['s1']);
+    expect(h.calls.sends).toHaveLength(0);
+    expect(h.calls.starts).toHaveLength(1);
+    expect(store.listEvents(out.runId).map((e) => e.type)).toContain('resume.reattached');
+  });
+
+  it('sends to the same session when the agent is not working', async () => {
+    const { h, out } = await interrupted({ reattach: 'none' });
+    const next = await continueRun(out.runId, { kind: 'resume' }, h.deps);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.reattaches).toEqual(['s1']);
+    expect(h.calls.sendSessions).toEqual(['s1']);
+    expect(h.calls.starts).toHaveLength(1);
   });
 });

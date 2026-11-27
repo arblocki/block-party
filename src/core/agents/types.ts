@@ -50,6 +50,21 @@ export interface ImplementerAdapter {
     input: ImplementerStartInput,
     message: string,
   ): Promise<TurnOutcome>;
-  stop(session: ImplementerSession, opts?: { force?: boolean }): Promise<void>;
+  /**
+   * Ends the session. `force` skips the polite exit (a cancel). `runDir` and `eventsPath` let
+   * an adapter that has not seen the session (a server restarted since) still find its pane
+   * and save the pane's last screen into the run directory.
+   */
+  stop(
+    session: ImplementerSession,
+    opts?: { force?: boolean; runDir?: string; eventsPath?: string },
+  ): Promise<void>;
+  /**
+   * A resume of a pane session whose agent may still be running (the server died, its terminal
+   * did not): when the agent is still working in its live pane, waits for that turn to end and
+   * returns its outcome, so nothing is sent on top of it. Null when there is no such pane or
+   * the agent is not working: the caller then sends as usual (which also uses a live pane).
+   */
+  reattach?(session: ImplementerSession, input: ImplementerStartInput): Promise<TurnOutcome | null>;
   describe(session: ImplementerSession): string; // e.g. attach command or log path
 }

@@ -296,7 +296,7 @@ function closeStoppedQuestions(ctx: Ctx): void {
 }
 
 /** Ends stage executions a dead process left `running`: nothing is running them any more. */
-function closeStaleStages(ctx: Ctx): void {
+export function closeStaleStages(ctx: Pick<Ctx, 'st' | 'deps'>): void {
   const store = ctx.deps.store;
   if (!store) return;
   try {
@@ -636,8 +636,9 @@ clean, write report.json (status "done") and stop.
  * The step that picks an interrupted agent turn back up: the implementer's session (its
  * conversation survives its process) is told it was interrupted, and the turn is judged as
  * usual. A report the agent already wrote is judged without sending anything. A run that never
- * recorded a session starts the first turn again. Kept apart so a later change can prefer a
- * still-live pane to relaunching one.
+ * recorded a session starts the first turn again. A pane whose agent is still working in its
+ * live terminal is waited on (`reattach`), and a live idle one is sent to; a second session is
+ * only launched when the pane is gone.
  */
 export async function resumeTurn(
   ctx: Ctx,
@@ -696,7 +697,18 @@ export async function resumeTurn(
         : await steps.turnEnded(
             ctx,
             abortable(
-              deps.adapter.send(session, { ...ctx.start, prompt: message }, message),
+              (async () => {
+                // The agent may still be working in its own terminal (the server died, the
+                // terminal did not): wait for that turn instead of sending on top of it.
+                // `send` also prefers a live pane to starting a second session.
+                const input2 = { ...ctx.start, prompt: message };
+                const attached = await deps.adapter.reattach?.(session, input2);
+                if (attached) {
+                  ctx.rec.event('resume.reattached', { label: session.paneLabel });
+                  return attached;
+                }
+                return deps.adapter.send(session, input2, message);
+              })(),
               input.signal,
             ),
           );

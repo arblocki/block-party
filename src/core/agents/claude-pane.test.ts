@@ -572,6 +572,81 @@ describe('createPaneClaude', () => {
     expect(host.closed).toEqual(['bp-r1-impl']);
   });
 
+  it('a forced stop saves the last screen under logs/<label>-final.txt', async () => {
+    const { a, session } = await started();
+    host.paneText = 'screen at cancel';
+    await a.stop(session, { force: true });
+    expect(readFileSync(path.join(input.runDir, 'logs', 'bp-r1-impl-final.txt'), 'utf8')).toBe(
+      'screen at cancel',
+    );
+    expect(host.closed).toEqual(['bp-r1-impl']);
+  });
+
+  it('a fresh adapter stops a pane it never saw, found by its label', async () => {
+    host.aliveLabels.add('bp-r1-impl');
+    host.paneText = 'old screen';
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    await adapter().stop(session, {
+      force: true,
+      runDir: input.runDir,
+      eventsPath: input.eventsPath,
+    });
+    expect(host.closed).toEqual(['bp-r1-impl']);
+    expect(readFileSync(path.join(input.runDir, 'logs', 'bp-r1-impl-final.txt'), 'utf8')).toBe(
+      'old screen',
+    );
+    // Without the run's paths a session it never saw is left alone.
+    host.aliveLabels.add('bp-r1-impl');
+    await adapter().stop(session, { force: true });
+    expect(host.aliveLabels.has('bp-r1-impl')).toBe(true);
+  });
+
+  it('reattach waits for a working agent in its live pane and opens nothing', async () => {
+    host.aliveLabels.add('bp-r1-impl');
+    host.state = 'working';
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    const a = adapter();
+    const turn = a.reattach!(session, input);
+    await new Promise((r) => setTimeout(r, 50));
+    writeFileSync(input.reportPath, '{}');
+    emitEvent('Stop');
+    host.state = 'idle';
+    await expect(turn).resolves.toEqual({ kind: 'report' });
+    expect(host.opens).toEqual([]);
+    expect(host.texts).toEqual([]);
+  });
+
+  it('reattach finds nothing to wait for when the pane is gone or the agent is idle', async () => {
+    const session = {
+      mode: 'pane' as const,
+      sessionId: SID,
+      cwd: input.cwd,
+      paneLabel: 'bp-r1-impl',
+    };
+    expect(await adapter().reattach!(session, input)).toBeNull();
+    host.aliveLabels.add('bp-r1-impl');
+    host.state = 'idle';
+    expect(await adapter().reattach!(session, input)).toBeNull();
+    // An idle live pane is sent to, not relaunched.
+    const a = adapter();
+    emitEvent('UserPromptSubmit');
+    const sent = a.send(session, input, 'carry on');
+    emitEvent('Stop');
+    await sent;
+    expect(host.opens).toEqual([]);
+    expect(host.texts).toEqual(['carry on']);
+  });
+
   it('describe includes attach command and label', async () => {
     const { a, session } = await started();
     expect(a.describe(session)).toBe('herdr attach bp-r1-impl (workspace bp-r1-impl)');

@@ -203,4 +203,21 @@ describe('run stage machine', () => {
       }
     });
   });
+  describe('cancel of a stopped run', () => {
+    it('moves only interrupted and blocked to cancelled', () => {
+      for (const from of RUN_STAGES) {
+        for (const to of RUN_STAGES) {
+          expect(canTransition(from, to, { cancel: true }), `${from} -> ${to}`).toBe(
+            (from === 'interrupted' || from === 'blocked') && to === 'cancelled',
+          );
+        }
+      }
+    });
+
+    it('is not an ordinary move', () => {
+      expect(canTransition('interrupted', 'cancelled')).toBe(false);
+      expect(canTransition('blocked', 'cancelled')).toBe(false);
+      expect(() => assertTransition('blocked', 'cancelled', { cancel: true })).not.toThrow();
+    });
+  });
 });

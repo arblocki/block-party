@@ -193,4 +193,41 @@ describe('tailLog', () => {
     expect(tailLog(p, 3)).toBe('l7\nl8\nl9');
     expect(tailLog(join(tmp(), 'nope.log'))).toBe('');
   });
+  it.skipIf(process.platform === 'win32')(
+    'leaves no process of the check running after a cancel',
+    async () => {
+      const cwd = tmp();
+      const pidFile = join(cwd, 'pids');
+      // A shell with two sleeping children and a grandchild, all in the check's process group.
+      const run = `sh -c 'sleep 30 & echo $! >> ${pidFile}; (sleep 31 & echo $! >> ${pidFile}; wait) & echo $$ >> ${pidFile}; sleep 32 & echo $! >> ${pidFile}; wait'`;
+      const ac = new AbortController();
+      const p = runChecks({
+        cwd,
+        logDir: join(cwd, 'logs'),
+        headSha: 'abc',
+        checks: [{ name: 'tree', run }],
+        signal: ac.signal,
+      });
+      await vi.waitFor(
+        () =>
+          expect(readFileSync(pidFile, 'utf8').trim().split('\n').length).toBeGreaterThanOrEqual(4),
+        { timeout: 5000 },
+      );
+      const pids = readFileSync(pidFile, 'utf8').trim().split('\n').map(Number);
+      const alive = (pid: number) => {
+        try {
+          process.kill(pid, 0);
+          return true;
+        } catch {
+          return false;
+        }
+      };
+      expect(pids.some(alive)).toBe(true);
+      ac.abort();
+      const res = await p;
+      expect(res.passed).toBe(false);
+      // Reaped by init or the group kill; none of the tree survives.
+      await vi.waitFor(() => expect(pids.filter(alive)).toEqual([]), { timeout: 5000 });
+    },
+  );
 });

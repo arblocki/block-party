@@ -286,6 +286,21 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return s('error') ?? s('message') ?? type;
     case 'run.interrupted':
       return `Run interrupted${s('note') ? `: ${s('note')}` : ''}`;
+    case 'run.cancelled':
+      return 'Run cancelled; its files and branch were kept';
+    case 'run.resumed':
+      return 'Run resumed';
+    case 'reconcile.pane_alive':
+      return p.state === 'working'
+        ? 'After a restart: the agent is still running in its terminal'
+        : "After a restart: the agent's terminal is still open";
+    case 'resume.reattached':
+    case 'agent.reattached':
+      return 'Re-attached to the agent that was still running';
+    case 'agent.hook': {
+      const what = s('event');
+      return what ? `Agent activity recorded (${what})` : 'Agent activity recorded';
+    }
     default:
       return type;
   }

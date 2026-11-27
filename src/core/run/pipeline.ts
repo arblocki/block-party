@@ -26,7 +26,7 @@ import type { RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
-import { assertTransition, isResting, isTerminal } from './machine.js';
+import { assertTransition, canResume, isResting, isTerminal } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
@@ -64,7 +64,7 @@ import {
 } from './rest-decision.js';
 import { attachCommand, buildCtx, loadContext, unapprovedPlan, type Ctx } from './context.js';
 import { RunRecorder } from './recorder.js';
-import { reopenStopped, resumeRun, type ResumeSteps } from './resume.js';
+import { closeStaleStages, reopenStopped, resumeRun, type ResumeSteps } from './resume.js';
 import {
   askTriage,
   awaitAnswers,
@@ -180,8 +180,10 @@ async function setStage(
   stage: RunState['stage'],
   note: string | null = null,
   resume = false,
+  /** The move cancels a stopped run (nothing drives it, so no ordinary move leaves it). */
+  cancel = false,
 ) {
-  assertTransition(ctx.st.stage, stage, { resume });
+  assertTransition(ctx.st.stage, stage, { resume, cancel });
   const next: RunState = {
     ...ctx.st,
     stage,
@@ -344,13 +346,24 @@ function outcomeOf(ctx: Ctx): RunOutcome {
 async function endRun(ctx: Ctx, e: unknown): Promise<void> {
   const { input } = ctx;
   await ctx.pending.catch(() => undefined);
+  const cancelled =
+    !isShutdown(input.signal) && (input.signal?.aborted === true || e instanceof InterruptedError);
   if (isTerminal(ctx.st.stage)) {
+    // A cancel that reached a resume before it left the stopped stage ends the run.
+    if (cancelled && canResume(ctx.st.stage)) {
+      await cancelRun(ctx, true);
+      return;
+    }
     // A resume that failed before the run left its stopped stage: it stays stopped, and the
     // question comes back saying why.
     reopenStopped(ctx, e);
     return;
   }
   if (isResting(ctx.st.stage)) {
+    if (cancelled) {
+      await cancelRun(ctx, false);
+      return;
+    }
     // A continuation that failed before leaving rest: the run has not moved, so it cannot end
     // (a resting run only leaves by its own moves).
     // Offer the same question again (the final review, or the plan approval).
@@ -358,10 +371,13 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
     return;
   }
   if (isShutdown(input.signal)) {
-    // The process driving the run is stopping: the run did not choose to end here.
+    // The process driving the run is stopping: the run did not choose to end here. Its agent's
+    // terminal is left running, so a resume can attach to it again.
     const reason = (input.signal!.reason as ShutdownError).message;
     const last = ctx.st.stage;
     const lastNote = ctx.st.stageNote;
+    // An execution still open is closed too (normally the stage already ended as cancelled).
+    ctx.rec.endStage('cancelled', { error: reason });
     await setStage(ctx, 'interrupted', reason);
     ctx.rec.event('run.interrupted', { stage: last, note: reason });
     ctx.rec.openDecision(
@@ -371,9 +387,9 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
       attachCommand(ctx),
       RESUME_OPTIONS,
     );
-  } else if (input.signal?.aborted || e instanceof InterruptedError) {
+  } else if (cancelled) {
     // Cancellation wins over whatever failure the killed work produced.
-    await setStage(ctx, 'cancelled', 'cancelled');
+    await cancelRun(ctx, false);
   } else if (e instanceof Halt) {
     await setStage(ctx, e.stage, e.message);
     openEndDecision(ctx, e);
@@ -382,6 +398,44 @@ async function endRun(ctx: Ctx, e: unknown): Promise<void> {
     await setStage(ctx, 'failed', (e as Error).message);
     openEndDecision(ctx, e);
   }
+}
+
+/** The parts of a run that stopping its agents needs. */
+type AgentCtx = Pick<Ctx, 'rec' | 'deps' | 'runDir'> & {
+  session?: ImplementerSession | undefined;
+  plannerSession?: ImplementerSession | undefined;
+};
+
+/**
+ * Cancel: closes the agent sessions the run started, planner and implementer, without the
+ * polite exit. A pane's last screen is saved to `logs/<label>-final.txt` first. Never throws.
+ */
+async function stopAgentsForCancel(ctx: AgentCtx): Promise<void> {
+  const opts = { force: true, runDir: ctx.runDir, eventsPath: join(ctx.runDir, 'events.jsonl') };
+  for (const [role, session] of [
+    ['implementer', ctx.session],
+    ['planner', ctx.plannerSession],
+  ] as const) {
+    if (!session) continue;
+    try {
+      await ctx.deps.adapter.stop(session, opts);
+    } catch (e) {
+      ctx.rec.event(`${role}.stop_failed`, { error: (e as Error).message });
+    }
+  }
+}
+
+/**
+ * The one way a run ends cancelled, from any stage: the open stage execution is closed, the
+ * agents are stopped, `run.cancelled` is recorded and the run moves to `cancelled` (which
+ * closes its open questions). The worktree, branch and run directory are left alone.
+ */
+async function cancelRun(ctx: Ctx, stopped: boolean): Promise<void> {
+  const last = ctx.st.stage;
+  ctx.rec.endStage('cancelled', { error: 'cancelled' });
+  await stopAgentsForCancel(ctx);
+  ctx.rec.event('run.cancelled', { stage: last });
+  await setStage(ctx, 'cancelled', 'cancelled', false, stopped);
 }
 
 /** Step 1. Errors before the run directory exists are thrown to the caller. */
@@ -1493,14 +1547,51 @@ export async function continueRun(
     }
     if (entry.kind === 'cancel') {
       const st = await loadRunState(runDir);
-      if (!isResting(st.stage)) {
-        throw new Error(`Run ${runId} is not resting (stage: ${st.stage})`);
+      const stopped = canResume(st.stage);
+      if (!isResting(st.stage) && !stopped) {
+        throw new Error(`Run ${runId} is not resting or stopped (stage: ${st.stage})`);
       }
       const rec = new RunRecorder(deps.createLog(runDir), deps.store);
       rec.resume(st);
-      const light = { st, runDir, rec, deps };
+      const light = {
+        st,
+        runDir,
+        rec,
+        deps,
+        // A stopped run's terminal may still be open (the server died, its terminal did not).
+        ...(stopped && st.implementer
+          ? {
+              session: {
+                mode: st.implementer.mode,
+                sessionId: st.implementer.sessionId,
+                cwd: st.worktreePath,
+                ...(st.implementer.paneLabel ? { paneLabel: st.implementer.paneLabel } : {}),
+              },
+            }
+          : {}),
+        ...(stopped && st.planner
+          ? {
+              plannerSession: {
+                mode: st.planner.mode,
+                sessionId: st.planner.sessionId,
+                cwd: st.worktreePath,
+                ...(st.planner.paneLabel ? { paneLabel: st.planner.paneLabel } : {}),
+              },
+            }
+          : {}),
+      };
+      // Any stage execution a dead process left open is closed with the run.
+      if (stopped) closeStaleStages(light);
+      await stopAgentsForCancel(light);
+      rec.event('run.cancelled', { stage: st.stage });
       // Closes the open question too (a terminal stage).
-      await setStage(light, 'cancelled', 'Cancelled while waiting for review');
+      await setStage(
+        light,
+        'cancelled',
+        stopped ? 'Cancelled while stopped' : 'Cancelled while waiting for review',
+        false,
+        stopped,
+      );
       return outcomeFromState(light.st, runDir);
     }
     if (entry.kind === 'resume') {

@@ -91,14 +91,19 @@ export function canResume(stage: RunStage): boolean {
 export interface TransitionOptions {
   /** The move is a resume: the only way out of `interrupted` and `blocked`. */
   resume?: boolean;
+  /** The move is a cancel of a stopped run (`interrupted` or `blocked` to `cancelled`). */
+  cancel?: boolean;
 }
 
 export function canTransition(from: RunStage, to: RunStage, opts: TransitionOptions = {}): boolean {
-  // Terminal stages have no ordinary outgoing moves; a resume is the one exception.
-  if (isTerminal(from))
+  // Terminal stages have no ordinary outgoing moves; a resume, or a cancel of a run that
+  // stopped (which nothing drives any more), are the exceptions.
+  if (isTerminal(from)) {
+    if (opts.cancel === true) return canResume(from) && to === 'cancelled';
     return opts.resume === true && canResume(from) && RESUME_TARGETS.includes(to);
-  // A resume only leaves a stopped run.
-  if (opts.resume) return false;
+  }
+  // A resume or a cancel of a stopped run only leaves a stopped run.
+  if (opts.resume || opts.cancel) return false;
   // Nothing owns a resting run, so it only leaves (no self-moves).
   if (isResting(from)) return FROM_RESTING[from].includes(to);
   // Self-moves update the stage note.
