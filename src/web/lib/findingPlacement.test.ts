@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DiffLine, FindingRow, Hunk } from '../types';
-import { placeFindings, splitByFile, visibleFindings } from './findingPlacement';
+import { offHead, placeFindings, splitByFile, visibleFindings } from './findingPlacement';
 
 const hunk = (id: string, start: number, lines: DiffLine[]): Hunk => ({
   id,
@@ -67,6 +67,16 @@ describe('placeFindings', () => {
     const f = finding('a', 12);
     f.location = { path: 'f.ts', startLine: 2, endLine: 12 };
     expect(placeFindings([f], [shown]).inline).toHaveLength(1);
+  });
+
+  it('never puts a finding from another head on a line', () => {
+    const old = finding('old', 11, { reviewedSha: '1111111' });
+    const cur = finding('cur', 11, { reviewedSha: 'abcdef0123' });
+    const p = placeFindings([old, cur], [shown], [], 'abcdef0');
+    expect(p.inline.map((f) => f.key)).toEqual(['cur']);
+    expect(p.fileLevel.map((f) => f.key)).toEqual(['old']);
+    expect(offHead(old, 'abcdef0')).toBe(true);
+    expect(offHead(cur, 'abcdef0')).toBe(false);
   });
 
   it('puts a finding on a whitespace-hidden line at file level', () => {

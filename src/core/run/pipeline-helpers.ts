@@ -83,6 +83,13 @@ export function failedCiChecks(checks: CiCheck[]): CiCheck[] {
   return checks.filter((c) => c.conclusion !== null && !CI_OK.has(c.conclusion));
 }
 
+/** Newlines (and other line breaks) in outside text become single spaces. */
+export const oneLine = (text: string): string =>
+  text.replace(/\s*[\r\n\u2028\u2029]+\s*/g, ' ').trim();
+
+/** Outside text as an inline code span: one line, backticks stripped so it cannot break out. */
+export const codeSpan = (text: string): string => `\`${oneLine(text).replaceAll('`', '')}\``;
+
 /** Markdown for the implementer: failing GitHub checks, and the local checks that passed. */
 export function renderCiFailures(
   checks: CiCheck[],
@@ -93,7 +100,9 @@ export function renderCiFailures(
   const out = [`# GitHub CI failed on ${headSha.slice(0, 7)} after local CI passed`, ''];
   out.push('## Failed GitHub checks', '');
   if (failed.length === 0) out.push('(GitHub reported a failure without naming a check.)');
-  for (const c of failed) out.push(`- ${c.name}: ${c.conclusion}${c.url ? ` (${c.url})` : ''}`);
+  for (const c of failed) {
+    out.push(`- ${codeSpan(c.name)}: ${c.conclusion}${c.url ? ` (${oneLine(c.url)})` : ''}`);
+  }
   out.push('', '## Local checks that passed on the same commit', '');
   const passed = localChecks.filter((r) => r.exitCode === 0 && !r.timedOut);
   if (passed.length === 0) out.push('(none)');

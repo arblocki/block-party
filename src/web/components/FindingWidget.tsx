@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { findingHistory } from '../lib/findings';
+import { offHead } from '../lib/findingPlacement';
+import { useReview } from '../state';
 import { useRunLink } from '../runLink';
 import type { FindingRow } from '../types';
 import { SEVERITY_CLASS } from './RunEvidence';
@@ -16,6 +18,7 @@ export function FindingWidget({
   flush?: boolean;
 }) {
   const link = useRunLink();
+  const { pr } = useReview();
   const [open, setOpen] = useState(finding.status === 'open');
   const [showHistory, setShowHistory] = useState(false);
   if (!link) return null;
@@ -45,6 +48,9 @@ export function FindingWidget({
           <span className="font-mono text-muted">
             {loc.path}:{loc.endLine}
           </span>
+        )}
+        {offHead(finding, pr.headSha) && (
+          <span className="text-muted">reviewed on {finding.reviewedSha.slice(0, 7)}</span>
         )}
         <span className="text-muted">Codex · {finding.status.replaceAll('_', ' ')}</span>
       </button>

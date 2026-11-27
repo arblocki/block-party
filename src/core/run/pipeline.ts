@@ -30,11 +30,13 @@ import { assertTransition, isResting, isTerminal } from './machine.js';
 import { parsePlan, type Plan } from './plan.js';
 import {
   abortable,
+  codeSpan,
   failedChecks,
   failedCiChecks,
   interruptedBody,
   InterruptedError,
   isShutdown,
+  oneLine,
   mergedPriorFindings,
   renderCheckFailures,
   renderCiFailures,
@@ -67,6 +69,8 @@ import {
   awaitAnswers,
   buildFixSet,
   escalateUpheld,
+  findingOfKey,
+  fixItem,
   haltOnRepeatOfFixed,
   inheritRulings,
   markSpent,
@@ -922,7 +926,7 @@ async function fixTurn(
   const brief = await writeArtifact(
     ctx.runDir,
     `briefs/${kind}-${n}.md`,
-    renderBrief({ ...ctx.briefBase, stage: 'fix', round: n, findingsPath, rulingsPath }),
+    renderBrief({ ...ctx.briefBase, stage: 'fix', kind, round: n, findingsPath, rulingsPath }),
   );
   await setStage(ctx, 'fixing', `${kind} ${n}`);
   const prevHead = await deps.git.headSha(st.worktreePath);
@@ -1331,12 +1335,11 @@ async function publishOnce(ctx: Ctx): Promise<CiFailure | null> {
     }),
   );
   if (ci.state === 'failure') {
-    const names = failedCiChecks(ci.checks)
-      .map((c) => c.name)
-      .join(', ');
+    const failed = failedCiChecks(ci.checks);
+    const names = failed.map((c) => codeSpan(c.name)).join(', ');
     ctx.rec.event('ci.failed', {
       head: head.slice(0, 7),
-      checks: failedCiChecks(ci.checks).map((c) => c.name),
+      checks: failed.map((c) => oneLine(c.name)),
     });
     openCiGapInfo(
       ctx,
@@ -1356,7 +1359,8 @@ async function publishOnce(ctx: Ctx): Promise<CiFailure | null> {
 }
 
 export type ContinueEntry =
-  | { kind: 'feedback'; text: string }
+  /** `findingKeys`: the findings the text asks the implementer to resolve (by key). */
+  | { kind: 'feedback'; text: string; findingKeys?: string[] }
   | { kind: 'approve' }
   | { kind: 'plan_approve' }
   | { kind: 'plan_revise'; note: string }
@@ -1364,7 +1368,8 @@ export type ContinueEntry =
   | { kind: 'cancel' };
 
 /** Header of a feedback file: what the implementer is asked to do with the text below it. */
-const FEEDBACK_HEADER = `# Feedback from your human reviewer
+function feedbackHeader(withFindings: boolean): string {
+  return `# Feedback from your human reviewer
 
 The pull request is ready, and your human sent it back with the feedback below. Address every
 item: change the code (and tests) where the feedback is right, and explain where you
@@ -1372,11 +1377,18 @@ disagree.
 
 In report.json set \`feedbackOutcome\` to \`"changed"\` when you committed changes, or to
 \`"no_changes"\` when you answered every item without changing anything (no commit is needed
-then; say why in \`summary\`). Findings do not apply here: leave \`findingResolutions\` empty.
+then; say why in \`summary\`). ${
+    withFindings
+      ? `Every finding listed below goes into \`findingResolutions\`: use its key (such as
+\`r1:f_2\`) as \`findingId\` and resolve it as \`fixed\`, \`disputed\` or \`deferred\` with a
+note. Reviewer comments need no resolution.`
+      : 'Findings do not apply here: leave `findingResolutions` empty.'
+  }
 
 ---
 
 `;
+}
 
 /**
  * Continues a run that is resting. In `awaiting_plan_approval`: `plan_approve` implements from
@@ -1444,15 +1456,43 @@ export async function continueRun(
     await setStage(ctx, 'fixing', `feedback ${n}`);
     await requireOpenPr(ctx);
     await patchState(ctx, { rounds: { ...ctx.st.rounds, feedback: n }, sessionEnded: false });
+    // The findings the reviewer sent, as fix items (a key this run does not know is ignored).
+    const items = (entry.findingKeys ?? []).flatMap((key) => {
+      const found = findingOfKey(ctx!, key);
+      return found ? [fixItem(found.round, found.finding)] : [];
+    });
     const file = await writeArtifact(
       ctx.runDir,
       `inputs/feedback-${n}.md`,
-      FEEDBACK_HEADER + entry.text,
+      feedbackHeader(items.length > 0) + entry.text,
     );
-    await fixTurn(ctx, 'feedback', n, file.path, {
+    // Which keys were sent, so the report can be checked against them.
+    await writeArtifact(
+      ctx.runDir,
+      `inputs/feedback-${n}.keys.json`,
+      items.map((i) => i.key),
+    );
+    const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
+    const report = await fixTurn(ctx, 'feedback', n, file.path, {
+      validate: (r) => {
+        for (const x of r.findingResolutions) resolved.set(x.findingId, x);
+        const missing = items.filter((i) => !resolved.has(i.key)).map((i) => i.key);
+        return missing.length > 0
+          ? `Feedback report is missing resolutions for: ${missing.join(', ')}`
+          : null;
+      },
       // Answering without changing anything is allowed when the report says so.
       requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
     });
+    if (items.length > 0) {
+      await settleFix(
+        env,
+        ctx,
+        items,
+        new Map(report.findingResolutions.map((x) => [x.findingId, x])),
+        (i) => i.key,
+      );
+    }
     await verifyLoop(ctx);
     await finishRun(ctx);
   } catch (e) {

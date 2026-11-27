@@ -62,9 +62,11 @@ This is fix round {{round}}. Findings to address are in `{{findingsPath}}`. For 
   with evidence. Your human will rule on it.
 - **deferred**: only for findings the plan puts out of scope.
 
+<!-- ci-fix -->
 If the file lists failing CI checks instead of findings (a `ci-fix` round), make them pass:
 GitHub CI failed on a commit that passed local CI, so look for what differs (environment,
 versions, missing checks). Commit the fix, and leave `findingResolutions` empty.
+<!-- /ci-fix -->
 
 Prior rulings by your human are in `{{rulingsPath}}`; don't relitigate them.
 

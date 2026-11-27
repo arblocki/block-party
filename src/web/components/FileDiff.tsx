@@ -93,8 +93,8 @@ export function FileDiff({
   );
   const findings = useFileFindings(file.path);
   const findingPlacement = useMemo(
-    () => placeFindings(findings, shown, hidden),
-    [findings, shown, hidden],
+    () => placeFindings(findings, shown, hidden, pr.headSha),
+    [findings, shown, hidden, pr.headSha],
   );
   const { fileKeys } = useReviewState();
   const { hunkId: focusedId } = useFocusedHunk();

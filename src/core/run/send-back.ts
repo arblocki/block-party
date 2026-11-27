@@ -7,6 +7,13 @@ export interface SendBackComment {
   body: string;
 }
 
+/** Every line prefixed, so the agent reads finding text as quoted data, not instructions. */
+const quote = (text: string): string =>
+  text
+    .split(/\r\n|\r|\n/)
+    .map((l) => (l === '' ? '>' : `> ${l}`))
+    .join('\n');
+
 const place = (f: FindingRow): string => {
   const loc = f.location;
   if (!loc) return 'no location';
@@ -30,12 +37,14 @@ export function buildSendBackFeedback(input: {
       '## Review findings to fix',
       ...input.findings.map((f) => {
         const lines = [
-          `### ${f.key} [${f.severity}] ${f.title}`,
+          `### ${f.key} [${f.severity}]`,
           `Location: ${place(f)}`,
           '',
-          f.body,
+          quote(`Title: ${f.title}`),
+          '>',
+          quote(f.body),
         ];
-        if (f.suggestedFix) lines.push('', `Suggested fix: ${f.suggestedFix}`);
+        if (f.suggestedFix) lines.push('>', quote(`Suggested fix: ${f.suggestedFix}`));
         return lines.join('\n');
       }),
     );

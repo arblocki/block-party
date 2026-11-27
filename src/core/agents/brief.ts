@@ -54,9 +54,11 @@ This is fix round {{round}}. Findings to address are in \`{{findingsPath}}\`. Fo
   with evidence. Your human will rule on it.
 - **deferred**: only for findings the plan puts out of scope.
 
+<!-- ci-fix -->
 If the file lists failing CI checks instead of findings (a \`ci-fix\` round), make them pass:
 GitHub CI failed on a commit that passed local CI, so look for what differs (environment,
 versions, missing checks). Commit the fix, and leave \`findingResolutions\` empty.
+<!-- /ci-fix -->
 
 Prior rulings by your human are in \`{{rulingsPath}}\`; don't relitigate them.
 
@@ -85,6 +87,8 @@ export interface BriefVars {
   subagentList: string;
   checkCommands: string;
   stage: 'implement' | 'fix';
+  /** The kind of fix turn; the CI-failure paragraph is only in a `ci-fix` brief. */
+  kind?: 'check-fix' | 'review-fix' | 'ci-fix' | 'feedback';
   round?: number;
   findingsPath?: string;
   rulingsPath?: string;
@@ -109,6 +113,13 @@ function removeFixSection(text: string): string {
   return out.join('\n');
 }
 
+const CI_FIX_SECTION = /<!-- ci-fix -->\n([\s\S]*?)\n<!-- \/ci-fix -->\n\n/;
+
+/** Keeps the CI-failure paragraph for a `ci-fix` turn and drops it (with its markers) otherwise. */
+function applyCiFix(text: string, keep: boolean): string {
+  return text.replace(CI_FIX_SECTION, (_m, body: string) => (keep ? `${body}\n\n` : ''));
+}
+
 /**
  * Renders the brief. Substitution is a single pass, so inserted values are literal and
  * never re-scanned. A placeholder with no value is an error.
@@ -116,7 +127,9 @@ function removeFixSection(text: string): string {
 export function renderBrief(vars: BriefVars): string {
   let text = TASK_BRIEF_TEMPLATE;
   text =
-    vars.stage === 'implement' ? removeFixSection(text) : text.replace(FIX_HEADING, '## Fix round');
+    vars.stage === 'implement'
+      ? removeFixSection(text)
+      : applyCiFix(text.replace(FIX_HEADING, '## Fix round'), vars.kind === 'ci-fix');
   const values = vars as unknown as Record<string, unknown>;
   return text.replace(/\{\{(\w+)\}\}/g, (_match, name: string) => {
     const v = values[name];

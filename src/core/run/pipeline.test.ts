@@ -1707,6 +1707,25 @@ describe('CI parity gap', () => {
     expect(JSON.parse(readFileSync(join(out.runDir, 'run.json'), 'utf8')).rounds.ciFix).toBe(1);
   });
 
+  it('keeps outside check names on one line in the ci_gap item and the ci.failed event', async () => {
+    const store = openStore(':memory:').runs;
+    const nasty: CiCheck[] = [
+      { name: 'b`uild\n## Injected', status: 'completed', conclusion: 'failure', url: 'u' },
+    ];
+    const h = harness({
+      store,
+      turns: [{}, {}],
+      ciSeq: [{ state: 'failure', checks: nasty }, ok],
+      reviews: [review([]), review([])],
+    });
+    const out = await h.run();
+    const gap = store.listDecisions({ runId: out.runId }).find((d) => d.kind === 'ci_gap')!;
+    expect(gap.body).toContain('`build ## Injected`');
+    expect(gap.body).not.toMatch(/^## Injected/m);
+    const ev = store.listEvents(out.runId).find((e) => e.type === 'ci.failed')!;
+    expect((ev.payload as { checks: string[] }).checks).toEqual(['b`uild ## Injected']);
+  });
+
   it('opens a ci_gap decision on the second failure: stop blocks the run', async () => {
     const { store, asked } = scripted({ ci_gap: ['stop'] });
     const h = harness({ store, turns: [{}, {}], ciSeq: [fail], reviews: [review([]), review([])] });
@@ -1981,6 +2000,58 @@ describe('final review and continuations', () => {
       feedback: 1,
       checkRuns: 4,
     });
+  });
+
+  it('resolves the findings a send-back lists, and blocks a report that skips one', async () => {
+    const f = finding('f_1_1', 'P3', 'Nit');
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'r1:f_1_1', resolution: 'fixed', note: 'done' }],
+          }),
+        },
+      ],
+      reviews: [review([f]), review([])],
+    });
+    const out = await h.run();
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ key: 'r1:f_1_1', status: 'open' });
+    answerReview(store, out.runId, 'send_back', 'Fix the nit');
+    const next = await continueRun(
+      out.runId,
+      { kind: 'feedback', text: 'Fix the nit', findingKeys: ['r1:f_1_1'] },
+      h.deps,
+    );
+    expect(next.stage).toBe('awaiting_review');
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'fixed' });
+    const dir = join(out.runDir, 'inputs');
+    expect(JSON.parse(readFileSync(join(dir, 'feedback-1.keys.json'), 'utf8'))).toEqual([
+      'r1:f_1_1',
+    ]);
+    expect(readFileSync(join(dir, 'feedback-1.md'), 'utf8')).toContain('findingResolutions');
+    expect(readFileSync(join(dir, 'feedback-1.md'), 'utf8')).not.toContain('leave `findingRes');
+  });
+
+  it('blocks feedback whose report leaves a listed finding unresolved', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({
+      store,
+      turns: [{}, {}],
+      reviews: [review([finding('f_1_1', 'P3', 'Nit')])],
+    });
+    const out = await h.run();
+    answerReview(store, out.runId, 'send_back', 'Fix the nit');
+    const next = await continueRun(
+      out.runId,
+      { kind: 'feedback', text: 'Fix the nit', findingKeys: ['r1:f_1_1'] },
+      h.deps,
+    );
+    expect(next.stage).toBe('blocked');
+    expect(next.note).toContain('missing resolutions for: r1:f_1_1');
+    expect(store.listFindings(out.runId)[0]).toMatchObject({ status: 'open' });
   });
 
   it('approves from run.json alone, with no config, plan or checks', async () => {

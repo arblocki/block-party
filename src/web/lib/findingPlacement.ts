@@ -14,12 +14,15 @@ export interface FindingPlacement {
  * Splits one file's findings like `placeThreads` does threads: by path and end line on the new
  * side. A finding with no location is `unplaced`. One on a line of a `hidden` hunk (shown by
  * another card) is dropped, since it renders there. Lines hidden by whitespace filtering are in
- * neither list, so they fall to the file level.
+ * neither list, so they fall to the file level. With `headSha`, a finding from a review of
+ * another commit never goes on a line (its line numbers may be stale): it goes to the file
+ * level.
  */
 export function placeFindings(
   findings: FindingRow[],
   shown: Hunk[],
   hidden: Hunk[] = [],
+  headSha?: string,
 ): FindingPlacement {
   const rdv = toRdvHunks(shown);
   const placement: FindingPlacement = { inline: [], fileLevel: [], unplaced: [] };
@@ -29,7 +32,7 @@ export function placeFindings(
       continue;
     }
     const pos = { side: 'RIGHT' as const, line: f.location.endLine };
-    if (findChangeKey(rdv, pos)) placement.inline.push(f);
+    if (!offHead(f, headSha) && findChangeKey(rdv, pos)) placement.inline.push(f);
     else if (!findHunk(hidden, pos)) placement.fileLevel.push(f);
   }
   return placement;
@@ -67,6 +70,11 @@ export function splitByFile(
     byPath.set(path, [...(byPath.get(path) ?? []), f]);
   }
   return { byPath, unplaced };
+}
+
+/** Whether a finding comes from a review of a commit other than `headSha`. */
+export function offHead(f: FindingRow, headSha: string | undefined): boolean {
+  return headSha !== undefined && !sameSha(f.reviewedSha, headSha);
 }
 
 /** Full and abbreviated SHAs of the same commit compare equal. */

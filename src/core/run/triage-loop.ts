@@ -89,7 +89,10 @@ export function setStatus(
 }
 
 /** The finding `key` (`r<round>:<id>`) with its round, if this run knows it. */
-function findingOfKey(ctx: Ctx, key: string): { round: number; finding: Finding } | undefined {
+export function findingOfKey(
+  ctx: Ctx,
+  key: string,
+): { round: number; finding: Finding } | undefined {
   const m = /^r(\d+):(.+)$/.exec(key);
   if (!m) return undefined;
   const round = ctx.rounds.find((r) => r.round === Number(m[1]));

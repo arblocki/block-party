@@ -62,6 +62,20 @@ describe('renderBrief', () => {
     expect(out).toContain('/runs/r1/rulings.json');
   });
 
+  it('includes the CI-failure paragraph only in a ci-fix brief', () => {
+    const fix = { ...base, stage: 'fix' as const, round: 1, findingsPath: 'f', rulingsPath: 'r' };
+    const ci = renderBrief({ ...fix, kind: 'ci-fix' });
+    expect(ci).toContain('GitHub CI failed on a commit that passed local CI');
+    expect(ci).not.toContain('<!--');
+    for (const kind of ['check-fix', 'review-fix', 'feedback'] as const) {
+      const out = renderBrief({ ...fix, kind });
+      expect(out).not.toContain('GitHub CI failed');
+      expect(out).not.toContain('<!--');
+      expect(out).toContain('Prior rulings by your human');
+    }
+    expect(renderBrief(fix)).not.toContain('GitHub CI failed');
+  });
+
   it('inserts values literally without recursive substitution', () => {
     const out = renderBrief({ ...base, extraBoundaries: '- keep {{runTitle}} and $& literal' });
     expect(out).toContain('- keep {{runTitle}} and $& literal');

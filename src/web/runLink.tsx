@@ -182,8 +182,13 @@ export function RunLinkProvider({ children }: { children: ReactNode }) {
     (d) => d.kind === 'final_review' && d.status === 'open',
   );
 
+  // A ref as well as `busy`: a second click lands before the re-render disables the button,
+  // and would otherwise show a false 409 for the answer the first one already recorded.
+  const acting = useRef(false);
   const act = useCallback(
     async (fn: () => Promise<void>) => {
+      if (acting.current) return;
+      acting.current = true;
       setBusy(true);
       setError(null);
       try {
@@ -192,6 +197,7 @@ export function RunLinkProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (alive.current) setError((e as Error).message);
       } finally {
+        acting.current = false;
         if (alive.current) setBusy(false);
       }
     },

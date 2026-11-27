@@ -1211,10 +1211,12 @@ describe('send to implementer', () => {
     const entry = fake.continues[0]!.entry;
     expect(entry.kind).toBe('feedback');
     const text = (entry as { text: string }).text;
-    expect(text).toContain('r1:f_1 [P1] Title f_1');
+    expect(text).toContain('r1:f_1 [P1]');
+    expect(text).toContain('> Title: Title f_1');
     expect(text).toContain('a.ts:3-4');
-    expect(text).toContain('Body of f_1');
-    expect(text).toContain('Suggested fix: do the thing');
+    expect(text).toContain('> Body of f_1');
+    expect(text).toContain('> Suggested fix: do the thing');
+    expect((entry as { findingKeys?: string[] }).findingKeys).toEqual(['r1:f_1', 'r1:f_2']);
     expect(text).toContain('r1:f_2');
     expect(text.match(/r1:f_1/g)).toHaveLength(1);
     expect(text).toContain('b.ts:9');
@@ -1240,6 +1242,25 @@ describe('send to implementer', () => {
     }));
     expect((await post(a, { findingKeys: [], comments })).status).toBe(200);
     expect((fake.continues[0]!.entry as { text: string }).text.length).toBeGreaterThan(4000);
+  });
+
+  it('sends no finding keys when only a note is sent', async () => {
+    const { fake, app: a } = setup();
+    expect((await post(a, { findingKeys: [], comments: [], note: 'n' })).status).toBe(200);
+    expect(fake.continues[0]!.entry).not.toHaveProperty('findingKeys');
+  });
+
+  it('names the longest item when the feedback is too long', async () => {
+    const { fake, app: a } = setup();
+    const comments = Array.from({ length: 30 }, (_, i) => ({
+      path: 'a.ts',
+      line: i + 1,
+      body: 'x'.repeat(i === 7 ? 3900 : 3500),
+    }));
+    const res = await post(a, { findingKeys: [], comments });
+    expect(res.status).toBe(400);
+    expect(JSON.stringify(await res.json())).toContain('comment 8 (a.ts:8)');
+    expect(fake.continues).toEqual([]);
   });
 
   it('answers 409 outside awaiting_review, without a final review decision', async () => {

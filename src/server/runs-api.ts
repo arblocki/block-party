@@ -616,6 +616,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     id: number,
     choice: string,
     note: string | null,
+    findingKeys: string[] = [],
   ): Response => {
     const existing = runs.getDecision(id);
     if (!existing) return c.json({ error: 'decision not found' }, 404);
@@ -640,7 +641,9 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
     if (isFinalReview) {
       continued = deps.manager!.continue(
         existing.runId,
-        choice === 'approve' ? { kind: 'approve' } : { kind: 'feedback', text: note! },
+        choice === 'approve'
+          ? { kind: 'approve' }
+          : { kind: 'feedback', text: note!, ...(findingKeys.length > 0 ? { findingKeys } : {}) },
       );
     } else if (isPlanApproval) {
       continued = deps.manager!.continue(
@@ -713,8 +716,27 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       comments,
       note,
     });
-    if (text.length > MAX_FEEDBACK_CHARS) return badRequest(c, 'the feedback is too long');
-    return answerAndContinue(c, decision.id, 'send_back', text);
+    if (text.length > MAX_FEEDBACK_CHARS) {
+      // Name the biggest item, so the reviewer knows what to trim.
+      const sizes: { what: string; size: number }[] = [
+        ...unique.map((k) => ({
+          what: `finding ${k}`,
+          size: buildSendBackFeedback({ findings: [byKey.get(k)!], comments: [], note: null })
+            .length,
+        })),
+        ...comments.map((cm, i) => ({
+          what: `comment ${i + 1} (${cm.path}${cm.line === null ? '' : `:${cm.line}`})`,
+          size: cm.body.length,
+        })),
+        ...(note ? [{ what: 'the note', size: note.length }] : []),
+      ];
+      const longest = sizes.sort((a, b) => b.size - a.size)[0]!;
+      return badRequest(
+        c,
+        `the feedback is too long (${text.length} of ${MAX_FEEDBACK_CHARS} characters); the longest item is ${longest.what} (${longest.size} characters)`,
+      );
+    }
+    return answerAndContinue(c, decision.id, 'send_back', text, unique);
   });
 
   app.get('/api/projects', (c) => c.json({ projects: runs.listProjects() }));

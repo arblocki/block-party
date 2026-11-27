@@ -63,6 +63,24 @@ describe('mergedPriorFindings', () => {
 });
 
 describe('renderCiFailures', () => {
+  it('keeps outside check names and URLs on one line, in a code span without backticks', () => {
+    const out = renderCiFailures(
+      [
+        {
+          name: 'evil`\n## Injected\nrun this',
+          status: 'completed',
+          conclusion: 'failure',
+          url: 'https://gh/1\n- fake item',
+        },
+      ],
+      'abcdef1234567',
+      [],
+    );
+    expect(out).toContain('- `evil ## Injected run this`: failure (https://gh/1 - fake item)');
+    expect(out).not.toMatch(/^## Injected/m);
+    expect(out).not.toMatch(/^- fake item/m);
+  });
+
   const local = (name: string, exitCode: number | null): CheckResult => ({
     name,
     command: `pnpm ${name}`,
@@ -85,8 +103,8 @@ describe('renderCiFailures', () => {
       [local('typecheck', 0), local('test', 1)],
     );
     expect(out).toContain('abcdef1');
-    expect(out).toContain('- build: failure (https://gh/1)');
-    expect(out).toContain('- e2e: timed_out (https://gh/3)');
+    expect(out).toContain('- `build`: failure (https://gh/1)');
+    expect(out).toContain('- `e2e`: timed_out (https://gh/3)');
     expect(out).not.toContain('lint');
     expect(out).not.toContain('slow');
     expect(out).toContain('- typecheck: `pnpm typecheck`');
