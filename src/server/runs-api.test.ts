@@ -674,6 +674,109 @@ describe('run plan and findings', () => {
     });
   });
 
+  describe('acceptance', () => {
+    const entry = (criterion: string, status: string, evidence = 'because') => ({
+      criterion,
+      status,
+      evidence,
+    });
+    const report = (acceptance: unknown[]) =>
+      JSON.stringify({
+        status: 'done',
+        summary: 's',
+        acceptance,
+        questions: [],
+        findingResolutions: [],
+      });
+
+    it('takes the newest status by normalized text and marks extras and unmentioned', async () => {
+      addRun();
+      const a = runs.startStage({ runId: RUN_A, kind: 'implement', round: 0 });
+      const b = runs.startStage({ runId: RUN_A, kind: 'review-fix', round: 1 });
+      expect(a).toBeLessThan(b);
+      writeFileSync(
+        join(dir, 'reports', 'implement-0.json'),
+        report([entry('widgets  EXIST', 'unsure', 'first'), entry('Extra thing', 'met')]),
+      );
+      writeFileSync(
+        join(dir, 'reports', 'review-fix-1.json'),
+        report([entry(' widgets exist ', 'met', 'second')]),
+      );
+      writeFileSync(
+        join(dir, 'reports', 'plan-1.json'),
+        report([entry('Widgets are blue', 'met')]),
+      );
+      const body = await json(`/api/runs/${RUN_A}/acceptance`);
+      expect(body).toEqual({
+        criteria: [
+          {
+            criterion: 'Widgets exist',
+            status: 'met',
+            evidence: 'second',
+            fromReport: 'review-fix-1',
+          },
+          { criterion: 'Widgets are blue', status: 'unverified', evidence: '', fromReport: null },
+          {
+            criterion: 'Extra thing',
+            status: 'met',
+            evidence: 'because',
+            fromReport: 'implement-0',
+            extra: true,
+          },
+        ],
+      });
+    });
+
+    it('orders by stage rows rather than by file name', async () => {
+      addRun();
+      runs.startStage({ runId: RUN_A, kind: 'review-fix', round: 1 });
+      runs.startStage({ runId: RUN_A, kind: 'implement', round: 0 });
+      writeFileSync(
+        join(dir, 'reports', 'implement-0.json'),
+        report([entry('Widgets exist', 'met')]),
+      );
+      writeFileSync(
+        join(dir, 'reports', 'review-fix-1.json'),
+        report([entry('Widgets exist', 'not_met')]),
+      );
+      const body = (await json(`/api/runs/${RUN_A}/acceptance`)) as {
+        criteria: { status: string }[];
+      };
+      expect(body.criteria[0]!.status).toBe('met');
+    });
+
+    it('is empty for a run whose plan is not approved, and skips invalid reports', async () => {
+      addRun({ planPath: '' });
+      runs.addPlanVersion({
+        runId: RUN_A,
+        version: 1,
+        path: join(dir, 'plans', 'v1.md'),
+        contentHash: 'h1',
+        title: 'Add widgets',
+        createdBy: 'agent',
+        status: 'draft',
+      });
+      expect(await json(`/api/runs/${RUN_A}/acceptance`)).toEqual({ criteria: [] });
+    });
+
+    it('lists unverified criteria when a report is invalid', async () => {
+      addRun();
+      writeFileSync(join(dir, 'reports', 'implement-0.json'), '{"nope":1}');
+      const body = (await json(`/api/runs/${RUN_A}/acceptance`)) as {
+        criteria: { status: string }[];
+      };
+      expect(body.criteria.map((c) => c.status)).toEqual(['unverified', 'unverified']);
+    });
+
+    it('refuses a report that links outside the run directory', async () => {
+      addRun();
+      writeFileSync(join(outside, 'r.json'), report([entry('Widgets exist', 'met')]));
+      symlinkSync(join(outside, 'r.json'), join(dir, 'reports', 'implement-0.json'));
+      const res = await req(`/api/runs/${RUN_A}/acceptance`);
+      expect(res.status).toBe(403);
+    });
+  });
+
   describe('plan versions', () => {
     const V2 = PLAN.replace('# Add widgets', '# Add widgets, smaller');
     beforeEach(() => {

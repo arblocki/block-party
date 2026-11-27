@@ -1,4 +1,4 @@
-import { readFileSync, realpathSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import type { Context, Hono } from 'hono';
 import { z } from 'zod';
@@ -7,6 +7,7 @@ import type { RunFlagOverrides } from '../core/run/config.js';
 import { isTerminal } from '../core/run/machine.js';
 import { isRunId } from '../core/run/id.js';
 import { parsePlan } from '../core/run/plan.js';
+import { orderTurns, ReportSchema, TURN_KINDS, type Report } from '../core/run/report.js';
 import { buildSendBackFeedback } from '../core/run/send-back.js';
 import { ReviewerOutputSchema } from '../core/reviewer/findings.js';
 import type {
@@ -375,6 +376,79 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       acceptanceCriteria: parsed.ok ? parsed.plan.acceptanceCriteria : [],
       ...(chosen ? { version: chosen.version, status: chosen.status } : {}),
     });
+  });
+
+  /** Collapses case and whitespace so a report's wording matches the plan's. */
+  const normalize = (text: string): string => text.replace(/\s+/g, ' ').trim().toLowerCase();
+
+  /**
+   * Each approved-plan criterion with the newest implementer report entry that mentions it.
+   * Report entries matching no criterion follow, marked `extra`. Throws OutsideRunDirError.
+   */
+  const acceptanceOf = (run: RunRow) => {
+    const plans = runs.listPlans(run.id);
+    // Only an approved plan has criteria; a run from before plan rows has just its file.
+    const path = plans.length > 0 ? plans.find((p) => p.status === 'approved')?.path : run.planPath;
+    if (!path) return [];
+    let planText: string;
+    try {
+      planText = readInsideRunDir(run.runDir, path);
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) throw e;
+      return [];
+    }
+    const parsed = parsePlan(planText);
+    const criteria = parsed.ok ? parsed.plan.acceptanceCriteria : [];
+    let names: string[] = [];
+    try {
+      names = readdirSync(resolve(run.runDir, 'reports'));
+    } catch {
+      // No reports yet.
+    }
+    const turns: { kind: string; round: number; entries: Report['acceptance'] }[] = [];
+    for (const name of names) {
+      const m = /^(.+)-(\d+)\.json$/.exec(name);
+      if (!m || !TURN_KINDS.includes(m[1]!)) continue;
+      let raw: unknown;
+      try {
+        raw = readJsonInside(run.runDir, `reports/${name}`);
+      } catch (e) {
+        if (e instanceof OutsideRunDirError) throw e;
+        continue;
+      }
+      const report = ReportSchema.safeParse(raw);
+      if (report.success) {
+        turns.push({ kind: m[1]!, round: Number(m[2]), entries: report.data.acceptance });
+      }
+    }
+    type Entry = { criterion: string; status: string; evidence: string; fromReport: string };
+    const latest = new Map<string, Entry>();
+    for (const t of orderTurns(turns, runs.listStages(run.id))) {
+      for (const e of t.entries) {
+        latest.set(normalize(e.criterion), { ...e, fromReport: `${t.kind}-${t.round}` });
+      }
+    }
+    const planned = new Set(criteria.map(normalize));
+    return [
+      ...criteria.map((criterion) => {
+        const hit = latest.get(normalize(criterion));
+        return hit
+          ? { ...hit, criterion }
+          : { criterion, status: 'unverified', evidence: '', fromReport: null };
+      }),
+      ...[...latest].filter(([key]) => !planned.has(key)).map(([, e]) => ({ ...e, extra: true })),
+    ];
+  };
+
+  app.get('/api/runs/:id/acceptance', (c) => {
+    const run = runOf(c);
+    if (run instanceof Response) return run;
+    try {
+      return c.json({ criteria: acceptanceOf(run) });
+    } catch (e) {
+      if (e instanceof OutsideRunDirError) return c.json({ error: errorMessage(e) }, 403);
+      throw e;
+    }
   });
 
   /** The run's review rounds with their findings; throws OutsideRunDirError. */

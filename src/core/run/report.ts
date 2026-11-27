@@ -70,3 +70,30 @@ export async function readReport(path: string): Promise<ReadReportResult> {
   }
   return { ok: true, report: parsed.data };
 }
+
+/** The kinds of stage that produce an implementer report, in their fallback order. */
+export const TURN_KINDS: readonly string[] = ['implement', 'check-fix', 'review-fix', 'feedback'];
+
+/**
+ * Puts reports in turn order: the order of the run's stage rows, then any report the rows do
+ * not list by kind and round. Each stage row's report is used once.
+ */
+export function orderTurns<T extends { kind: string; round: number }>(
+  reports: readonly T[],
+  stages: readonly { kind: string; round: number }[],
+): T[] {
+  const found = new Map(reports.map((r) => [`${r.kind}-${r.round}`, r]));
+  const ordered: T[] = [];
+  for (const st of stages) {
+    const key = `${st.kind}-${st.round}`;
+    const turn = found.get(key);
+    if (turn) {
+      ordered.push(turn);
+      found.delete(key);
+    }
+  }
+  const rest = [...found.values()].sort(
+    (a, b) => TURN_KINDS.indexOf(a.kind) - TURN_KINDS.indexOf(b.kind) || a.round - b.round,
+  );
+  return [...ordered, ...rest];
+}

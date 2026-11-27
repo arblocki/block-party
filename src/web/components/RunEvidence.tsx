@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { findingHistory } from '../lib/findings';
 import { checksBySha } from '../lib/runView';
-import type { ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
+import type { AcceptanceItem, ReviewFinding, ReviewRound, RunPlan, StageRow } from '../types';
 import { sectionHeading } from './AppShell';
 import { listClass } from './PickerShell';
 
@@ -51,6 +51,51 @@ export function PlanSection({ plan, error }: { plan: RunPlan | null; error: stri
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+const ACCEPTANCE_LABEL: Record<AcceptanceItem['status'], string> = {
+  met: 'met',
+  not_met: 'not met',
+  unsure: 'unsure',
+  unverified: 'unverified',
+};
+
+const ACCEPTANCE_CLASS: Record<AcceptanceItem['status'], string> = {
+  met: 'bg-success-soft text-success',
+  not_met: 'bg-error-soft text-error',
+  unsure: 'bg-warning-soft text-warning',
+  unverified: 'bg-surface-elevated text-muted',
+};
+
+/** Each acceptance criterion of the approved plan with its latest status and evidence. */
+export function AcceptanceSection({ items }: { items: AcceptanceItem[] | null }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <section className="mb-8" aria-labelledby="acceptance">
+      <h2 id="acceptance" className={sectionHeading}>
+        Acceptance
+      </h2>
+      <ul className={listClass}>
+        {items.map((a, i) => (
+          <li key={i} className="px-3 py-2.5">
+            <div className="flex flex-wrap items-baseline gap-x-2">
+              <span
+                className={`rounded-md px-1.5 py-0.5 text-xs font-medium ${ACCEPTANCE_CLASS[a.status]}`}
+              >
+                {ACCEPTANCE_LABEL[a.status]}
+              </span>
+              <span className="min-w-0 break-words text-sm">{a.criterion}</span>
+              {a.extra && <span className="text-xs text-muted">not in the plan</span>}
+            </div>
+            {a.evidence && <p className="mt-1 break-words text-sm text-muted">{a.evidence}</p>}
+            {a.fromReport && (
+              <p className="mt-0.5 font-mono text-xs text-muted">from {a.fromReport}</p>
+            )}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
@@ -148,10 +193,13 @@ export function EvidenceSection({
   stages,
   rounds,
   findingsError,
+  headSummary,
 }: {
   stages: StageRow[];
   rounds: ReviewRound[] | null;
   findingsError: string | null;
+  /** The current-head line and the evidence that belongs to older heads. */
+  headSummary: { line: string; stale: string[] };
 }) {
   const shas = checksBySha(stages);
   const allFindings = (rounds ?? []).flatMap((r) => r.findings);
@@ -160,7 +208,17 @@ export function EvidenceSection({
       <h2 id="evidence" className={sectionHeading}>
         Evidence
       </h2>
-      <h3 className="mb-1 text-sm font-medium">Local CI</h3>
+      <p className="mb-1 text-sm font-medium" data-testid="head-line">
+        Current head: <span className="font-mono">{headSummary.line}</span>
+      </p>
+      {headSummary.stale.length > 0 && (
+        <ul className="mb-3 space-y-0.5 text-xs text-muted">
+          {headSummary.stale.map((l) => (
+            <li key={l}>{l}</li>
+          ))}
+        </ul>
+      )}
+      <h3 className="mb-1 mt-3 text-sm font-medium">Local CI</h3>
       {shas.length === 0 ? (
         <p className="mb-4 text-sm text-muted">No local CI yet.</p>
       ) : (

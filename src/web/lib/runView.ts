@@ -10,6 +10,8 @@ export interface StripItem {
   state: StripState;
   /** How many times this stage ran (fix rounds, repeated CI runs, ...). */
   count: number;
+  /** Acceptance criteria met, on the cells that produce implementer reports (Implement, Fix). */
+  met?: { met: number; total: number };
 }
 
 const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
@@ -29,6 +31,7 @@ const STRIP: { key: StripItem['key']; label: string; kinds: StageKind[] }[] = [
 export function stageStrip(
   stages: readonly StageRow[],
   run: Pick<RunSummary, 'stage'>,
+  met: { met: number; total: number } | null = null,
 ): StripItem[] {
   const finished = isTerminal(run.stage);
   return STRIP.map(({ key, label, kinds }) => {
@@ -38,7 +41,9 @@ export function stageStrip(
     if (!last) state = run.stage === 'complete' ? 'skipped' : 'pending';
     else if (execs.some((s) => s.state === 'running')) state = finished ? 'stopped' : 'running';
     else state = last.state === 'succeeded' ? 'done' : (last.state as StripState);
-    return { key, label, state, count: execs.length };
+    const counted =
+      met && met.total > 0 && execs.length > 0 && (key === 'implement' || key === 'fix');
+    return { key, label, state, count: execs.length, ...(counted ? { met } : {}) };
   });
 }
 

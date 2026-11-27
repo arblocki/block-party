@@ -195,6 +195,17 @@ export interface RunPlan {
   acceptanceCriteria: string[];
 }
 
+/** One acceptance criterion with its latest status (GET /api/runs/:id/acceptance). */
+export interface AcceptanceItem {
+  criterion: string;
+  status: 'met' | 'not_met' | 'unsure' | 'unverified';
+  evidence: string;
+  /** `<kind>-<n>` of the report the status came from; null when none mentions it. */
+  fromReport: string | null;
+  /** A report entry that matches no criterion of the plan. */
+  extra?: true;
+}
+
 /** One version of a run's plan (GET /api/runs/:id/plans). */
 export interface PlanVersion {
   version: number;

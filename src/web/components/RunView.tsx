@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { isResting, isTerminal } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
+import { evidenceFor, headLine, staleLines } from '../lib/evidence';
 import { prHref, relativeTime } from '../lib/route';
 import { planActions, stageNoteLabel } from '../lib/plans';
 import { isNoisyEvent, stageStrip, summarizeEvent, type StripState } from '../lib/runView';
 import type {
+  AcceptanceItem,
   PlanVersion,
   ReviewRound,
   RunDetailResponse,
@@ -18,7 +20,7 @@ import { headingText, linkButton, sectionHeading, TopBar } from './AppShell';
 import { DecisionItem } from './DecisionItem';
 import { PlanPanel, panelHasControls } from './PlanPanel';
 import { listClass } from './PickerShell';
-import { EvidenceSection, PlanSection } from './RunEvidence';
+import { AcceptanceSection, EvidenceSection, PlanSection } from './RunEvidence';
 import { StageBadge } from './StageBadge';
 
 const EVENT_PAGE = 2000;
@@ -56,8 +58,20 @@ const reviewSignature = (stages: StageRow[]): string =>
     .map((s) => `${s.id}:${s.state}`)
     .join(',');
 
-function Strip({ detail }: { detail: RunDetailResponse }) {
-  const items = stageStrip(detail.stages, detail.run);
+/** Criteria of the plan that are met; extra report entries are not counted. */
+const metCount = (items: AcceptanceItem[] | null) => {
+  const planned = (items ?? []).filter((i) => !i.extra);
+  return { met: planned.filter((i) => i.status === 'met').length, total: planned.length };
+};
+
+function Strip({
+  detail,
+  acceptance,
+}: {
+  detail: RunDetailResponse;
+  acceptance: AcceptanceItem[] | null;
+}) {
+  const items = stageStrip(detail.stages, detail.run, metCount(acceptance));
   return (
     <ol className="mb-6 flex flex-wrap gap-2" aria-label="Stages">
       {items.map((i) => (
@@ -70,6 +84,7 @@ function Strip({ detail }: { detail: RunDetailResponse }) {
           <span className="text-xs">
             {i.state}
             {i.count > 1 ? ` x${i.count}` : ''}
+            {i.met ? ` · ${i.met.met}/${i.met.total}` : ''}
           </span>
         </li>
       ))}
@@ -131,6 +146,7 @@ export function RunView({ id }: { id: string }) {
   const [planError, setPlanError] = useState<string | null>(null);
   const [plans, setPlans] = useState<PlanVersion[] | null>(null);
   const [plansError, setPlansError] = useState<string | null>(null);
+  const [acceptance, setAcceptance] = useState<AcceptanceItem[] | null>(null);
   const [rounds, setRounds] = useState<ReviewRound[] | null>(null);
   const [findingsError, setFindingsError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -151,6 +167,8 @@ export function RunView({ id }: { id: string }) {
 
     // A response older than the newest request must not overwrite a newer one.
     let findingsSeq = 0;
+    let acceptanceSeq = 0;
+    let acceptanceSignature: string | null = null;
     let detailSeq = 0;
 
     const loadFindings = () => {
@@ -163,6 +181,25 @@ export function RunView({ id }: { id: string }) {
         },
         (e: Error) => alive() && seq === findingsSeq && setFindingsError(e.message),
       );
+    };
+
+    const loadAcceptance = () => {
+      const seq = ++acceptanceSeq;
+      return api<{ criteria: AcceptanceItem[] }>(`/api/runs/${id}/acceptance`).then(
+        (r) => alive() && seq === acceptanceSeq && setAcceptance(r.criteria),
+        () => {
+          // Shown as absent; the next change of stages or plan tries again.
+          if (alive() && seq === acceptanceSeq) acceptanceSignature = null;
+        },
+      );
+    };
+
+    /** Reports and the approved plan change with stage rows and the plan version. */
+    const refreshAcceptance = (d: RunDetailResponse) => {
+      const sig = `${d.run.planVersion ?? ''}|${d.stages.map((s) => `${s.id}:${s.state}`).join(',')}`;
+      if (sig === acceptanceSignature) return;
+      acceptanceSignature = sig;
+      void loadAcceptance();
     };
 
     const loadPlans = (stage: string) => {
@@ -208,6 +245,7 @@ export function RunView({ id }: { id: string }) {
           setDetail(d);
           setError(null);
           refreshPlans(d);
+          refreshAcceptance(d);
           const sig = reviewSignature(d.stages);
           if (sig !== signature) {
             signature = sig;
@@ -234,6 +272,7 @@ export function RunView({ id }: { id: string }) {
         signature = reviewSignature(first.stages);
         void loadFindings();
         refreshPlans(first);
+        refreshAcceptance(first);
         const all: RunEvent[] = [];
         for (;;) {
           const page = await api<{ events: RunEvent[]; lastId: number }>(
@@ -283,6 +322,9 @@ export function RunView({ id }: { id: string }) {
       document.title = 'block-party';
     };
   }, [run?.title]);
+
+  const ev = evidenceFor(run?.headSha ?? null, detail?.stages ?? [], rounds);
+  const headSummary = { line: headLine(ev), stale: staleLines(ev) };
 
   const dismiss = useCallback((decisionId: number) => {
     api<{ changed: boolean }>(`/api/inbox/${decisionId}/dismiss`, { method: 'POST' }).then(
@@ -376,7 +418,7 @@ export function RunView({ id }: { id: string }) {
           <span title={run.updatedAt}>updated {relativeTime(run.updatedAt)}</span>
         </div>
       </header>
-      <Strip detail={detail} />
+      <Strip detail={detail} acceptance={acceptance} />
       {open.length > 0 && (
         <section className="mb-8" aria-labelledby="needs-you">
           <h2 id="needs-you" className={sectionHeading}>
@@ -419,7 +461,13 @@ export function RunView({ id }: { id: string }) {
       ) : (
         <PlanSection plan={plan} error={planError} />
       )}
-      <EvidenceSection stages={detail.stages} rounds={rounds} findingsError={findingsError} />
+      <AcceptanceSection items={acceptance} />
+      <EvidenceSection
+        stages={detail.stages}
+        rounds={rounds}
+        findingsError={findingsError}
+        headSummary={headSummary}
+      />
       <Activity events={events} />
     </div>
   );

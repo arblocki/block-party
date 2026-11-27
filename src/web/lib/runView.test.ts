@@ -205,3 +205,21 @@ describe('summarizeEvent', () => {
     expect(isNoisyEvent('stage')).toBe(false);
   });
 });
+
+describe('stageStrip met criteria', () => {
+  it('puts the met count on the Implement and Fix cells that ran', () => {
+    const stages = [stage('implement', 'succeeded'), stage('checks', 'succeeded')];
+    const strip = stageStrip(stages, run('checking'), { met: 5, total: 7 });
+    expect(strip.find((i) => i.key === 'implement')!.met).toEqual({ met: 5, total: 7 });
+    expect(strip.find((i) => i.key === 'fix')!.met).toBeUndefined();
+    expect(strip.find((i) => i.key === 'checks')!.met).toBeUndefined();
+  });
+
+  it('shows no count without criteria', () => {
+    const strip = stageStrip([stage('implement', 'succeeded')], run('checking'), {
+      met: 0,
+      total: 0,
+    });
+    expect(strip.every((i) => i.met === undefined)).toBe(true);
+  });
+});

@@ -14,7 +14,7 @@ import { parsePlan, type Plan } from './plan.js';
 import type { FindingRow } from '../store/runs.js';
 import type { ResolutionKind, ReviewRoundInput, TurnReport } from './publish.js';
 import { RunRecorder } from './recorder.js';
-import { ReportSchema, type Report } from './report.js';
+import { orderTurns, ReportSchema, TURN_KINDS, type Report } from './report.js';
 import { loadRunState, type RunState } from './run-state.js';
 import { parseRulings, type Ruling } from './triage.js';
 
@@ -241,8 +241,6 @@ function applyStoredStatuses(rounds: ReviewRoundInput[], rows: FindingRow[]): vo
   }
 }
 
-const TURN_KINDS = ['implement', 'check-fix', 'review-fix', 'feedback'];
-
 /**
  * Accepted implementer reports in turn order. With a store, that is the order of the run's
  * stage rows; reports it does not list (or without a store) follow by kind, then round.
@@ -260,23 +258,13 @@ async function loadReports(
     if (!parsed.success) continue;
     found.set(`${m[1]}-${m[2]}`, { kind: m[1]!, round: Number(m[2]), report: parsed.data });
   }
-  const ordered: TurnReport[] = [];
+  let stages: { kind: string; round: number }[] = [];
   try {
-    for (const st of store?.listStages(runId) ?? []) {
-      const key = `${st.kind}-${st.round}`;
-      const turn = found.get(key);
-      if (turn) {
-        ordered.push(turn);
-        found.delete(key);
-      }
-    }
+    stages = store?.listStages(runId) ?? [];
   } catch {
-    // Without stage rows the fallback order below applies.
+    // Without stage rows the fallback order applies.
   }
-  const rest = [...found.values()].sort(
-    (a, b) => TURN_KINDS.indexOf(a.kind) - TURN_KINDS.indexOf(b.kind) || a.round - b.round,
-  );
-  return [...ordered, ...rest];
+  return orderTurns([...found.values()], stages);
 }
 
 /**
