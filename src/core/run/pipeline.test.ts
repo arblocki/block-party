@@ -2801,4 +2801,80 @@ describe('resume', () => {
     forced.illegal = null;
     expect((await resume(h, out.runId)).stage).toBe('awaiting_review');
   });
+
+  it('settles kept uncommitted changes with a commit turn, then checks the new head', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedAtPublish(store);
+    h.git.dirty = true;
+    expect((await resume(h, out.runId)).stage).toBe('interrupted');
+    const kept = await resume(h, out.runId, true);
+    expect(kept.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.sends[0]).toContain('uncommitted changes from before an interruption');
+    expect(h.calls.sends[0]).toContain('a.ts');
+    expect(stagesOf(store, out).map((r) => r[0])).toContain('resume-commit');
+    // The new commit has no evidence: local CI and a review ran on it before publishing.
+    expect(h.calls.checks).toBe(2);
+    expect(h.calls.reviews).toHaveLength(2);
+    expect(existsSync(join(out.runDir, 'reports', 'resume-commit-1.json'))).toBe(true);
+  });
+
+  it('does not review again a head whose blocking findings the loop accepted', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const h = harness({
+      store,
+      turns: [
+        {},
+        {
+          report: report({
+            findingResolutions: [{ findingId: 'f_1_1', resolution: 'fixed', note: 'tried' }],
+          }),
+        },
+      ],
+      reviews: [
+        review([finding('f_1_1', 'P0', 'Data loss')]),
+        review([finding('f_2_1', 'P1', 'Still lossy')]),
+      ],
+    });
+    const real = h.deps.waitForCi;
+    h.deps.waitForCi = () => {
+      ac.abort(new ShutdownError());
+      return new Promise(() => undefined);
+    };
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('interrupted');
+    expect(h.calls.reviews).toHaveLength(2);
+    h.deps.waitForCi = real;
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.reviews).toHaveLength(2);
+    expect(h.calls.checks).toBe(2);
+    expect(h.calls.sends).toHaveLength(1);
+    expect(h.calls.published).toHaveLength(1);
+  });
+
+  it('resolves old interrupted questions without options, and never leaves two open', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    const old = store.openDecision({
+      runId: out.runId,
+      kind: 'interrupted',
+      title: 'Run interrupted',
+      body: 'old item',
+    });
+    h.git.dirty = false;
+    await resume(h, out.runId);
+    expect(store.getDecision(old)?.status).toBe('resolved');
+  });
+
+  it('closes the stopped questions before it reopens one after a failed resume', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    forced.illegal = ['interrupted', 'implementing'];
+    await resume(h, out.runId);
+    await resume(h, out.runId);
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open.filter((d) => d.kind === 'interrupted')).toHaveLength(1);
+  });
 });

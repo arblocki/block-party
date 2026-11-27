@@ -48,7 +48,7 @@ describe('resumePoint', () => {
   it('resumes the turn when the last agent turn did not finish', () => {
     expect(
       resumePoint(ev({ recordedHead: null, stages: [st('implement', 1, 'cancelled')] })),
-    ).toEqual({ kind: 'turn', turnKind: 'implement', n: 1, reportPending: false, dirty: false });
+    ).toEqual({ kind: 'turn', turnKind: 'implement', n: 1, reportPending: false, dirtyFiles: [] });
     expect(
       resumePoint(
         ev({
@@ -56,7 +56,7 @@ describe('resumePoint', () => {
           reportPending: true,
         }),
       ),
-    ).toEqual({ kind: 'turn', turnKind: 'check-fix', n: 2, reportPending: true, dirty: false });
+    ).toEqual({ kind: 'turn', turnKind: 'check-fix', n: 2, reportPending: true, dirtyFiles: [] });
   });
 
   it('starts the first turn again when none was recorded', () => {
@@ -65,7 +65,7 @@ describe('resumePoint', () => {
       turnKind: 'implement',
       n: 1,
       reportPending: false,
-      dirty: false,
+      dirtyFiles: [],
     });
   });
 
@@ -137,6 +137,16 @@ describe('resumePoint', () => {
     });
   });
 
+  it('treats a head whose findings the loop accepted as reviewed', () => {
+    const base = [st('implement', 1), checks(), review(2)];
+    expect(resumePoint(ev({ stages: base, acceptedHeads: [HEAD] }))).toEqual({ kind: 'publish' });
+    expect(resumePoint(ev({ stages: base, acceptedHeads: [OTHER] }))).toEqual({ kind: 'review' });
+    // Older runs: a push of this head shows it was accepted.
+    expect(resumePoint(ev({ stages: [...base, publish()], prNumber: 7, prHead: HEAD }))).toEqual({
+      kind: 'wait_ci',
+    });
+  });
+
   it('rests for review when everything is done', () => {
     const base = [st('implement', 1), checks(), review(), publish()];
     expect(resumePoint(ev({ stages: [...base, waitCi()], prNumber: 7 }))).toEqual({
@@ -192,7 +202,7 @@ describe('resumePoint', () => {
     it('but not in the middle of a turn: its uncommitted work is its own', () => {
       expect(
         resumePoint(ev({ dirtyFiles: [' M a.ts'], stages: [st('implement', 1, 'running')] })),
-      ).toMatchObject({ kind: 'turn', dirty: true });
+      ).toMatchObject({ kind: 'turn', dirtyFiles: [' M a.ts'] });
     });
 
     it('and does not let the owner keep a missing worktree', () => {
@@ -202,13 +212,46 @@ describe('resumePoint', () => {
       });
     });
 
-    it('but proceeds when the owner chose to keep the changes', () => {
-      const p = resumePoint(
+    it('but settles kept uncommitted changes with a commit turn before anything else', () => {
+      const stages = [st('implement', 1), checks(), review()];
+      expect(resumePoint(ev({ dirtyFiles: [' M a.ts'], stages }), { keep: true })).toEqual({
+        kind: 'turn',
+        turnKind: 'resume-commit',
+        n: 1,
+        reportPending: false,
+        dirtyFiles: [' M a.ts'],
+      });
+      // A second settling gets the next number; an unfinished one is picked up again.
+      const again = resumePoint(
         ev({
           dirtyFiles: [' M a.ts'],
-          recordedHead: OTHER,
-          stages: [st('implement', 1), checks(OTHER)],
+          stages: [...stages, st('resume-commit', 1, 'running')],
         }),
+        { keep: true },
+      );
+      expect(again).toMatchObject({ kind: 'turn', turnKind: 'resume-commit', n: 1 });
+      expect(
+        resumePoint(ev({ dirtyFiles: [' M a.ts'], stages: [...stages, st('resume-commit', 1)] }), {
+          keep: true,
+        }),
+      ).toMatchObject({ turnKind: 'resume-commit', n: 2 });
+    });
+
+    it('and keep on a moved HEAD with a clean tree just continues from the evidence', () => {
+      expect(
+        resumePoint(
+          ev({
+            recordedHead: OTHER,
+            stages: [st('implement', 1), checks(OTHER), review(0, OTHER)],
+          }),
+          { keep: true },
+        ),
+      ).toEqual({ kind: 'checks' });
+    });
+
+    it('but proceeds when the owner chose to keep a moved HEAD and a clean tree', () => {
+      const p = resumePoint(
+        ev({ recordedHead: OTHER, stages: [st('implement', 1), checks(OTHER)] }),
         { keep: true },
       );
       // New head, no evidence on it: local CI.
@@ -218,6 +261,18 @@ describe('resumePoint', () => {
 });
 
 describe('fixBaseOf', () => {
+  it('does not count a resumed turn as another round', () => {
+    expect(
+      fixBaseOf([
+        st('check-fix', 1),
+        st('check-fix', 1, 'cancelled'),
+        st('review-fix', 1),
+        st('review-fix', 1),
+        st('feedback', 1),
+      ]),
+    ).toEqual({ checkFix: 1, reviewFix: 1, ciFix: 0 });
+  });
+
   it('is zero without a send-back', () => {
     expect(fixBaseOf([st('check-fix', 1), st('review-fix', 1)])).toEqual({
       checkFix: 0,

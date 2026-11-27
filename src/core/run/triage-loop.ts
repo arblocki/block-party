@@ -3,6 +3,7 @@ import { attachCommand, type Ctx } from './context.js';
 import type { Finding } from '../reviewer/findings.js';
 import type { DecisionAnswer, DecisionKind, DecisionOption, FindingStatus } from '../store/runs.js';
 import type { RunState } from './run-state.js';
+import type { Report } from './report.js';
 import type { ResolutionKind, ReviewRoundInput } from './publish.js';
 import { DecisionDismissedError } from './wait.js';
 import {
@@ -452,4 +453,77 @@ export async function settleFix(
     }
   }
   if (waited) await env.setStage(ctx, 'checking', 'questions answered');
+}
+
+/** What a fix turn's report must account for, and what follows once it is accepted. */
+export interface FixDuties {
+  extra: {
+    /** An error message when the report does not account for the findings. */
+    validate?: (report: Report) => string | null;
+    /** Whether the turn must have produced a new commit. */
+    requireCommit?: (report: Report) => boolean;
+  };
+  after: (report: Report) => Promise<void>;
+}
+
+/**
+ * The review-fix turn for `items`: every item needs a resolution, a commit is required when
+ * one was fixed, and the upheld items are spent and the resolutions settled once the report is
+ * accepted (a halted turn can be retried). Shared by a fresh review-fix and its resume.
+ */
+export function reviewFixDuties(
+  env: LoopEnv,
+  ctx: Ctx,
+  items: FixItem[],
+  fileId: (i: FixItem) => string,
+): FixDuties {
+  const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
+  return {
+    extra: {
+      validate: (r) => {
+        for (const x of r.findingResolutions) resolved.set(x.findingId, x);
+        const missing = items.filter((i) => !resolved.has(fileId(i))).map(fileId);
+        return missing.length > 0
+          ? `Fix report is missing resolutions for: ${missing.join(', ')}`
+          : null;
+      },
+      requireCommit: () => items.some((i) => resolved.get(fileId(i))?.resolution === 'fixed'),
+    },
+    after: async (report) => {
+      await markSpent(ctx, items);
+      const said = new Map(report.findingResolutions.map((x) => [x.findingId, x]));
+      await settleFix(env, ctx, items, said, fileId);
+    },
+  };
+}
+
+/**
+ * The turn that answers a send-back: the findings it listed need resolutions, answering
+ * without a change is allowed when the report says so, and the resolutions are settled. No
+ * ruling is spent here.
+ */
+export function feedbackDuties(env: LoopEnv, ctx: Ctx, items: FixItem[]): FixDuties {
+  const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
+  return {
+    extra: {
+      validate: (r) => {
+        for (const x of r.findingResolutions) resolved.set(x.findingId, x);
+        const missing = items.filter((i) => !resolved.has(i.key)).map((i) => i.key);
+        return missing.length > 0
+          ? `Feedback report is missing resolutions for: ${missing.join(', ')}`
+          : null;
+      },
+      requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
+    },
+    after: async (report) => {
+      if (items.length === 0) return;
+      await settleFix(
+        env,
+        ctx,
+        items,
+        new Map(report.findingResolutions.map((x) => [x.findingId, x])),
+        (i) => i.key,
+      );
+    },
+  };
 }

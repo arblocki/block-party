@@ -15,18 +15,19 @@ import type { Ctx } from './context.js';
 import { abortable, throwIfAborted } from './pipeline-helpers.js';
 import { RESUME_CONFLICT_OPTIONS, RESUME_CONFLICT_TITLE, RESUME_OPTIONS } from './rest-decision.js';
 import type { Report } from './report.js';
-import type { ResolutionKind } from './publish.js';
 import {
+  feedbackDuties,
   findingOfKey,
   fixItem,
-  markSpent,
-  settleFix,
-  type FixItem,
+  reviewFixDuties,
+  type FixDuties,
   type LoopEnv,
 } from './triage-loop.js';
+import { writeArtifact } from './artifacts.js';
 
 /** The kinds of stage that are an implementer turn. */
-export type TurnKind = 'implement' | 'check-fix' | 'review-fix' | 'ci-fix' | 'feedback';
+export type TurnKind =
+  'implement' | 'check-fix' | 'review-fix' | 'ci-fix' | 'feedback' | 'resume-commit';
 
 const TURN_KINDS: readonly StageKind[] = [
   'implement',
@@ -34,6 +35,7 @@ const TURN_KINDS: readonly StageKind[] = [
   'review-fix',
   'ci-fix',
   'feedback',
+  'resume-commit',
 ];
 
 export type ResumePoint =
@@ -47,8 +49,8 @@ export type ResumePoint =
       turnKind: TurnKind;
       n: number;
       reportPending: boolean;
-      /** The worktree holds the turn's uncommitted work from before the interruption. */
-      dirty: boolean;
+      /** Uncommitted paths the worktree holds from before the interruption. */
+      dirtyFiles: string[];
     }
   | { kind: 'checks' }
   | { kind: 'review' }
@@ -75,6 +77,8 @@ export interface ResumeEvidence {
   head: string | null;
   /** Uncommitted paths (porcelain status lines). */
   dirtyFiles: string[];
+  /** Heads whose review the loop accepted (`review.accepted` events). */
+  acceptedHeads?: string[];
   /** Commits from `recordedHead` to `head` (empty when they are the same). */
   newCommits: { sha: string; subject: string }[];
   /** Every stage execution, in start order. */
@@ -165,13 +169,26 @@ export function resumePoint(ev: ResumeEvidence, opts: ResumeOptions = {}): Resum
 
   if (!ev.planApproved) return { kind: 'plan', feedback: ev.planFeedback };
 
+  // Kept uncommitted changes past the agent turn: the agent settles them (commit or revert)
+  // before anything is checked, so no check or review is recorded against a HEAD without them.
+  if (!turnOpen && opts.keep && ev.dirtyFiles.length > 0) {
+    const done = ev.stages.filter((s) => s.kind === 'resume-commit').length;
+    return {
+      kind: 'turn',
+      turnKind: 'resume-commit',
+      n: done + 1,
+      reportPending: ev.reportPending,
+      dirtyFiles: ev.dirtyFiles,
+    };
+  }
+
   if (turnOpen) {
     return {
       kind: 'turn',
       turnKind: (last?.kind ?? 'implement') as TurnKind,
       n: last?.round ?? 1,
       reportPending: ev.reportPending,
-      dirty: ev.dirtyFiles.length > 0,
+      dirtyFiles: ev.dirtyFiles,
     };
   }
 
@@ -181,8 +198,14 @@ export function resumePoint(ev: ResumeEvidence, opts: ResumeOptions = {}): Resum
   if (!onHead('checks', 'headSha').some((s) => s.state === 'succeeded')) return { kind: 'checks' };
 
   const reviews = onHead('review', 'reviewedSha').filter((s) => s.state === 'succeeded');
-  // A review that left blocking findings is not a clean pass: it runs again (rulings carry over).
-  if (!reviews.some((s) => outputOf(s).blocking === 0)) return { kind: 'review' };
+  // Reviewed means a clean review, or one the loop accepted as it is (the fix cap, or findings
+  // the owner ruled on), which the loop records. A head that was pushed was accepted too, which
+  // is how older runs show it. Anything else is reviewed again (rulings carry over).
+  const pushedBefore = onHead('publish', 'headSha').some((s) => s.state === 'succeeded');
+  const reviewed =
+    reviews.some((s) => outputOf(s).blocking === 0) ||
+    (reviews.length > 0 && ((ev.acceptedHeads ?? []).includes(head) || pushedBefore));
+  if (!reviewed) return { kind: 'review' };
 
   if (!ev.publish) return { kind: 'rest_review' };
   const pushed =
@@ -196,12 +219,16 @@ export function resumePoint(ev: ResumeEvidence, opts: ResumeOptions = {}): Resum
   return { kind: 'rest_review' };
 }
 
-/** The fix rounds already used when the current pass began: the rows before the last feedback. */
+/**
+ * The fix rounds already used when the current pass began: the highest round of each kind
+ * before the last feedback row (a resumed turn adds a second row for its round, not a round).
+ */
 export function fixBaseOf(stages: StageEvidence[]): Ctx['fixBase'] {
   const at = stages.map((s) => s.kind).lastIndexOf('feedback');
   const before = at < 0 ? [] : stages.slice(0, at);
-  const count = (kind: StageKind) => before.filter((s) => s.kind === kind).length;
-  return { checkFix: count('check-fix'), reviewFix: count('review-fix'), ciFix: count('ci-fix') };
+  const top = (kind: StageKind) =>
+    Math.max(0, ...before.filter((s) => s.kind === kind).map((s) => s.round));
+  return { checkFix: top('check-fix'), reviewFix: top('review-fix'), ciFix: top('ci-fix') };
 }
 
 /** What `resumeRun` needs from the pipeline (passed in, so this file does not import it). */
@@ -234,6 +261,7 @@ export interface ResumeSteps {
   finishRun(ctx: Ctx): Promise<void>;
   publishAndWait(ctx: Ctx, opts?: { startAtCi?: boolean }): Promise<void>;
   restForReview(ctx: Ctx, note: string | null): Promise<void>;
+  requireOpenPr(ctx: Ctx): Promise<void>;
   loopEnv: LoopEnv;
   halt(note: string): Error;
   describeSession(ctx: Ctx): string;
@@ -246,8 +274,6 @@ export interface TurnExtras {
   planner?: boolean;
 }
 
-const RESUMABLE_QUESTIONS = ['interrupted', 'blocked', 'cap_reached', 'resume_conflict'];
-
 /** Resolves the open questions that offered this resume (the run is moving on). */
 function closeStoppedQuestions(ctx: Ctx): void {
   const store = ctx.deps.store;
@@ -255,7 +281,13 @@ function closeStoppedQuestions(ctx: Ctx): void {
   try {
     for (const status of ['open', 'answered'] as const) {
       for (const d of store.listDecisions({ runId: ctx.st.id, status })) {
-        if (RESUMABLE_QUESTIONS.includes(d.kind) && d.options !== null) store.resolveDecision(d.id);
+        // Items from before they carried options are closed too; the informational
+        // cap_reached item (no options) stays.
+        const mine =
+          d.kind === 'interrupted' ||
+          d.kind === 'blocked' ||
+          ((d.kind === 'cap_reached' || d.kind === 'resume_conflict') && d.options !== null);
+        if (mine) store.resolveDecision(d.id);
       }
     }
   } catch {
@@ -284,6 +316,8 @@ function closeStaleStages(ctx: Ctx): void {
  */
 export function reopenStopped(ctx: Ctx, e: unknown): void {
   const reason = e instanceof Error ? e.message : String(e);
+  // Never two open items for one stopped run, whatever failed.
+  closeStoppedQuestions(ctx);
   ctx.rec.release();
   ctx.rec.event('resume.failed', { reason });
   const stage = ctx.st.stage;
@@ -345,6 +379,21 @@ async function gather(ctx: Ctx): Promise<ResumeEvidence> {
       // Without GitHub the stage rows are the evidence.
     }
   }
+  const acceptedHeads: string[] = [];
+  try {
+    let after = 0;
+    for (;;) {
+      const page = deps.store?.listEvents(st.id, { afterId: after, limit: 500 }) ?? [];
+      for (const e of page) {
+        const h = (e.payload as { head?: unknown } | null)?.head;
+        if (e.type === 'review.accepted' && typeof h === 'string') acceptedHeads.push(h);
+      }
+      if (page.length < 500) break;
+      after = page.at(-1)!.id;
+    }
+  } catch {
+    // Without the events the stage rows decide.
+  }
   return {
     stage: st.stage,
     worktreePath: st.worktreePath,
@@ -354,6 +403,7 @@ async function gather(ctx: Ctx): Promise<ResumeEvidence> {
     head,
     dirtyFiles,
     newCommits,
+    acceptedHeads,
     stages,
     reportPending,
     prNumber: st.prNumber,
@@ -545,40 +595,16 @@ async function readJson(path: string): Promise<unknown> {
 }
 
 /** What a fix turn must account for, and what follows its report, rebuilt from the run files. */
-async function fixDuties(
-  ctx: Ctx,
-  kind: TurnKind,
-  n: number,
-  env: LoopEnv,
-): Promise<{ extra: TurnExtras; after: (report: Report) => Promise<void> }> {
-  const none = { extra: {}, after: async () => undefined };
-  if (kind === 'implement' || kind === 'check-fix' || kind === 'ci-fix') return none;
-  const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
-  const settle = (items: FixItem[], fileId: (i: FixItem) => string) => async (report: Report) => {
-    await markSpent(ctx, items);
-    const said = new Map(report.findingResolutions.map((x) => [x.findingId, x]));
-    await settleFix(env, ctx, items, said, fileId);
-  };
+async function fixDuties(ctx: Ctx, kind: TurnKind, n: number, env: LoopEnv): Promise<FixDuties> {
   if (kind === 'feedback') {
     const keys = await readJson(join(ctx.runDir, 'inputs', `feedback-${n}.keys.json`));
     const items = (Array.isArray(keys) ? (keys as string[]) : []).flatMap((key) => {
       const found = findingOfKey(ctx, key);
       return found ? [fixItem(found.round, found.finding)] : [];
     });
-    return {
-      extra: {
-        validate: (r) => {
-          for (const x of r.findingResolutions) resolved.set(x.findingId, x);
-          const missing = items.filter((i) => !resolved.has(i.key)).map((i) => i.key);
-          return missing.length > 0
-            ? `Feedback report is missing resolutions for: ${missing.join(', ')}`
-            : null;
-        },
-        requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
-      },
-      after: items.length > 0 ? settle(items, (i) => i.key) : async () => undefined,
-    };
+    return feedbackDuties(env, ctx, items);
   }
+  if (kind !== 'review-fix') return { extra: {}, after: async () => undefined };
   // review-fix: the n-th findings file belongs to the n-th review fix.
   const rounds = await numbered(join(ctx.runDir, 'inputs'), 'findings-round-', '.json');
   const round = rounds[n - 1];
@@ -588,27 +614,22 @@ async function fixDuties(
       : await readJson(join(ctx.runDir, 'inputs', `findings-round-${round}.json`));
   const items = (Array.isArray(file) ? (file as { id?: unknown }[]) : []).flatMap((f) => {
     const id = typeof f.id === 'string' ? f.id : '';
-    if (/^r\d+:/.test(id)) {
-      const found = findingOfKey(ctx, id);
-      return found ? [fixItem(found.round, found.finding)] : [];
-    }
-    const found = findingOfKey(ctx, `r${round}:${id}`);
+    const found = findingOfKey(ctx, /^r\d+:/.test(id) ? id : `r${round}:${id}`);
     return found ? [fixItem(found.round, found.finding)] : [];
   });
-  const fileId = (i: FixItem) => (i.round === round ? i.id : i.key);
-  return {
-    extra: {
-      validate: (r) => {
-        for (const x of r.findingResolutions) resolved.set(x.findingId, x);
-        const missing = items.filter((i) => !resolved.has(fileId(i))).map(fileId);
-        return missing.length > 0
-          ? `Fix report is missing resolutions for: ${missing.join(', ')}`
-          : null;
-      },
-      requireCommit: () => items.some((i) => resolved.get(fileId(i))?.resolution === 'fixed'),
-    },
-    after: settle(items, fileId),
-  };
+  return reviewFixDuties(env, ctx, items, (i) => (i.round === round ? i.id : i.key));
+}
+
+/** The instructions of a `resume-commit` turn: settle what the worktree holds. */
+function resumeCommitBrief(files: string[]): string {
+  const list = files.map((f) => f.slice(3).trim() || f.trim()).join(', ');
+  return `# Settle uncommitted changes
+
+The worktree has uncommitted changes from before an interruption (${list}).
+
+Commit the ones that belong to this task and revert any that do not. When the worktree is
+clean, write report.json (status "done") and stop.
+`;
 }
 
 /**
@@ -633,15 +654,36 @@ export async function resumeTurn(
     return;
   }
   const { deps, st, input } = ctx;
-  const brief = join(ctx.runDir, 'briefs', `${kind}-${n}.md`);
-  const duties = await fixDuties(ctx, kind, n, steps.loopEnv);
-  // The head the turn started from: the last accepted one (the base before any turn).
-  const prevHead = st.headSha ?? st.baseSha;
+  const settling = kind === 'resume-commit';
+  const brief = settling
+    ? (
+        await writeArtifact(
+          ctx.runDir,
+          `briefs/${kind}-${n}.md`,
+          resumeCommitBrief(point.dirtyFiles),
+        )
+      ).path
+    : join(ctx.runDir, 'briefs', `${kind}-${n}.md`);
+  // A send-back's turn is only worth running while its pull request is open.
+  if (kind === 'feedback') await steps.requireOpenPr(ctx);
+  const duties: FixDuties = settling
+    ? { extra: { requireCommit: () => false }, after: async () => undefined }
+    : await fixDuties(ctx, kind, n, steps.loopEnv);
+  // The head the turn started from: the last accepted one (the base before any turn); a turn
+  // that settles kept changes starts from whatever HEAD is now.
+  const prevHead = settling ? await deps.git.headSha(st.worktreePath) : (st.headSha ?? st.baseSha);
   const why = blockedBy ? ` The run had stopped because: ${blockedBy}` : '';
-  const left = point.dirty
-    ? ' The worktree still has your uncommitted changes from before the interruption: check `git status` and carry on from them.'
-    : '';
-  const message = `You were interrupted. Continue the task in ${brief}; write the report when done.${left}${why}`;
+  const left =
+    point.dirtyFiles.length > 0 && !settling
+      ? ' The worktree still has your uncommitted changes from before the interruption: check `git status` and carry on from them.'
+      : '';
+  const message = settling
+    ? `The worktree has uncommitted changes from before an interruption (${point.dirtyFiles
+        .map((f) => f.slice(3).trim() || f.trim())
+        .join(
+          ', ',
+        )}). Commit the ones that belong to this task and revert any that don't; write the report. Details: ${brief}`
+    : `You were interrupted. Continue the task in ${brief}; write the report when done.${left}${why}`;
   const session = ctx.session;
   const report = await steps.inStage(
     ctx,

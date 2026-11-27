@@ -78,6 +78,7 @@ export const TURN_KINDS: readonly string[] = [
   'review-fix',
   'ci-fix',
   'feedback',
+  'resume-commit',
 ];
 
 /**

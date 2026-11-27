@@ -1824,6 +1824,29 @@ describe('POST /api/runs/:id/resume', () => {
     expect(fake.resumes).toHaveLength(1);
   });
 
+  it('dismissing a stopped run question ends it as dismissed', async () => {
+    runs.createRun(runInput(projectId, { stage: 'interrupted' }));
+    const id = runs.openDecision({
+      runId: RUN_A,
+      kind: 'interrupted',
+      title: 'Run interrupted',
+      body: 'b',
+      options: [
+        { id: 'resume', label: 'Resume' },
+        { id: 'dismiss', label: 'Dismiss' },
+      ],
+    });
+    const fake = fakeManager();
+    const res = await post(
+      `/api/inbox/${id}/answer`,
+      { choice: 'dismiss' },
+      makeApp(runs, fake.manager),
+    );
+    expect(res.status).toBe(200);
+    expect(runs.getDecision(id)?.status).toBe('dismissed');
+    expect(fake.resumes).toHaveLength(0);
+  });
+
   it('dismissing does not resume, and keep resumes with keep', async () => {
     runs.createRun(runInput(projectId, { stage: 'blocked' }));
     const opts = [

@@ -59,6 +59,8 @@ export type StageKind =
   | 'review-fix'
   | 'ci-fix'
   | 'feedback'
+  /** A turn that settles a worktree's uncommitted changes the owner chose to keep. */
+  | 'resume-commit'
   | 'checks'
   | 'review'
   | 'publish'

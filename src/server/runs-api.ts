@@ -654,6 +654,15 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
         return badRequest(c, 'a note is required to request changes');
       }
     }
+    // Dismissing a stopped run's question ends it as dismissed, as the inbox's own button does.
+    if (
+      choice === 'dismiss' &&
+      ['interrupted', 'blocked', 'cap_reached'].includes(existing.kind) &&
+      existing.options?.some((o) => o.id === 'dismiss')
+    ) {
+      if (!runs.dismissDecision(id)) return c.json({ error: 'decision is not open' }, 409);
+      return c.json({ decision: runs.getDecision(id) });
+    }
     const result = runs.answerDecision(id, { choice, note });
     if (result === 'not_open') return c.json({ error: 'decision is not open' }, 409);
     if (result === 'run_ended') return c.json({ error: 'the run has ended' }, 409);

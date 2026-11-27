@@ -50,7 +50,6 @@ import {
   type CiWaitState,
   type PublishOptions,
   type PublishResult,
-  type ResolutionKind,
   type ReviewRoundInput,
   unresolvedBlocking,
   type WaitForCiOptions,
@@ -71,14 +70,14 @@ import {
   awaitAnswers,
   buildFixSet,
   escalateUpheld,
+  feedbackDuties,
   findingOfKey,
   fixItem,
   haltOnRepeatOfFixed,
   inheritRulings,
-  markSpent,
   openDecisions,
+  reviewFixDuties,
   reportNotAsked,
-  settleFix,
   writeRulings,
   type FixItem,
   type LoopEnv,
@@ -1121,6 +1120,7 @@ async function verifyLoop(ctx: Ctx, opts: { skipChecks?: boolean } = {}): Promis
       const upheld = buildFixSet(ctx, rec, inherited, new Set(), true);
       if (upheld.length === 0) {
         escalateUpheld(ctx);
+        acceptReview(ctx, head, round);
         return;
       }
       await reviewFix(ctx, rec, upheld);
@@ -1130,10 +1130,19 @@ async function verifyLoop(ctx: Ctx, opts: { skipChecks?: boolean } = {}): Promis
     const fixSet = buildFixSet(ctx, rec, inherited, answeredFix, false);
     if (fixSet.length === 0) {
       escalateUpheld(ctx);
+      acceptReview(ctx, head, round);
       return;
     }
     await reviewFix(ctx, rec, fixSet);
   }
+}
+
+/**
+ * Records that the loop is done with `head`: its review was clean, or what it found is
+ * accepted (the fix cap, or findings the owner ruled on). A resume does not review it again.
+ */
+function acceptReview(ctx: Ctx, head: string, round: number): void {
+  ctx.rec.event('review.accepted', { head, round });
 }
 
 /** Runs one fix turn for `items`, then rules on what it disputed and how broad it was. */
@@ -1147,21 +1156,9 @@ async function reviewFix(ctx: Ctx, rec: ReviewRoundInput, items: FixItem[]): Pro
     `inputs/findings-round-${rec.round}.json`,
     items.map((i) => ({ ...i.finding, id: fileId(i) })),
   );
-  const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
-  const report = await fixTurn(ctx, 'review-fix', n, findings.path, {
-    validate: (r) => {
-      for (const x of r.findingResolutions) resolved.set(x.findingId, x);
-      const missing = items.filter((i) => !resolved.has(fileId(i))).map(fileId);
-      return missing.length > 0
-        ? `Fix report is missing resolutions for: ${missing.join(', ')}`
-        : null;
-    },
-    requireCommit: () => items.some((i) => resolved.get(fileId(i))?.resolution === 'fixed'),
-  });
-  // Spent only once the turn's report is accepted: a halted turn can be retried.
-  await markSpent(ctx, items);
-  const said = new Map(report.findingResolutions.map((x) => [x.findingId, x]));
-  await settleFix(env, ctx, items, said, fileId);
+  const duties = reviewFixDuties(env, ctx, items, fileId);
+  const report = await fixTurn(ctx, 'review-fix', n, findings.path, duties.extra);
+  await duties.after(report);
 }
 
 /** Stops the implementer process; the conversation can still be resumed later. */
@@ -1465,6 +1462,7 @@ const resumeSteps: ResumeSteps = {
   finishRun,
   publishAndWait,
   restForReview,
+  requireOpenPr,
   loopEnv: env,
   halt: (note) => new Halt('blocked', note),
   describeSession: (ctx) => describeSession(ctx),
@@ -1551,27 +1549,9 @@ export async function continueRun(
       `inputs/feedback-${n}.keys.json`,
       items.map((i) => i.key),
     );
-    const resolved = new Map<string, { resolution: ResolutionKind; note: string }>();
-    const report = await fixTurn(ctx, 'feedback', n, file.path, {
-      validate: (r) => {
-        for (const x of r.findingResolutions) resolved.set(x.findingId, x);
-        const missing = items.filter((i) => !resolved.has(i.key)).map((i) => i.key);
-        return missing.length > 0
-          ? `Feedback report is missing resolutions for: ${missing.join(', ')}`
-          : null;
-      },
-      // Answering without changing anything is allowed when the report says so.
-      requireCommit: (r) => r.feedbackOutcome !== 'no_changes',
-    });
-    if (items.length > 0) {
-      await settleFix(
-        env,
-        ctx,
-        items,
-        new Map(report.findingResolutions.map((x) => [x.findingId, x])),
-        (i) => i.key,
-      );
-    }
+    const duties = feedbackDuties(env, ctx, items);
+    const report = await fixTurn(ctx, 'feedback', n, file.path, duties.extra);
+    await duties.after(report);
     await verifyLoop(ctx);
     await finishRun(ctx);
   } catch (e) {
