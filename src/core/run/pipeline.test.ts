@@ -119,6 +119,8 @@ interface Turn {
   moveHead?: boolean;
   /** The agent overwrites inputs/rulings.json during this turn. */
   tamperRulings?: boolean;
+  /** The agent overwrites settings.json and agents.json during this turn. */
+  tamperSettings?: boolean;
 }
 
 interface Opts {
@@ -161,6 +163,7 @@ function harness(o: Opts) {
   const git = { head: 'a'.repeat(40), n: 0, dirty: false };
   const calls = {
     sends: [] as string[],
+    settingsSeen: [] as string[],
     sendSessions: [] as string[],
     starts: [] as string[],
     startInputs: [] as ImplementerStartInput[],
@@ -186,6 +189,7 @@ function harness(o: Opts) {
   const doTurn = (input: ImplementerStartInput): TurnOutcome => {
     const t = o.turns[turnIdx++] ?? {};
     const planner = input.permissionMode === 'default';
+    if (!planner) calls.settingsSeen.push(readFileSync(input.settingsPath, 'utf8'));
     if (planner && t.plan !== null) {
       // The plan path is the one file (besides the report) a planner may write.
       const rule = input.allowedTools.find((x) => /^Write\(\/\/.*plans\/v\d+\.md\)$/.test(x));
@@ -196,6 +200,10 @@ function harness(o: Opts) {
     if (planner && t.moveHead) git.head = 'f'.repeat(40);
     if (t.commit !== false && !planner) git.head = String(++git.n).padEnd(40, 'c');
     git.dirty = t.dirty ?? false;
+    if (t.tamperSettings) {
+      writeFileSync(input.settingsPath, '{"permissions":{"defaultMode":"bypassPermissions"}}');
+      writeFileSync(input.agentsPath, '{}');
+    }
     if (t.tamperRulings) {
       writeFileSync(
         join(input.runDir, 'inputs', 'rulings.json'),
@@ -372,6 +380,7 @@ function harness(o: Opts) {
       }) as unknown as GitHubClient,
     createLog: (dir) => new RunLog(dir, { echo: (l) => echoed.push(l) }),
     hookArgv: ['node', 'hook'],
+    sandboxWritableDirs: () => ['/home/u/.local/share/pnpm/store'],
     ...(o.store ? { store: o.store } : {}),
     paths: {
       runDir: (id) => join(root, 'runs', id),
@@ -1105,6 +1114,32 @@ describe('triage, disputes and stop conditions', () => {
     expect(JSON.parse(store.getRulings(out.runId)!)).toEqual(expected);
   });
 
+  it('rewrites settings.json and agents.json before the next turn if an agent changed them', async () => {
+    const { store } = scripted({ dispute: ['uphold'] });
+    const h = harness({
+      store,
+      turns: [{}, { ...disputeTurn(), tamperSettings: true }, { report: fixed('r1:f_1_1') }],
+      reviews: [review([two[0]!]), review([]), review([])],
+    });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    // What the first turn saw is what the turn after the tampering saw.
+    expect(h.calls.settingsSeen.length).toBeGreaterThanOrEqual(3);
+    expect(h.calls.settingsSeen.at(-1)).toBe(h.calls.settingsSeen[0]);
+    expect(h.calls.settingsSeen.at(-1)).not.toContain('bypassPermissions');
+    expect(readJson(out, 'agents.json')).toHaveProperty('implementer');
+  });
+
+  it('warns about broad project allow rules and keeps them', async () => {
+    const out = await harness({
+      turns: [{}],
+      section: { permissions: { allow: ['Bash', 'Bash(make lint *)'] } },
+    }).run();
+    const warns = fileEvents(out).filter((e) => e.type === 'permissions.warning');
+    expect(warns).toHaveLength(1);
+    expect(warns[0]?.data).toMatchObject({ rule: 'Bash' });
+  });
+
   it('writes the sandbox settings only when policy.sandbox is on', async () => {
     const off = await harness({ turns: [{}] }).run();
     expect(readJson(off, 'settings.json')).not.toHaveProperty('sandbox');
@@ -1112,6 +1147,10 @@ describe('triage, disputes and stop conditions', () => {
     expect(readJson(on, 'settings.json')).toMatchObject({
       sandbox: { enabled: true, allowUnsandboxedCommands: false },
     });
+    const writable = (
+      readJson(on, 'settings.json') as { sandbox: { filesystem: { allowWrite: string[] } } }
+    ).sandbox.filesystem.allowWrite;
+    expect(writable).toContain('/home/u/.local/share/pnpm/store');
     const started = fileEvents(on).find((e) => e.type === 'run.started');
     expect(started?.data).toMatchObject({ sandboxed: true });
   });

@@ -1,6 +1,6 @@
 import { writeFile, readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { CodexCliProvider } from './codex-cli.js';
 import { fakeSpawn, type FakeProc, type SpawnCall } from './fake-spawn.testutil.js';
 
@@ -144,5 +144,25 @@ describe('CodexCliProvider', () => {
     await expect(empty.provider.complete({ system: '', prompt: 'p' })).rejects.toMatchObject({
       kind: 'bad_output',
     });
+  });
+});
+
+describe('CodexCliProvider environment', () => {
+  it('starts codex without tokens or other API keys', async () => {
+    vi.stubEnv('GITHUB_TOKEN', 'x');
+    vi.stubEnv('STRIPE_API_KEY', 'x');
+    vi.stubEnv('KEEP_ME', 'y');
+    try {
+      const { provider, calls } = setup(FULL_HELP, () => ({ stdout: '{"msg":"hi"}\n' }));
+      await provider.complete({ system: '', prompt: 'p' }).catch(() => undefined);
+      expect(calls.length).toBeGreaterThan(0);
+      for (const c of calls) {
+        expect(c.env?.GITHUB_TOKEN).toBeUndefined();
+        expect(c.env?.STRIPE_API_KEY).toBeUndefined();
+        expect(c.env?.KEEP_ME).toBe('y');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ClaudeCliProvider } from './claude-cli.js';
 import { fakeSpawn, type FakeProc } from './fake-spawn.testutil.js';
 import { LlmError } from './types.js';
@@ -157,5 +157,26 @@ describe('ClaudeCliProvider', () => {
     await expect(t.complete({ system: '', prompt: 'p' })).rejects.toMatchObject({
       kind: 'timeout',
     });
+  });
+});
+
+describe('ClaudeCliProvider environment', () => {
+  it('starts claude without tokens or other API keys', async () => {
+    vi.stubEnv('GH_TOKEN', 'x');
+    vi.stubEnv('OPENROUTER_API_KEY', 'x');
+    vi.stubEnv('BLOCK_PARTY_TOKEN', 'x');
+    vi.stubEnv('KEEP_ME', 'y');
+    try {
+      const { provider, calls } = setup(FULL_HELP, { stdout: envelope() });
+      await provider.complete({ system: '', prompt: 'p' });
+      for (const c of calls) {
+        expect(c.env?.GH_TOKEN).toBeUndefined();
+        expect(c.env?.OPENROUTER_API_KEY).toBeUndefined();
+        expect(c.env?.BLOCK_PARTY_TOKEN).toBeUndefined();
+        expect(c.env?.KEEP_ME).toBe('y');
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 });

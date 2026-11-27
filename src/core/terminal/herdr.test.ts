@@ -91,6 +91,20 @@ describe('cleanHerdrEnv', () => {
       }),
     ).toEqual({ PATH: '/bin' });
   });
+
+  it('drops what agentEnv drops: tokens, other API keys, other block-party variables', () => {
+    expect(
+      cleanHerdrEnv({
+        GITHUB_TOKEN: 'a',
+        GH_ENTERPRISE_TOKEN: 'b',
+        BLOCK_PARTY_TOKEN: 'c',
+        OPENROUTER_API_KEY: 'd',
+        ANTHROPIC_API_KEY: 'k',
+        BLOCK_PARTY_HOME: '/data',
+        HOME: '/h',
+      }),
+    ).toEqual({ ANTHROPIC_API_KEY: 'k', BLOCK_PARTY_HOME: '/data', HOME: '/h' });
+  });
 });
 
 describe('ensureServer', () => {

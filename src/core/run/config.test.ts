@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRunConfig } from './config.js';
+import { broadPermissionRules, resolveRunConfig } from './config.js';
 
 describe('resolveRunConfig', () => {
   it('applies defaults', () => {
@@ -29,6 +29,19 @@ describe('resolveRunConfig', () => {
     expect(c.permissions).toEqual({ allow: [], deny: [] });
     expect(c.publish).toBe(true);
     expect(c.waitForCi).toBe(true);
+  });
+
+  it('flags broad project allow rules', () => {
+    expect(
+      broadPermissionRules([
+        'Bash',
+        'Edit',
+        'Bash(*)',
+        'Bash(:*)',
+        'Bash(make lint *)',
+        'Read(./x)',
+      ]),
+    ).toEqual(['Bash', 'Edit', 'Bash(*)', 'Bash(:*)']);
   });
 
   it('reads permission extras and the sandbox switch, and rejects malformed rules', () => {

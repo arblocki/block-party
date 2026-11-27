@@ -155,11 +155,11 @@ export function checksBySha(stages: readonly StageRow[]): ShaChecks[] {
   return [...groups.values()];
 }
 
-/** `agent.*` events: one per tool call or turn, collapsed in the feed by default. */
 /** Whether the run's agent works in Claude Code's sandbox (`run.started` says so). */
 export const isSandboxed = (events: readonly Pick<RunEvent, 'type' | 'payload'>[]): boolean =>
   events.some((e) => e.type === 'run.started' && record(e.payload).sandboxed === true);
 
+/** `agent.*` events: one per tool call or turn, collapsed in the feed by default. */
 export const isNoisyEvent = (type: string): boolean => type.startsWith('agent.');
 
 const isRunStage = (v: string): v is RunStage => (RUN_STAGES as readonly string[]).includes(v);
@@ -248,6 +248,7 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return `GitHub CI failed${s('head') ? ` on ${s('head')}` : ''}${names.length ? `: ${names.join(', ')}` : ''}`;
     }
     case 'checks.warning':
+    case 'permissions.warning':
     case 'drift.warning':
       return s('warning') ?? type;
     case 'drift.missing':

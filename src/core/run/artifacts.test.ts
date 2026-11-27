@@ -1,9 +1,37 @@
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { readJson, writeArtifact } from './artifacts.js';
+
+describe('artifacts links and atomic writes', () => {
+  it('replaces a file whole and leaves no temp file', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bp-art-'));
+    await writeArtifact(dir, 'inputs/x.json', 'one');
+    await writeArtifact(dir, 'inputs/x.json', 'two');
+    expect(await readFile(join(dir, 'inputs', 'x.json'), 'utf8')).toBe('two');
+    expect(await readdir(join(dir, 'inputs'))).toEqual(['x.json']);
+  });
+
+  it('refuses a symbolic link at the target and writes nothing through it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bp-art-'));
+    const elsewhere = join(await mkdtemp(join(tmpdir(), 'bp-out-')), 'victim.txt');
+    await writeFile(elsewhere, 'keep');
+    await mkdir(join(dir, 'inputs'));
+    await symlink(elsewhere, join(dir, 'inputs', 'rulings.json'));
+    await expect(writeArtifact(dir, 'inputs/rulings.json', '[]')).rejects.toThrow(/symbolic link/);
+    expect(await readFile(elsewhere, 'utf8')).toBe('keep');
+  });
+
+  it('refuses a parent directory that is a link out of the run directory', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'bp-art-'));
+    const outside = await mkdtemp(join(tmpdir(), 'bp-out-'));
+    await symlink(outside, join(dir, 'inputs'));
+    await expect(writeArtifact(dir, 'inputs/rulings.json', '[]')).rejects.toThrow(/outside/);
+    expect(await readdir(outside)).toEqual([]);
+  });
+});
 
 describe('artifacts', () => {
   it('writes strings and objects, creating parents', async () => {

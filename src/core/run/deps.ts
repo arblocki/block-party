@@ -1,5 +1,6 @@
 import { basename, dirname } from 'node:path';
 import { hookArgv } from '../agents/claude-config.js';
+import { pnpmStoreDirs } from '../agents/sandbox-dirs.js';
 import { createHeadlessClaude } from '../agents/claude-headless.js';
 import { createPaneClaude } from '../agents/claude-pane.js';
 import { HookWatcher } from '../agents/hook-events.js';
@@ -62,6 +63,7 @@ export async function createRunDeps(opts: CreateRunDepsOptions): Promise<Pipelin
     github: async () => createGitHubClient(createOctokitClients(await resolveToken())),
     createLog: (dir) => new RunLog(dir, echo ? { echo } : {}),
     hookArgv: hookArgv(),
+    sandboxWritableDirs: () => pnpmStoreDirs(),
     ...(opts.store ? { store: opts.store } : {}),
   };
 }

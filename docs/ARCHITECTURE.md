@@ -1105,6 +1105,12 @@ Newest first. Each entry: date, decision, why, and what would make us revisit it
   driver is built.
 - Implementer permissions: the spike's `Bash(pnpm:*)` allowlist would also allow
   `pnpm add`, which the brief forbids. Phase 1 should list specific scripts instead.
+  Phase 4 allows each check command exactly, scopes file rules to the worktree, removes
+  `node`, `find` and shell reads (`cat`, `grep`, ...: they bypass `Read` denies), denies edits
+  to the run directory's settings and history, and offers an optional Claude Code sandbox
+  (`run.policy.sandbox: on`). Panes inherit the herdr server's environment (a pane's `env`
+  is applied on top, so it cannot remove a variable): block-party starts that server with
+  tokens removed, but a herdr server you started yourself keeps your full environment.
 - Does block-party develop itself? Dogfooding from Phase 1 onward is the best test, but a
   run that modifies block-party while block-party is supervising it needs care (separate
   worktree, rebuild-then-restart).

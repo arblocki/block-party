@@ -1,3 +1,4 @@
+import { agentEnv } from '../agents/env.js';
 import { hasFlag, looksLikeAuthError, spawnCli, type SpawnFn } from './spawn-cli.js';
 import {
   LlmError,
@@ -38,6 +39,7 @@ export class ClaudeCliProvider implements LlmProvider {
       command: this.command,
       args: ['--help'],
       timeoutMs: 30_000,
+      env: agentEnv(),
       spawnFn: this.opts.spawnFn,
     }).then(({ stdout, stderr }) => {
       const help = `${stdout}\n${stderr}`;
@@ -102,6 +104,7 @@ export class ClaudeCliProvider implements LlmProvider {
       cwd: req.cwd,
       timeoutMs: this.opts.timeoutMs,
       signal: req.signal,
+      env: agentEnv(),
       spawnFn: this.opts.spawnFn,
     });
     return parseEnvelope(stdout, stderr, code);

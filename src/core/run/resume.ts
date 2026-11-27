@@ -25,6 +25,7 @@ import {
   writeRulings,
 } from './triage-loop.js';
 import { writeArtifact } from './artifacts.js';
+import { writeImplementerFiles } from './agent-files.js';
 
 /** The kinds of stage that are an implementer turn. */
 export type TurnKind =
@@ -689,6 +690,7 @@ export async function resumeTurn(
   const session = ctx.session;
   // An agent may have edited the rulings file while it ran: restore it from the database.
   await writeRulings(ctx);
+  await writeImplementerFiles(ctx);
   const report = await steps.inStage(
     ctx,
     kind,

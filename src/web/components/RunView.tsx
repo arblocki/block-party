@@ -474,7 +474,10 @@ export function RunView({ id }: { id: string }) {
           )}
           <span className="font-mono text-xs">{run.branch}</span>
           {isSandboxed(events) && (
-            <span title="The agent's shell commands run in a restricted sandbox: they can only change this run's files and reach package registries">
+            <span
+              title="The agent's shell commands run in a restricted sandbox: they can only change this run's files and the repository's history, and reach only package registries."
+              aria-label="Sandboxed: the agent's shell commands can only change this run's files and the repository's history, and reach only package registries."
+            >
               Sandboxed
             </span>
           )}

@@ -1,6 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { agentEnv } from '../agents/env.js';
 import { hasFlag, looksLikeAuthError, spawnCli, type SpawnFn } from './spawn-cli.js';
 import {
   LlmError,
@@ -41,6 +42,7 @@ export class CodexCliProvider implements LlmProvider {
       command: this.command,
       args: ['exec', '--help'],
       timeoutMs: 30_000,
+      env: agentEnv(),
       spawnFn: this.opts.spawnFn,
     }).then(({ stdout, stderr }) => {
       const help = `${stdout}\n${stderr}`;
@@ -92,6 +94,7 @@ export class CodexCliProvider implements LlmProvider {
         cwd: req.cwd ?? dir,
         timeoutMs: this.opts.timeoutMs,
         signal: req.signal,
+        env: agentEnv(),
         spawnFn: this.opts.spawnFn,
       });
 

@@ -26,7 +26,11 @@ be turned on per project (ARCHITECTURE 9 and 13 "Implementer permissions" open q
 1. **Implementer profile.** Remove the rules that allow arbitrary execution or reading
    outside the worktree:
    - Remove `Bash(node:*)` (it runs any script) and `Bash(find:*)` (`-exec`/`-delete`).
-   - `cat`, `ls`, `grep`, `head`, `tail` and `wc` stay. They read but don't execute, and
+   - **Correction (review):** shell reads do not honour `Read` denies, so `cat`, `grep`,
+     `head`, `tail` and `wc` are removed from the allow list too (the Read, Grep and Glob
+     tools cover them). Only `ls` stays. Claude Code still runs its built-in read-only
+     commands without a prompt, so the real barrier is the sandbox's `denyRead`. Originally:
+     `cat`, `ls`, `grep`, `head`, `tail` and `wc` stay. They read but don't execute, and
      reads outside the worktree are governed by the file-tool rules. Add explicit
      `Read(<worktree>/**)` and `Edit(<worktree>/**)` allows, plus a `Read(~/.ssh/**)`,
      `Read(~/.aws/**)` and `Read(~/.config/gh/**)` deny.

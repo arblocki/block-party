@@ -1,3 +1,4 @@
+import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export type SubagentName = 'implementer' | 'test-writer' | 'explorer';
@@ -95,7 +96,7 @@ export interface Settings {
     enabled: true;
     failIfUnavailable: true;
     allowUnsandboxedCommands: false;
-    filesystem: { allowWrite: string[] };
+    filesystem: { allowWrite: string[]; denyRead: string[] };
     network: { allowedDomains: string[] };
   };
 }
@@ -106,6 +107,9 @@ export const SANDBOX_REGISTRY_DOMAINS = [
   '*.npmjs.org',
   'registry.yarnpkg.com',
 ];
+
+/** Credential locations a sandboxed command may not read (`sandbox.filesystem.denyRead`). */
+export const SANDBOX_DENY_READ = ['~/.ssh', '~/.aws', '~/.config/gh', '~/.netrc'];
 
 export interface SandboxOptions {
   /** The main repository's `.git` directory: a worktree's commits write into it. */
@@ -136,7 +140,11 @@ export function buildSettings(opts: {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
-      filesystem: { allowWrite: [opts.sandbox.gitDir, ...(opts.sandbox.extraAllowWrite ?? [])] },
+      filesystem: {
+        allowWrite: [opts.sandbox.gitDir, ...(opts.sandbox.extraAllowWrite ?? [])],
+        // OS-level: a shell command (or a script a check runs) cannot read these either.
+        denyRead: SANDBOX_DENY_READ,
+      },
       network: {
         allowedDomains: [...SANDBOX_REGISTRY_DOMAINS, ...(opts.sandbox.extraAllowedDomains ?? [])],
       },
@@ -157,6 +165,15 @@ export interface ImplementerScope {
 
 /** Claude Code's absolute-path rule form: a leading `//` (a single `/` anchors at the settings file). */
 const absoluteRule = (p: string) => `//${p.replace(/^\/+/, '')}`;
+
+/** Splits a check command on `&&`, `||` and `;`: Claude Code approves each part separately. */
+export function commandRules(cmd: string): string[] {
+  return cmd
+    .split(/&&|\|\||;/)
+    .map((c) => c.trim())
+    .filter((c) => c.length > 0)
+    .flatMap(exactBashRules);
+}
 
 /**
  * Bash rules that allow exactly `cmd` and `cmd` followed by arguments. Claude Code's
@@ -196,7 +213,12 @@ export function implementerPermissions(
   // run arbitrary repo code. Its job is to keep the agent off the network, away from
   // publishing, secrets and changing dependencies, and to avoid approval prompts.
   const fileRules = scope
-    ? [worktreeOnly(scope.worktree), worktreeOnly(scope.runDir)].flat()
+    ? [
+        ...worktreeOnly(scope.worktree),
+        // The run directory is readable; the one file the agent writes there is its report.
+        `Read(${absoluteRule(scope.runDir)}/**)`,
+        `Edit(${absoluteRule(join(scope.runDir, 'report.json'))})`,
+      ]
     : ['Read', 'Edit', 'Write'];
   const allowedTools = [
     ...fileRules,
@@ -210,16 +232,18 @@ export function implementerPermissions(
     'Bash(git add:*)',
     'Bash(git commit:*)',
     'Bash(pnpm install --frozen-lockfile)',
+    // No `cat`/`head`/`tail`/`grep`/`wc`: a shell read does not honour the `Read` denies below,
+    // and the Read, Grep and Glob tools do the same job (and do honour them).
     'Bash(ls:*)',
-    'Bash(cat:*)',
-    'Bash(grep:*)',
-    'Bash(head:*)',
-    'Bash(tail:*)',
-    'Bash(wc:*)',
-    ...checks.flatMap(exactBashRules),
+    ...checks.flatMap(commandRules),
   ];
   const disallowedTools = [
     'Bash(git push:*)',
+    // `--output=<file>` makes these write a file anywhere. `*--ou*` also catches the
+    // abbreviations git accepts and the flag after other arguments.
+    'Bash(git diff *--ou*)',
+    'Bash(git log *--ou*)',
+    'Bash(git show *--ou*)',
     'Bash(git config:*)',
     'Bash(git remote:*)',
     'Bash(git reset --hard:*)',
@@ -235,7 +259,7 @@ export function implementerPermissions(
     'Read(~/.ssh/**)',
     'Read(~/.aws/**)',
     'Read(~/.config/gh/**)',
-    ...(scope ? inputsDeny(scope.runDir) : []),
+    ...(scope ? protectedRunFiles(scope.runDir) : []),
   ];
   const extraDeny = scope?.extra?.deny ?? [];
   const extraAllow = (scope?.extra?.allow ?? []).filter((r) => !extraDeny.includes(r));
@@ -252,10 +276,32 @@ function worktreeOnly(dir: string): string[] {
   return [`Read(${absoluteRule(dir)}/**)`, `Edit(${absoluteRule(dir)}/**)`];
 }
 
-/** The pipeline owns `<runDir>/inputs`: the agent reads it but cannot change it. */
-function inputsDeny(runDir: string): string[] {
-  const dir = `${absoluteRule(runDir)}/inputs/**`;
-  return [`Edit(${dir})`];
+/**
+ * Files and directories in the run directory the pipeline owns: an agent must not change its
+ * own permissions or hooks (`settings.json`, `agents.json`), the run's state and history, or the
+ * briefs, inputs and rulings it is given. Everything is regenerated or rewritten by the
+ * pipeline anyway; these denies make an attempt fail at once. (`acceptEdits` would otherwise
+ * approve edits in a directory added with `--add-dir`.) Plans are included unless `plans`.
+ */
+export function protectedRunFiles(runDir: string, opts: { plans?: boolean } = {}): string[] {
+  const names = [
+    'settings.json',
+    'agents.json',
+    'planner-settings.json',
+    'planner-agents.json',
+    'run.json',
+    'events.jsonl',
+    'run-events.jsonl',
+    'report.schema.json',
+    'reviews/**',
+    'briefs/**',
+    'inputs/**',
+    'reports/**',
+    'agent/**',
+    'logs/**',
+    ...(opts.plans === false ? [] : ['plans/**']),
+  ];
+  return names.map((n) => `Edit(${absoluteRule(join(runDir, n))})`);
 }
 
 /**
@@ -281,7 +327,12 @@ export function plannerPermissions(
   ];
   return {
     allowedTools: [...new Set(allowedTools)],
-    disallowedTools: [...base.disallowedTools, 'Bash(git add:*)', 'Bash(git commit:*)'],
+    disallowedTools: [
+      ...base.disallowedTools,
+      'Bash(git add:*)',
+      'Bash(git commit:*)',
+      ...protectedRunFiles(dirname(reportPath), { plans: false }),
+    ],
   };
 }
 

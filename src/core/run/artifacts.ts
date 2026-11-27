@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { lstat, mkdir, readFile, realpath, rename, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { z } from 'zod';
 
@@ -18,7 +19,20 @@ export async function writeArtifact(
   }
   const text = typeof content === 'string' ? content : JSON.stringify(content, null, 2) + '\n';
   await mkdir(dirname(path), { recursive: true });
-  await writeFile(path, text);
+  // An agent can create files in the run directory: never write through a link it planted,
+  // whether at the target or as a parent directory that points elsewhere.
+  const realRoot = await realpath(root);
+  const realDir = await realpath(dirname(path));
+  const within = relative(realRoot, realDir);
+  if (within.startsWith('..') || isAbsolute(within)) {
+    throw new Error(`Artifact directory is outside the run directory: ${relPath}`);
+  }
+  const existing = await lstat(path).catch(() => null);
+  if (existing?.isSymbolicLink()) throw new Error(`Artifact path is a symbolic link: ${relPath}`);
+  // Write whole, then move into place, so a reader never sees half a file.
+  const tmp = `${path}.${randomUUID()}.tmp`;
+  await writeFile(tmp, text);
+  await rename(tmp, path);
   return { path, hash: createHash('sha256').update(text).digest('hex') };
 }
 

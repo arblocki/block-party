@@ -92,7 +92,7 @@ describe('implementerPermissions', () => {
     }
     expect(p.allowedTools).toContain('Bash(pnpm install --frozen-lockfile)');
     expect(p.allowedTools).not.toContain('Bash(pnpm:*)');
-    for (const c of ['git show', 'git rev-parse', 'ls', 'cat', 'grep', 'head', 'tail', 'wc']) {
+    for (const c of ['git show', 'git rev-parse', 'ls']) {
       expect(p.allowedTools).toContain(`Bash(${c}:*)`);
     }
     for (const d of [
@@ -127,8 +127,7 @@ describe('implementerPermissions', () => {
       expect.arrayContaining([
         'Read(//work/wt/**)',
         'Edit(//work/wt/**)',
-        // reports and briefs live in the run directory
-        'Edit(//data/runs/r1/**)',
+        'Read(//data/runs/r1/**)',
         'Bash(git status:*)',
         'Bash(git diff:*)',
         'Bash(git add:*)',
@@ -138,6 +137,9 @@ describe('implementerPermissions', () => {
         'Bash(pnpm format)',
       ]),
     );
+    // no rule covers the whole run directory
+    expect(p.allowedTools).not.toContain('Edit(//data/runs/r1/**)');
+    expect(p.allowedTools).toContain('Edit(//data/runs/r1/report.json)');
     // nothing a turn needs is also denied
     for (const rule of p.allowedTools) expect(p.disallowedTools).not.toContain(rule);
   });
@@ -168,9 +170,53 @@ describe('implementerPermissions', () => {
     expect(p.allowedTools).toContain('Bash(make lint *)');
     expect(p.allowedTools).not.toContain('Bash(make deploy *)');
     expect(p.disallowedTools).toContain('Bash(make deploy *)');
-    // a project cannot allow what the profile denies
-    expect(p.allowedTools).not.toContain('Bash(git push:*)');
-    expect(p.disallowedTools).toContain('Bash(git push:*)');
+    // a project allow that equals a built-in deny is dropped, and the deny stays
+    const q = implementerPermissions([], [], {
+      ...scope,
+      extra: { allow: ['Bash(git push:*)', 'Bash(git remote:*)'] },
+    });
+    expect(q.allowedTools).not.toContain('Bash(git push:*)');
+    expect(q.allowedTools).not.toContain('Bash(git remote:*)');
+    expect(q.disallowedTools).toEqual(
+      expect.arrayContaining(['Bash(git push:*)', 'Bash(git remote:*)']),
+    );
+  });
+
+  it('denies the run directory files an agent could use to change its own rules', () => {
+    const p = implementerPermissions([], [], scope);
+    for (const f of [
+      'settings.json',
+      'agents.json',
+      'run.json',
+      'events.jsonl',
+      'reviews/**',
+      'briefs/**',
+      'inputs/**',
+    ]) {
+      expect(p.disallowedTools).toContain(`Edit(//data/runs/r1/${f})`);
+    }
+  });
+
+  it('allows no shell read that bypasses the Read denies', () => {
+    const p = implementerPermissions(['pnpm test'], [], scope);
+    for (const c of ['cat', 'head', 'tail', 'grep', 'wc', 'find', 'node']) {
+      expect(p.allowedTools.some((t) => t.startsWith(`Bash(${c}`))).toBe(false);
+    }
+  });
+
+  it('denies git diff, log and show writing files with --output', () => {
+    const p = implementerPermissions([], [], scope);
+    for (const c of ['diff', 'log', 'show']) {
+      expect(p.disallowedTools).toContain(`Bash(git ${c} *--ou*)`);
+    }
+  });
+
+  it('splits compound check commands and allows each part exactly', () => {
+    const p = implementerPermissions(['pnpm lint && pnpm test; pnpm build || true'], [], scope);
+    for (const c of ['pnpm lint', 'pnpm test', 'pnpm build', 'true']) {
+      expect(p.allowedTools).toContain(`Bash(${c})`);
+    }
+    expect(p.allowedTools.some((t) => t.includes('&&'))).toBe(false);
   });
 });
 
@@ -202,7 +248,10 @@ describe('buildSettings sandbox', () => {
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
-      filesystem: { allowWrite: ['/repo/.git'] },
+      filesystem: {
+        allowWrite: ['/repo/.git'],
+        denyRead: ['~/.ssh', '~/.aws', '~/.config/gh', '~/.netrc'],
+      },
       network: {
         allowedDomains: [
           'registry.npmjs.org',
@@ -233,6 +282,12 @@ describe('plannerPermissions', () => {
   it('allows reading, and no shell command at all', () => {
     for (const t of ['Read', 'Glob', 'Grep']) expect(p.allowedTools).toContain(t);
     expect(p.allowedTools.filter((t) => t.startsWith('Bash('))).toEqual([]);
+  });
+
+  it('denies the run files an agent must not change, but not the plans', () => {
+    expect(p.disallowedTools).toContain('Edit(//data/runs/r1/settings.json)');
+    expect(p.disallowedTools).toContain('Edit(//data/runs/r1/run.json)');
+    expect(p.disallowedTools).not.toContain('Edit(//data/runs/r1/plans/**)');
   });
 
   it('disallows everything the implementer is denied, plus commits', () => {

@@ -51,7 +51,10 @@ export const RunConfigSchema = z.object({
       sandbox: z.enum(['off', 'on']).default('off'),
       /** Hosts besides the package registries a sandboxed run may reach. */
       sandboxAllowedDomains: z.array(z.string().min(1)).default([]),
-      /** Directories besides the worktree and .git a sandboxed run may write (e.g. a pnpm store). */
+      /**
+       * Directories besides the worktree and .git a sandboxed run may write. The default pnpm
+       * store locations are added when they exist; list a store configured elsewhere here.
+       */
       sandboxAllowWrite: z.array(z.string().min(1)).default([]),
       stageTimeoutMs: z
         .number()
@@ -108,6 +111,21 @@ export function readRunSection(repoDir: string): unknown {
     return typeof raw === 'object' && raw !== null ? (raw as { run?: unknown }).run : undefined;
   }
   return undefined;
+}
+
+/**
+ * Project `allow` rules that grant far more than a command: a bare tool name, or a wildcard
+ * with nothing around it. They are the project's own choice, so they are kept, but a run
+ * reports them as a warning.
+ */
+export function broadPermissionRules(rules: readonly string[]): string[] {
+  return rules.filter((r) => {
+    const m = /^([^(]+)(?:\((.*)\))?$/.exec(r.trim());
+    if (!m) return false;
+    const [, tool, spec] = m;
+    if (spec === undefined) return ['Bash', 'Edit', 'Read', 'Write'].includes(tool!);
+    return /^[*:\s]*$/.test(spec);
+  });
 }
 
 /** Parses the `run:` section (defaults fill gaps), then applies flag overrides. */

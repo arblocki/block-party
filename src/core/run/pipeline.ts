@@ -2,12 +2,7 @@ import { z } from 'zod';
 import { scrubbedEnv } from '../process/env.js';
 import { mkdir, readFile, readdir, rename } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  buildAgents,
-  buildSettings,
-  plannerPermissions,
-  shellRules,
-} from '../agents/claude-config.js';
+import { plannerPermissions } from '../agents/claude-config.js';
 import { PLAN_TEMPLATE, renderBrief, renderPlannerBrief } from '../agents/brief.js';
 import type {
   ImplementerAdapter,
@@ -22,7 +17,8 @@ import type { GitHubClient } from '../github/types.js';
 import type { RunShellOptions, RunShellResult } from '../process/run-shell.js';
 import type { ReviewResult, ReviewWithCodexOptions } from '../reviewer/codex-reviewer.js';
 import { writeArtifact } from './artifacts.js';
-import type { RunConfig } from './config.js';
+import { writeImplementerFiles, writePlannerFiles } from './agent-files.js';
+import { broadPermissionRules, type RunConfig } from './config.js';
 import type { RunLog } from './events.js';
 import { branchName, newRunId } from './id.js';
 import { runDir as defaultRunDir, worktreePath as defaultWorktreePath } from './paths.js';
@@ -169,6 +165,8 @@ export interface PipelineDeps {
   createLog: (runDir: string) => RunLog;
   /** argv that runs `block-party hook` (see claude-config#hookArgv). */
   hookArgv: string[];
+  /** Directories a sandboxed run may write besides the worktree (e.g. the pnpm store). */
+  sandboxWritableDirs?: () => string[];
   /** Run tables to mirror the run into; without one only the run directory files are written. */
   store?: RunStore;
   now?: () => Date;
@@ -563,6 +561,12 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   });
 
   for (const e of configErrors) rec.event('checks.warning', { warning: e });
+  for (const r of broadPermissionRules(input.config.permissions.allow)) {
+    rec.event('permissions.warning', {
+      warning: `run.permissions.allow has ${r}, which lets the agent do far more than run one command`,
+      rule: r,
+    });
+  }
   rec.event('run.started', {
     runId,
     runDir,
@@ -618,37 +622,7 @@ async function provision(ctx: Ctx): Promise<void> {
     if (r.code !== 0 || r.timedOut) throw new Halt('failed', `Setup failed (see ${logPath})`);
   }
   await writeArtifact(runDir, 'report.schema.json', reportJsonSchema());
-  const models = input.config.subagents;
-  await writeArtifact(
-    runDir,
-    'agents.json',
-    buildAgents(
-      (Object.keys(models) as (keyof typeof models)[]).map((name) => ({
-        name,
-        model: models[name],
-        ...(name === 'explorer' ? { readOnly: true } : {}),
-      })),
-      shellRules(ctx.start.allowedTools),
-    ),
-  );
-  await writeArtifact(
-    runDir,
-    'settings.json',
-    buildSettings({
-      hookArgv: deps.hookArgv,
-      eventsPath: ctx.start.eventsPath,
-      permissionMode: ctx.start.permissionMode,
-      ...(input.config.policy.sandbox === 'on'
-        ? {
-            sandbox: {
-              gitDir: join(st.repoPath, '.git'),
-              extraAllowedDomains: input.config.policy.sandboxAllowedDomains,
-              extraAllowWrite: input.config.policy.sandboxAllowWrite,
-            },
-          }
-        : {}),
-    }),
-  );
+  await writeImplementerFiles(ctx);
 }
 
 const PROMPT_PLAN = (p: string) => `Read the planning brief at ${p} and follow it.`;
@@ -728,21 +702,6 @@ async function planStep(
   const planPath = join(runDir, 'plans', `v${n}.md`);
   const previous = n > 1 ? join(runDir, 'plans', `v${n - 1}.md`) : null;
   const templatePath = (await writeArtifact(runDir, 'inputs/plan-template.md', PLAN_TEMPLATE)).path;
-  await writeArtifact(
-    runDir,
-    'planner-settings.json',
-    buildSettings({
-      hookArgv: deps.hookArgv,
-      eventsPath: ctx.start.eventsPath,
-      permissionMode: 'default',
-    }),
-  );
-  // Only the read-only explorer: the planner writes nothing but its plan and report.
-  await writeArtifact(
-    runDir,
-    'planner-agents.json',
-    buildAgents([{ name: 'explorer', model: input.config.subagents.explorer, readOnly: true }]),
-  );
   const brief = await writeArtifact(
     runDir,
     `briefs/plan-${n}.md`,
@@ -775,6 +734,7 @@ async function planStep(
   };
   // One planner turn: the first starts the session, later ones continue it.
   const turn = async (prompt: string, kind: string) => {
+    await writePlannerFiles(ctx);
     let outcome: TurnOutcome;
     const headBefore = await deps.git.headSha(ctx.st.worktreePath);
     if (ctx.plannerSession) {
@@ -910,6 +870,7 @@ async function implement(ctx: Ctx): Promise<void> {
     renderBrief({ ...ctx.briefBase, stage: 'implement' }),
   );
   await writeRulings(ctx);
+  await writeImplementerFiles(ctx);
   const prevHead = await deps.git.headSha(st.worktreePath);
   const onSession = (session: ImplementerSession) => {
     ctx.session = session;
@@ -1061,6 +1022,7 @@ async function fixTurn(
 ): Promise<Report> {
   const { deps, st, input } = ctx;
   const rulingsPath = await writeRulings(ctx);
+  await writeImplementerFiles(ctx);
   const brief = await writeArtifact(
     ctx.runDir,
     `briefs/${kind}-${n}.md`,

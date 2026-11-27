@@ -3,7 +3,7 @@
  * request) plus a dedicated connection for `events.subscribe`. Wire format verified in
  * docs/spikes/herdr-claude.md.
  */
-import { SECRET_ENV_VARS } from '../process/env.js';
+import { agentEnv } from '../agents/env.js';
 import { spawn } from 'node:child_process';
 import net from 'node:net';
 import os from 'node:os';
@@ -195,16 +195,17 @@ export class HerdrClient implements HerdrCaller {
   }
 }
 
-/** Never inherited by panes (the herdr server's env is what panes start with). */
-const SECRET_ENV: readonly string[] = SECRET_ENV_VARS;
-
-/** Environment for spawning herdr from inside a herdr pane: HERDR_* makes the CLI refuse ("nested herdr"). */
+/**
+ * Environment for the herdr server block-party starts, which is what its panes inherit (a
+ * pane's own `env` is applied on top of it, per herdr's socket API docs, so it cannot remove
+ * a variable). It has what an agent gets (`agentEnv`: no tokens or other API keys) and no
+ * HERDR_* (which makes the CLI refuse: "nested herdr"), TERM_PROGRAM or SSH_AUTH_SOCK. A
+ * server started outside block-party keeps the environment it was started with.
+ */
 export function cleanHerdrEnv(env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = {};
-  for (const [k, v] of Object.entries(env)) {
-    if (k.startsWith('HERDR_') || k === 'TERM_PROGRAM' || k === 'SSH_AUTH_SOCK') continue;
-    if (SECRET_ENV.includes(k)) continue;
-    out[k] = v;
+  const out = agentEnv(env);
+  for (const k of Object.keys(out)) {
+    if (k.startsWith('HERDR_') || k === 'TERM_PROGRAM' || k === 'SSH_AUTH_SOCK') delete out[k];
   }
   return out;
 }
