@@ -3240,7 +3240,7 @@ describe('relaunched pane labels', () => {
     const attach = store
       .listEvents(out.runId)
       .filter((e) => e.type === 'implementer.session')
-      .map((e) => JSON.stringify(e.data));
+      .map((e) => JSON.stringify(e.payload));
     expect(attach).toHaveLength(2);
     // Cancelling the stopped run stops the live (r2) pane, not the original label.
     const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
