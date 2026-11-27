@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isResting, isTerminal } from '../../core/run/machine';
+import { isTerminal } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { evidenceFor, headLine, staleLines } from '../lib/evidence';
@@ -33,6 +33,9 @@ const REFETCH_TYPES = new Set([
   'publish.stopped',
   'run.interrupted',
   'question',
+  'triage.answered',
+  'dispute.answered',
+  'decision.answered',
 ]);
 
 const STRIP_CLASS: Record<StripState, string> = {
@@ -341,7 +344,7 @@ export function RunView({ id }: { id: string }) {
       (r) => {
         setCancelling(false);
         if (!r.cancelled) {
-          setCancelNote('This run is not running in this server, so it cannot be cancelled here.');
+          setCancelNote('This run is not running in this server and is not waiting for you, so it cannot be cancelled here.');
         }
         refetchRef.current();
       },
@@ -395,7 +398,7 @@ export function RunView({ id }: { id: string }) {
           <h1 className="text-xl font-semibold">{run.title}</h1>
           <StageBadge stage={run.stage} />
           <span className="flex-1" />
-          {!isTerminal(run.stage) && !isResting(run.stage) && (
+          {!isTerminal(run.stage) && (
             <button type="button" className={linkButton} disabled={cancelling} onClick={cancel}>
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>

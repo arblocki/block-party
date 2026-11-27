@@ -61,7 +61,11 @@ export interface RunManager {
    * this process already drives the run, or it is not resting; nothing is started then.
    */
   continue(runId: string, entry: ContinueEntry): boolean;
-  /** Cancels a run this process drives; false for runs it does not own (or already cancelled). */
+  /**
+   * Cancels a run this process drives, or a run resting for a person (moved to `cancelled`
+   * and its question closed). False when a continuation already holds the run, it is already
+   * cancelled, or it is neither driven here nor resting.
+   */
   cancel(runId: string): boolean;
   /** Interrupts every run this process drives and waits (bounded) for them to settle. */
   shutdown(timeoutMs?: number): Promise<void>;
@@ -133,6 +137,49 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     } catch {
       return false;
     }
+  };
+
+  const stageOf = (id: string): 'resting' | 'other' => {
+    try {
+      const stage = runs.getRun(id)?.stage;
+      return stage !== undefined && isResting(stage as Parameters<typeof isResting>[0])
+        ? 'resting'
+        : 'other';
+    } catch {
+      return 'other';
+    }
+  };
+
+  const continueEntry = (runId: string, entry: ContinueEntry): boolean => {
+    if (stopping || byId.has(runId)) return false;
+    // Checked again here: the caller's view of the run may be stale.
+    let stage: string | undefined;
+    try {
+      stage = runs.getRun(runId)?.stage;
+    } catch {
+      return false;
+    }
+    if (stage === undefined || !isResting(stage as Parameters<typeof isResting>[0])) {
+      return false;
+    }
+    const ac = new AbortController();
+    const entryRec: Entry = { ac, done: Promise.resolve() };
+    live.add(entryRec);
+    byId.set(runId, entryRec);
+    entryRec.done = (async () => {
+      try {
+        await continuePipeline(runId, entry, ac.signal);
+      } catch (err) {
+        // The answer that started this could not be carried out: offer the review again
+        // (a no-op when the pipeline already did, or the run is no longer resting).
+        reopenRestDecision(runs, runId, err instanceof Error ? err.message : String(err));
+        onError(runId, err);
+      } finally {
+        live.delete(entryRec);
+        if (byId.get(runId) === entryRec) byId.delete(runId);
+      }
+    })();
+    return true;
   };
 
   return {
@@ -227,43 +274,21 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       });
     },
 
-    continue(runId, entry) {
-      if (stopping || byId.has(runId)) return false;
-      // Checked again here: the caller's view of the run may be stale.
-      let stage: string | undefined;
-      try {
-        stage = runs.getRun(runId)?.stage;
-      } catch {
-        return false;
-      }
-      if (stage === undefined || !isResting(stage as Parameters<typeof isResting>[0])) {
-        return false;
-      }
-      const ac = new AbortController();
-      const entryRec: Entry = { ac, done: Promise.resolve() };
-      live.add(entryRec);
-      byId.set(runId, entryRec);
-      entryRec.done = (async () => {
-        try {
-          await continuePipeline(runId, entry, ac.signal);
-        } catch (err) {
-          // The answer that started this could not be carried out: offer the review again
-          // (a no-op when the pipeline already did, or the run is no longer resting).
-          reopenRestDecision(runs, runId, err instanceof Error ? err.message : String(err));
-          onError(runId, err);
-        } finally {
-          live.delete(entryRec);
-          if (byId.get(runId) === entryRec) byId.delete(runId);
-        }
-      })();
-      return true;
-    },
+    continue: continueEntry,
 
     cancel(runId) {
       const entry = byId.get(runId);
-      if (!entry || entry.ac.signal.aborted) return false;
-      entry.ac.abort();
-      return true;
+      if (entry) {
+        if (entry.ac.signal.aborted) return false;
+        // A continuation that has not left rest yet is starting: cancelling would race it.
+        // Once it moves the run out of rest, a cancel aborts it like any driven run.
+        if (stageOf(runId) === 'resting') return false;
+        entry.ac.abort();
+        return true;
+      }
+      // Not driven here: a resting run is cancelled by a continuation that holds it, so it
+      // cannot race another one starting.
+      return continueEntry(runId, { kind: 'cancel' });
     },
 
     async shutdown(timeoutMs = DEFAULT_SHUTDOWN_MS) {

@@ -235,6 +235,54 @@ describe('RunManager.cancel', () => {
   });
 });
 
+describe('RunManager.cancel of a resting run', () => {
+  it('cancels through a held continuation, for either resting stage', async () => {
+    createRow();
+    for (const stage of ['awaiting_plan_approval', 'awaiting_review'] as const) {
+      const entries: ContinueEntry[] = [];
+      store.runs.updateRun(RUN_ID, { stage });
+      const m = manager({
+        continuePipeline: async (_id, entry) => {
+          entries.push(entry);
+          return {} as RunOutcome;
+        },
+      });
+      expect(m.cancel(RUN_ID)).toBe(true);
+      await m.shutdown();
+      expect(entries).toEqual([{ kind: 'cancel' }]);
+      store.runs.updateRun(RUN_ID, { stage: 'cancelled' });
+    }
+  });
+
+  it('refuses while a continuation already holds the run', async () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'awaiting_review' });
+    const entries: ContinueEntry[] = [];
+    let release!: () => void;
+    const m = manager({
+      continuePipeline: (_id, entry) => {
+        entries.push(entry);
+        return new Promise<RunOutcome>((r) => (release = () => r({} as RunOutcome)));
+      },
+    });
+    expect(m.continue(RUN_ID, { kind: 'feedback', text: 'x' })).toBe(true);
+    // The continuation holds the run and it still rests: cancel must not race it.
+    expect(m.cancel(RUN_ID)).toBe(false);
+    expect(entries).toEqual([{ kind: 'feedback', text: 'x' }]);
+    // Once it has left rest, a cancel aborts it like any driven run.
+    store.runs.updateRun(RUN_ID, { stage: 'fixing' });
+    expect(m.cancel(RUN_ID)).toBe(true);
+    release();
+    await m.shutdown();
+  });
+
+  it('refuses a run that is not resting', () => {
+    createRow();
+    store.runs.updateRun(RUN_ID, { stage: 'implementing' });
+    expect(manager().cancel(RUN_ID)).toBe(false);
+  });
+});
+
 describe('RunManager.shutdown', () => {
   it('aborts every run with a ShutdownError and waits for them to settle', async () => {
     const fake = fakePipeline();
@@ -343,6 +391,7 @@ describe('RunManager.continue', () => {
     const fake = fakeContinuation();
     const m = manager({ continuePipeline: fake.continuePipeline });
     m.continue(RUN_ID, { kind: 'approve' });
+    store.runs.updateRun(RUN_ID, { stage: 'fixing' }); // the continuation left rest
     expect(m.cancel(RUN_ID)).toBe(true);
     expect(fake.calls[0]!.signal.aborted).toBe(true);
     await m.shutdown();

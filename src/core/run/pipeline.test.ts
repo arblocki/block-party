@@ -1809,6 +1809,36 @@ describe('final review and continuations', () => {
     expect(h.calls.sends).toHaveLength(0);
   });
 
+  it('cancels a run resting for review, closing its question and releasing it', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
+    expect(next.stage).toBe('cancelled');
+    expect(store.getRun(out.runId)!.stage).toBe('cancelled');
+    expect(state(out).stage).toBe('cancelled');
+    expect(finalReviews(store, out.runId).map((d) => d.status)).toEqual(['dismissed']);
+  });
+
+  it('cancels a run resting for plan approval', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, description: 'Add widgets', turns: [{}] });
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_plan_approval');
+    const next = await continueRun(out.runId, { kind: 'cancel' }, h.deps);
+    expect(next.stage).toBe('cancelled');
+    expect(store.listDecisions({ runId: out.runId, status: 'open' })).toEqual([]);
+  });
+
+  it('refuses to cancel a run that is not resting', async () => {
+    const h = harness({ turns: [{}], ci: 'timeout' });
+    const out = await h.run();
+    await expect(continueRun(out.runId, { kind: 'cancel' }, h.deps)).rejects.toThrow(
+      /not resting/,
+    );
+  });
+
   it('refuses to continue a run that is not resting', async () => {
     const h = harness({ turns: [{}], ci: 'timeout' });
     const out = await h.run();

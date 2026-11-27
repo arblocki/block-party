@@ -1370,7 +1370,9 @@ export type ContinueEntry =
   | { kind: 'feedback'; text: string }
   | { kind: 'approve' }
   | { kind: 'plan_approve' }
-  | { kind: 'plan_revise'; note: string };
+  | { kind: 'plan_revise'; note: string }
+  /** Ends a resting run: moves it to `cancelled` and closes its open question. */
+  | { kind: 'cancel' };
 
 /** Header of a feedback file: what the implementer is asked to do with the text below it. */
 const FEEDBACK_HEADER = `# Feedback from your human reviewer
@@ -1416,6 +1418,18 @@ export async function continueRun(
       const light = { st, runDir, rec, deps };
       // A failure here leaves the run resting: the catch below reopens the review.
       await setStage(light, 'complete', 'Approved');
+      return outcomeFromState(light.st, runDir);
+    }
+    if (entry.kind === 'cancel') {
+      const st = await loadRunState(runDir);
+      if (!isResting(st.stage)) {
+        throw new Error(`Run ${runId} is not resting (stage: ${st.stage})`);
+      }
+      const rec = new RunRecorder(deps.createLog(runDir), deps.store);
+      rec.resume(st);
+      const light = { st, runDir, rec, deps };
+      // Closes the open question too (a terminal stage).
+      await setStage(light, 'cancelled', 'Cancelled while waiting for review');
       return outcomeFromState(light.st, runDir);
     }
     if (entry.kind === 'plan_approve' || entry.kind === 'plan_revise') {
