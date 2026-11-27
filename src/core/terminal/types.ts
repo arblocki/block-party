@@ -21,5 +21,10 @@ export interface TerminalHost {
   isAlive(pane: PaneRef): Promise<boolean>;
   close(pane: PaneRef): Promise<void>;
   attachCommand(pane: PaneRef): string;
+  /**
+   * The argv (no shell) that attaches a terminal to the pane's host session. Built only from
+   * the pane's own session name, never from client input.
+   */
+  attachArgv(pane: PaneRef): string[];
   list(): Promise<PaneRef[]>;
 }

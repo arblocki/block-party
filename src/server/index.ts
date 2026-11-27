@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { serve } from '@hono/node-server';
 import type { RepoRef } from '../core/pr-ref.js';
@@ -9,6 +10,7 @@ import type { AnalysisDeps } from './analysis.js';
 import { createApp } from './app.js';
 import { reconcileRuns, reopenStrandedRests, resumeOnRestart } from './reconcile.js';
 import { createHerdrHost } from '../core/terminal/index.js';
+import { attachTerminalUpgrade, createTerminal } from './terminal.js';
 import type { RunManager } from './run-manager.js';
 import { generateToken, parseAllowedHosts } from './security.js';
 
@@ -48,7 +50,10 @@ export async function startServer(opts: {
   // so already-open tabs don't start getting 401s.
   const token = process.env.BLOCK_PARTY_TOKEN || generateToken();
   let port = opts.port ?? 0;
+  const terminalHost = createHerdrHost();
+  const terminal = createTerminal({ runs: opts.store.runs, host: terminalHost });
   const app = createApp({
+    terminal,
     token,
     repo: opts.repo,
     initialPr: opts.initialPr,
@@ -67,9 +72,14 @@ export async function startServer(opts: {
       resolvePromise({
         port,
         token,
-        close: () => new Promise((done) => server.close(() => done())),
+        close: () =>
+          new Promise((done) => {
+            terminal.closeAll();
+            server.close(() => done());
+          }),
       });
     });
+    attachTerminalUpgrade(server as Server, app, terminal);
     server.once('error', reject);
   });
   // Runs whose config asks for it are picked up again now that the server can run them.

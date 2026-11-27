@@ -38,8 +38,11 @@ function toState(v: unknown): AgentState {
   return v === 'idle' || v === 'working' || v === 'blocked' ? v : 'unknown';
 }
 
+/** The herdr session block-party's panes live in unless told otherwise. */
+export const DEFAULT_HERDR_SESSION = 'block-party';
+
 export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
-  const session = opts.session ?? 'block-party';
+  const session = opts.session ?? DEFAULT_HERDR_SESSION;
   const client: HerdrCaller =
     opts.client ??
     (opts.socketPath ? new HerdrClient(opts.socketPath) : HerdrClient.forSession(session));
@@ -158,6 +161,12 @@ export function createHerdrHost(opts: HerdrHostOptions = {}): TerminalHost {
 
     attachCommand(pane) {
       return `herdr --session ${pane.session}  # workspace: ${pane.label}`;
+    },
+
+    // herdr attaches to a whole session, not to one workspace, so this shows the session's
+    // current workspace (the run's pane is in it, one tab per run).
+    attachArgv(pane) {
+      return ['herdr', '--session', pane.session];
     },
 
     async list() {
