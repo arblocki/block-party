@@ -14,7 +14,8 @@ export class StallStopError extends Error {
 
 /** Where a nudge goes: the planner's turns nudge the planner, everything else the implementer. */
 export interface NudgeTarget {
-  session: ImplementerSession | undefined;
+  /** Read when used: a first turn's session only exists once the adapter has launched. */
+  session: () => ImplementerSession | undefined;
   start: Omit<ImplementerStartInput, 'prompt'>;
 }
 
@@ -59,7 +60,7 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
   // A running headless process has no terminal to type into, so there is nothing to nudge:
   // silence goes straight to the inbox item.
   const canNudge = ctx.input.config.implementer.mode === 'pane';
-  const nudgeTarget = (): NudgeTarget => target ?? { session: ctx.session, start: ctx.start };
+  const nudgeTarget = (): NudgeTarget => target ?? { session: () => ctx.session, start: ctx.start };
   const { rec } = ctx;
 
   let decisionId: number | null = null;
@@ -84,7 +85,8 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
   };
 
   const sendNudge = (info: StallInfo): void => {
-    const { session, start } = nudgeTarget();
+    const { start } = nudgeTarget();
+    const session = nudgeTarget().session();
     const skip = (why: string): void => {
       watcher.nudgeSkipped();
       rec.event('implementer.nudge_skipped', { reason: info.reason, why });
@@ -143,7 +145,7 @@ export function startStallGuard(ctx: Ctx, target?: NudgeTarget): StallGuard | un
   };
 
   const onStall = (info: StallInfo): void => {
-    const session = nudgeTarget().session;
+    const session = nudgeTarget().session();
     const attach = session ? ctx.deps.adapter.describe(session) : attachCommand(ctx);
     const what =
       info.reason === 'idle'

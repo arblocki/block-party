@@ -306,7 +306,7 @@ async function turnEnded<T>(ctx: Ctx, turn: Promise<T>, nudge?: NudgeTarget): Pr
     if (e instanceof StallStopError) {
       // The abandoned wait must not record anything more for a run that is blocked.
       ctx.abandoned = true;
-      const session = nudge ? nudge.session : ctx.session;
+      const session = nudge ? nudge.session() : ctx.session;
       if (session) await stopAgentSession(ctx, session, nudge ? 'planner' : 'implementer');
       throw new Halt('blocked', e.message);
     }
@@ -755,7 +755,7 @@ async function planStep(
     }),
   );
   const start = plannerStart(ctx, planPath);
-  const plannerTarget = (): NudgeTarget => ({ session: ctx.plannerSession, start });
+  const plannerTarget = (): NudgeTarget => ({ session: () => ctx.plannerSession, start });
   const onSession = (session: ImplementerSession) => {
     ctx.plannerSession = session;
     ctx.rec.event('planner.session', {

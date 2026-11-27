@@ -137,6 +137,8 @@ interface Opts {
   /** The first turn waits for this before it ends (the agent is silent until then). */
   holdFirstTurn?: Promise<void>;
   stallClock?: PipelineDeps['stallClock'];
+  /** The adapter reports its session only after this (a real launch is async). */
+  lateSession?: Promise<void>;
   /** A nudge finds the agent busy: nothing is typed and `send` times out. */
   nudgeBusy?: boolean;
   permissionPrompts?: number;
@@ -233,6 +235,7 @@ function harness(o: Opts) {
       calls.starts.push(input.prompt);
       calls.startInputs.push(input);
       const mine = input.permissionMode === 'default' ? plannerSession : session;
+      if (o.lateSession) await o.lateSession;
       input.onSession?.(mine);
       o.onStart?.(input);
       for (let i = 0; i < (o.permissionPrompts ?? 0); i++) input.onPermission?.(`approve ${i + 1}`);
@@ -3456,6 +3459,24 @@ describe('stall detection', () => {
     b.clock.advance(1000);
     expect((await pb).stage).toBe('blocked');
     expect(b.h.calls.stoppedSessions).toEqual(['planner-1']);
+  });
+
+  it('nudges and stops a planner whose session appears after the turn began', async () => {
+    let session!: () => void;
+    const lateSession = new Promise<void>((r) => (session = r));
+    const { clock, store, h, release, open } = setup({ description: 'Add widgets', lateSession });
+    const p = h.run();
+    await vi.waitFor(() => expect(h.calls.starts).toHaveLength(1));
+    session();
+    await new Promise((r) => setImmediate(r));
+    clock.advance(10 * MIN);
+    await vi.waitFor(() => expect(h.calls.sendSessions).toEqual(['planner-1']));
+    clock.advance(10 * MIN);
+    store.answerDecision(open()[0]!.id, { choice: 'stop', note: null });
+    clock.advance(1000);
+    expect((await p).stage).toBe('blocked');
+    expect(h.calls.stoppedSessions).toEqual(['planner-1']);
+    release();
   });
 
   it('does not count a nudge that could not be typed against the limit', async () => {
