@@ -138,4 +138,11 @@ describe('evidenceFor', () => {
     const ev = evidenceFor(null, [checks(OLD, true), review(OLD, 1, 0)]);
     expect(ev).toEqual({ head: null, checks: 'none', review: null, ci: 'none', stale: {} });
   });
+
+  it('says nothing was built when there is no head', () => {
+    const ev = evidenceFor(null, []);
+    expect(ev.head).toBeNull();
+    expect(headLine(ev)).toBe('Nothing built yet.');
+    expect(staleLines(ev)).toEqual([]);
+  });
 });

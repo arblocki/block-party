@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import type { RunStage } from '../../core/run/machine';
 import type { StageKind, StageRow, StageState } from '../types';
-import { checksBySha, isNoisyEvent, stageStrip, summarizeEvent } from './runView';
+import {
+  checksBySha,
+  isNoisyEvent,
+  mayHaveLegacyPlan,
+  stageStrip,
+  summarizeEvent,
+} from './runView';
 
 let nextId = 1;
 function stage(kind: StageKind, state: StageState, over: Partial<StageRow> = {}): StageRow {
@@ -24,17 +30,49 @@ const states = (items: ReturnType<typeof stageStrip>) =>
   Object.fromEntries(items.map((i) => [i.key, i.state]));
 
 describe('stageStrip plan step', () => {
-  const plan = (stage: RunStage, stages: never[] = []) => stageStrip(stages, run(stage))[0]!;
+  const plan = (
+    stg: RunStage,
+    stages: ReturnType<typeof stage>[] = [],
+    approved: boolean | null = null,
+  ) => stageStrip(stages, run(stg), null, approved)[0]!;
   it('is first and follows the plan through writing, ready and approved', () => {
-    expect(plan('planning')).toMatchObject({ key: 'plan', state: 'running', text: 'writing' });
-    expect(plan('awaiting_plan_approval')).toMatchObject({
+    expect(plan('planning', [stage('plan', 'running')], false)).toMatchObject({
+      key: 'plan',
+      state: 'running',
+      text: 'writing',
+    });
+    expect(plan('awaiting_plan_approval', [stage('plan', 'succeeded')], false)).toMatchObject({
       state: 'waiting',
       text: 'ready for you',
     });
-    expect(plan('implementing')).toMatchObject({ state: 'done', text: 'approved' });
+    expect(plan('implementing', [stage('plan', 'succeeded')], true)).toMatchObject({
+      state: 'done',
+      text: 'approved',
+    });
   });
-  it('is stopped when the run ended before any work', () => {
-    expect(plan('cancelled')).toMatchObject({ state: 'stopped' });
+  it('is stopped when the run was cancelled while the plan was being written', () => {
+    expect(plan('cancelled', [stage('plan', 'cancelled')], false)).toMatchObject({
+      state: 'stopped',
+    });
+    // Also while plan versions are unknown: only a plan row exists.
+    expect(plan('cancelled', [stage('plan', 'cancelled')])).toMatchObject({ state: 'stopped' });
+  });
+  it('stays approved when the run failed after the approval', () => {
+    const stages = [stage('plan', 'succeeded'), stage('implement', 'failed')];
+    expect(plan('failed', stages, true)).toMatchObject({ state: 'done', text: 'approved' });
+    expect(plan('failed', stages)).toMatchObject({ state: 'done', text: 'approved' });
+  });
+  it('is approved from the start for a pasted plan, even in setup', () => {
+    expect(plan('setup', [], true)).toMatchObject({ state: 'done', text: 'approved' });
+  });
+});
+
+describe('mayHaveLegacyPlan', () => {
+  it('is false only for an ended run with no work past planning', () => {
+    expect(mayHaveLegacyPlan('cancelled', [])).toBe(false);
+    expect(mayHaveLegacyPlan('cancelled', [stage('plan', 'cancelled')])).toBe(false);
+    expect(mayHaveLegacyPlan('complete', [stage('implement', 'succeeded')])).toBe(true);
+    expect(mayHaveLegacyPlan('implementing', [])).toBe(true);
   });
 });
 

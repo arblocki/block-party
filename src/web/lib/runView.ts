@@ -45,6 +45,7 @@ export function stageStrip(
   stages: readonly StageRow[],
   run: Pick<RunSummary, 'stage'>,
   met: { met: number; total: number } | null = null,
+  approved: boolean | null = null,
 ): StripItem[] {
   const finished = isTerminal(run.stage);
   // The count sits on the latest cell that produced reports: Fix if one ran, else Implement.
@@ -69,23 +70,41 @@ export function stageStrip(
       ...(ciFixes > 0 ? { ciFixes } : {}),
     };
   });
-  return [planItem(stages, run), ...items];
+  return [planItem(stages, run, approved), ...items];
 }
 
-/** The Plan step: writing, ready for you, or approved; stopped when the run ended before one. */
-function planItem(stages: readonly StageRow[], run: Pick<RunSummary, 'stage'>): StripItem {
+/**
+ * The Plan step: writing, ready for you, or approved; stopped when the run ended before a plan
+ * was approved. `approved` says whether the run has an approved plan version (a pasted plan is
+ * approved v1 from the start). It is null when unknown, e.g. a run from before plan versions
+ * or versions not loaded yet; then any work past planning counts as approval.
+ */
+function planItem(
+  stages: readonly StageRow[],
+  run: Pick<RunSummary, 'stage'>,
+  approved: boolean | null,
+): StripItem {
   const base = { key: 'plan' as const, label: 'Plan', count: 0 };
+  const done = approved ?? stages.some((s) => s.kind !== 'plan');
+  if (approved === true) return { ...base, state: 'done', text: 'approved' };
   if (run.stage === 'setup' || run.stage === 'planning') {
     return { ...base, state: 'running', text: 'writing' };
   }
   if (run.stage === 'awaiting_plan_approval') {
     return { ...base, state: 'waiting', text: 'ready for you' };
   }
-  if (isTerminal(run.stage) && run.stage !== 'complete' && stages.length === 0) {
+  if (isTerminal(run.stage) && run.stage !== 'complete' && !done) {
     return { ...base, state: 'stopped', text: 'stopped' };
   }
   return { ...base, state: 'done', text: 'approved' };
 }
+
+/**
+ * Whether a run that has no plan versions may still have a plan file (a run from before plan
+ * versions). One that ended without any work past planning never wrote a plan.
+ */
+export const mayHaveLegacyPlan = (stage: RunStage, stages: readonly StageRow[]): boolean =>
+  !(isTerminal(stage) && stages.every((s) => s.kind === 'plan'));
 
 export interface CheckResult {
   name: string;

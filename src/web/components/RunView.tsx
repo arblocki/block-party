@@ -1,11 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isTerminal } from '../../core/run/machine';
+import { isTerminal, type RunStage } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { evidenceFor, headLine, staleLines } from '../lib/evidence';
 import { prHref, relativeTime } from '../lib/route';
 import { planActions, plannerAttach, stageNoteLabel } from '../lib/plans';
-import { isNoisyEvent, stageStrip, summarizeEvent, type StripState } from '../lib/runView';
+import {
+  isNoisyEvent,
+  mayHaveLegacyPlan,
+  stageStrip,
+  summarizeEvent,
+  type StripState,
+} from '../lib/runView';
 import type {
   AcceptanceItem,
   PlanVersion,
@@ -71,11 +77,15 @@ const metCount = (items: AcceptanceItem[] | null) => {
 function Strip({
   detail,
   acceptance,
+  plans,
 }: {
   detail: RunDetailResponse;
   acceptance: AcceptanceItem[] | null;
+  plans: PlanVersion[] | null;
 }) {
-  const items = stageStrip(detail.stages, detail.run, metCount(acceptance));
+  // Without plan versions (still loading, or an old run) the strip works it out from the stages.
+  const approved = plans && plans.length > 0 ? plans.some((p) => p.status === 'approved') : null;
+  const items = stageStrip(detail.stages, detail.run, metCount(acceptance), approved);
   return (
     <ol className="mb-6 flex flex-wrap gap-2" aria-label="Stages">
       {items.map((i) => (
@@ -207,7 +217,7 @@ export function RunView({ id }: { id: string }) {
       void loadAcceptance();
     };
 
-    const loadPlans = (stage: string) => {
+    const loadPlans = (stage: RunStage, stages: readonly StageRow[]) => {
       const seq = ++plansSeq;
       return api<{ plans: PlanVersion[] }>(`/api/runs/${id}/plans`).then(
         async (r) => {
@@ -216,6 +226,11 @@ export function RunView({ id }: { id: string }) {
           setPlansError(null);
           // A run from before plan versions has only its plan file.
           if (r.plans.length === 0 && stage !== 'planning' && stage !== 'setup') {
+            if (!mayHaveLegacyPlan(stage, stages)) {
+              // Nothing was ever written, so there is no file to ask for.
+              setPlanError('plan not found');
+              return;
+            }
             await api<RunPlan>(`/api/runs/${id}/plan`).then(
               (p) => {
                 if (!alive() || seq !== plansSeq) return;
@@ -239,7 +254,7 @@ export function RunView({ id }: { id: string }) {
       const sig = `${d.run.stage}|${d.run.planVersion ?? ''}`;
       if (sig === planSignature) return;
       planSignature = sig;
-      void loadPlans(d.run.stage);
+      void loadPlans(d.run.stage, d.stages);
     };
 
     const loadDetail = () => {
@@ -425,7 +440,7 @@ export function RunView({ id }: { id: string }) {
           <span title={run.updatedAt}>updated {relativeTime(run.updatedAt)}</span>
         </div>
       </header>
-      <Strip detail={detail} acceptance={acceptance} />
+      <Strip detail={detail} acceptance={acceptance} plans={plans} />
       {open.length > 0 && (
         <section className="mb-8" aria-labelledby="needs-you">
           <h2 id="needs-you" className={sectionHeading}>
