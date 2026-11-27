@@ -8,6 +8,7 @@ import { openStore } from '../../core/store/index.js';
 import { formatPrRef, formatRepoRef } from '../../core/pr-ref.js';
 import type { AnalysisDeps } from '../../server/analysis.js';
 import { startServer } from '../../server/index.js';
+import { readLimits } from '../../server/limits.js';
 import { createRunManager } from '../../server/run-manager.js';
 import { parseCli, UsageError, USAGE } from '../args.js';
 
@@ -26,6 +27,16 @@ export async function reviewMain(argv: string[]): Promise<void> {
     return;
   }
 
+  // An unusable config file stops the server before anything is opened, naming the file.
+  let limits;
+  try {
+    limits = readLimits();
+  } catch (err) {
+    console.error((err as Error).message);
+    process.exitCode = 1;
+    return;
+  }
+
   const github = createGitHubClient(createOctokitClients(await resolveToken()));
   const store = openStore(dbPath());
   const config = loadConfig();
@@ -36,7 +47,7 @@ export async function reviewMain(argv: string[]): Promise<void> {
     createProvider: (sel) => createProvider(config, sel),
     trustPrConfig: opts.trustPrConfig,
   };
-  const runManager = createRunManager({ runs: store.runs });
+  const runManager = createRunManager({ runs: store.runs, limits });
   const server = await startServer({
     repo: opts.repo,
     initialPr: opts.pr,

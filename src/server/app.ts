@@ -96,6 +96,7 @@ export function createApp(opts: AppOptions): Hono {
     github: opts.github,
     ...(opts.git ? { git: opts.git } : {}),
     ...(opts.homeDir ? { homeDir: opts.homeDir } : {}),
+    ...(opts.runManager ? { lockProject: opts.runManager.withProjectLock } : {}),
   });
 
   // Repository routes; `:owner/:repo` must be a valid GitHub name pair.

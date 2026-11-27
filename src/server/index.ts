@@ -74,6 +74,8 @@ export async function startServer(opts: {
   });
   // Runs whose config asks for it are picked up again now that the server can run them.
   if (opts.runManager) {
+    // Runs that were queued before the restart go first; then the resumed ones queue behind them.
+    opts.runManager.pump();
     const resumed = resumeOnRestart(opts.store.runs, opts.runManager, reconciled);
     if (resumed.length > 0) console.log(`Resumed ${resumed.length} run(s): ${resumed.join(', ')}`);
   }

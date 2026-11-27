@@ -252,6 +252,34 @@ describe('POST /api/new-run/prepare', () => {
     expect(cloned).toEqual([]);
   });
 
+  it('clones inside the project lock, keyed by repository', async () => {
+    const keys: string[] = [];
+    const locked = createApp({
+      token: TOKEN,
+      port: () => 4321,
+      github,
+      store,
+      git,
+      homeDir: home,
+      streamTiming: { pollMs: 5, heartbeatMs: 1000 },
+      runManager: {
+        withProjectLock: async <T>(key: string, fn: () => Promise<T>) => {
+          keys.push(key);
+          expect(cloned).toEqual([]);
+          return fn();
+        },
+      } as never,
+    });
+    const res = await locked.request('/api/new-run/prepare', {
+      method: 'POST',
+      headers: { host: HOST, [TOKEN_HEADER]: TOKEN, 'content-type': 'application/json' },
+      body: JSON.stringify({ owner: 'me', repo: 'a' }),
+    });
+    expect(res.status).toBe(200);
+    expect(keys).toEqual(['repo:me/a']);
+    expect(cloned).toHaveLength(1);
+  });
+
   it('still returns an existing project when GitHub cannot be reached', async () => {
     const p = store.runs.upsertProject({
       owner: 'me',

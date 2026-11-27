@@ -114,6 +114,19 @@ describe('stageNoteLabel', () => {
   it('builds the plan-ready label from the plan version, not the note', () => {
     expect(stageNoteLabel(r('awaiting_plan_approval', 'whatever', 3))).toBe('Plan v3 ready');
   });
+  it('says why a queued run is waiting, with the slots in use', () => {
+    const queued = (queue: RunSummary['queue']) => ({
+      ...r('queued', 'Waiting for a free slot', null),
+      queue,
+    });
+    expect(stageNoteLabel(queued({ position: 2, inUse: 2, max: 3 }))).toBe(
+      'Waiting for a free slot (2 of 3 in use)',
+    );
+    expect(stageNoteLabel(queued({ position: 1, inUse: null, max: null }))).toBe(
+      'Waiting for a free slot',
+    );
+    expect(stageNoteLabel(queued(null))).toBe('Waiting for a free slot');
+  });
   it('leaves other notes alone', () => {
     expect(stageNoteLabel(r('implementing', 'Plan version 3 ready', 3))).toBe(
       'Plan version 3 ready',

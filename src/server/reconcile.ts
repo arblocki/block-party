@@ -183,6 +183,9 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
     // Re-read: the owner may have finished the run since the list was taken.
     const current = runs.getRun(run.id);
     if (!current || current.stage !== run.stage) continue;
+    // A queued start that was taken from the queue but never created its run files is not
+    // interrupted (there is nothing to resume): it goes back to its place in the queue.
+    if (run.stage === 'setup' && runs.requeueStart(run.id)) continue;
     try {
       replayHookEvents(runs, run, now);
     } catch {
@@ -223,21 +226,23 @@ export async function reconcileRuns(opts: ReconcileOptions): Promise<string[]> {
 /** What `resumeOnRestart` needs from the run manager. */
 export interface Resumer {
   resume(runId: string): 'started' | 'busy' | 'not_resumable';
+  /** The run limits: at most `maxRuns` runs are resumed at startup. */
+  limits?: { maxRuns: number };
 }
 
-/** Runs resumed automatically at startup, at most (until the run limit exists). */
+/** Runs resumed automatically at startup when the manager gives no limits. */
 export const DEFAULT_RESUME_LIMIT = 3;
 
 /**
  * Resumes the runs reconciliation just interrupted whose own config asks for it
- * (`policy.resumeOnRestart`), at most `limit` of them. The rest stay interrupted with their
- * question. Returns the ids it resumed.
+ * (`policy.resumeOnRestart`), at most `limit` of them (default: the manager's `maxRuns`). The
+ * rest stay interrupted with their question. Returns the ids it resumed.
  */
 export function resumeOnRestart(
   runs: RunStore,
   manager: Resumer,
   ids: string[],
-  limit = DEFAULT_RESUME_LIMIT,
+  limit: number = manager.limits?.maxRuns ?? DEFAULT_RESUME_LIMIT,
 ): string[] {
   const resumed: string[] = [];
   for (const id of ids) {

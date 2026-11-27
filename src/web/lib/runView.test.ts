@@ -225,6 +225,12 @@ describe('checksBySha', () => {
 describe('summarizeEvent', () => {
   const sum = (type: string, payload?: unknown) => summarizeEvent({ type, payload });
 
+  it('says a run is waiting for a free slot, with its place in line', () => {
+    expect(sum('run.queued', { position: 2 })).toBe('Waiting for a free slot (number 2 in line)');
+    expect(sum('run.queued')).toBe('Waiting for a free slot');
+    expect(sum('run.failed', { error: 'No checks' })).toBe('Could not start: No checks');
+  });
+
   it('summarizes planner, plan, continuation, repeat, rulings and decision events', () => {
     expect(sum('planner.session', { mode: 'pane', attach: 'x' })).toBe('Planner started');
     expect(sum('planner.session', { mode: 'headless' })).toBe('Planner started');

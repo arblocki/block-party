@@ -329,6 +329,98 @@ describe('resumeOnRestart', () => {
   });
 });
 
+describe('resumeOnRestart and the run limit', () => {
+  const ids = ['r20260101-aaaaaa', 'r20260101-bbbbbb', 'r20260101-cccccc', 'r20260101-dddddd'];
+
+  it('resumes at most limits.maxRuns runs, not a fixed three', () => {
+    for (const id of ids) {
+      addRun(id, { runDir: runDirWith([], { policy: { resumeOnRestart: true } }) });
+    }
+    const resumed: string[] = [];
+    const manager = {
+      limits: { maxRuns: 2 },
+      resume: (id: string) => {
+        resumed.push(id);
+        return 'started' as const;
+      },
+    };
+    expect(resumeOnRestart(store.runs, manager, ids)).toEqual([ids[0], ids[1]]);
+    manager.limits.maxRuns = 4;
+    resumed.length = 0;
+    expect(resumeOnRestart(store.runs, manager, ids)).toHaveLength(4);
+    // An explicit limit still wins.
+    expect(resumeOnRestart(store.runs, manager, ids, 1)).toHaveLength(1);
+  });
+});
+
+describe('reconcile of queued runs', () => {
+  const queuedEntry = { repo: '/src/r', baseRef: 'main', description: 'x' };
+  const queue = (id: string) =>
+    store.runs.createQueuedRun(
+      {
+        id,
+        projectId,
+        title: 'Q',
+        stageNote: null,
+        branch: '',
+        worktreePath: '',
+        runDir: `/runs/${id}`,
+        baseRef: 'main',
+        baseSha: '',
+        headSha: null,
+        prNumber: null,
+        planPath: '',
+        planHash: '',
+        implementer: null,
+        rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
+      },
+      queuedEntry,
+    );
+
+  it('leaves queued runs queued: nothing owns them, so nothing is interrupted', async () => {
+    queue('r20260101-aaaaaa');
+    queue('r20260101-bbbbbb');
+    expect(await reconcile()).toEqual([]);
+    expect(store.runs.listQueued().map((q) => q.runId)).toEqual([
+      'r20260101-aaaaaa',
+      'r20260101-bbbbbb',
+    ]);
+    expect(store.runs.getRun('r20260101-aaaaaa')?.stage).toBe('queued');
+  });
+
+  it('puts a start whose server died before it created its files back in the queue', async () => {
+    queue('r20260101-aaaaaa');
+    queue('r20260101-bbbbbb');
+    // The first was claimed (setup, owned by a process that is gone) and never got going.
+    store.runs.claimQueued({ fits: () => true, owner: { pid: DEAD, host: HOST } });
+    expect(store.runs.getRun('r20260101-aaaaaa')).toMatchObject({ stage: 'setup' });
+    expect(await reconcile()).toEqual([]);
+    expect(store.runs.getRun('r20260101-aaaaaa')?.stage).toBe('queued');
+    // It keeps its place ahead of the run queued after it.
+    expect(store.runs.listQueued().map((q) => q.runId)).toEqual([
+      'r20260101-aaaaaa',
+      'r20260101-bbbbbb',
+    ]);
+    expect(store.runs.listDecisions()).toEqual([]);
+  });
+
+  it('still interrupts a start that created its run files', async () => {
+    queue('r20260101-aaaaaa');
+    store.runs.claimQueued({ fits: () => true, owner: { pid: DEAD, host: HOST } });
+    // The pipeline got far enough to clear the stored entry.
+    store.runs.finishQueuedStart('r20260101-aaaaaa');
+    expect(await reconcile()).toEqual(['r20260101-aaaaaa']);
+    expect(store.runs.getRun('r20260101-aaaaaa')?.stage).toBe('interrupted');
+  });
+
+  it('does not reopen a rest question for a queued run', () => {
+    addRun('r20260101-cccccc', { stage: 'awaiting_review', ownerPid: null, ownerHost: null });
+    store.runs.queueRun('r20260101-cccccc', 'awaiting_review', { kind: 'approve' });
+    expect(reopenStrandedRests(store.runs, { isAlive: () => false, hostname: HOST })).toEqual([]);
+    expect(store.runs.listDecisions({ status: 'open' })).toEqual([]);
+  });
+});
+
 describe('pidAlive', () => {
   it('is true for this process and false for a pid that cannot exist', async () => {
     expect(pidAlive(process.pid)).toBe(true);

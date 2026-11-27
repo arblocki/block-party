@@ -1,11 +1,14 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { dataDir } from '../core/paths.js';
 import { loadRunConfig, RunConfigSchema, type RunFlagOverrides } from '../core/run/config.js';
 import { createRunDeps } from '../core/run/deps.js';
 import { reopenRestDecision } from '../core/run/rest-decision.js';
+import { newRunId } from '../core/run/id.js';
 import { canResume, isResting, type RunStage } from '../core/run/machine.js';
+import { runDir as defaultRunDir } from '../core/run/paths.js';
 import {
   continueRun,
   runPipeline,
@@ -13,10 +16,16 @@ import {
   type RunInput,
   type RunSource,
   type RunOutcome,
+  type SlotHooks,
 } from '../core/run/pipeline.js';
-import { ShutdownError, throwIfAborted } from '../core/run/pipeline-helpers.js';
+import {
+  ShutdownError,
+  throwIfAborted,
+  titleFromDescription,
+} from '../core/run/pipeline-helpers.js';
 import { parsePlan } from '../core/run/plan.js';
-import type { RunStore } from '../core/store/runs.js';
+import type { ClaimedRun, RunStore } from '../core/store/runs.js';
+import { DEFAULT_LIMITS, type Limits } from './limits.js';
 
 export interface StartRunRequest {
   projectId: string;
@@ -56,42 +65,83 @@ export class UnknownProjectError extends Error {
 /** What a cancel found out: done, not possible, or still stopping. */
 export type CancelResult = boolean | 'pending';
 
+/** How many run slots are taken, for the "waiting for a free slot" text. */
+export interface SlotStatus {
+  /** Runs being driven now (runs waiting for an answer or at rest hold no slot). */
+  inUse: number;
+  maxRuns: number;
+  maxRunsPerProject: number;
+}
+
+/** What the manager gives a pipeline so it can share the run slots and the project lock. */
+export interface PipelineHooks {
+  slots: SlotHooks;
+  /** Serializes git work on the project's main clone with other runs of the same project. */
+  lockProject: <T>(fn: () => Promise<T>) => Promise<T>;
+}
+
 export interface RunManager {
-  /** Starts a run in this process; resolves with its id once the run row exists. */
+  /** The limits this manager enforces. */
+  readonly limits: Limits;
+  /** Slots in use right now. */
+  status(): SlotStatus;
+  /**
+   * Runs `fn` once no other `fn` holds `key`'s lock (FIFO), however the earlier ones ended.
+   * Keys are project ids (or any string naming a main clone).
+   */
+  withProjectLock<T>(key: string, fn: () => Promise<T>): Promise<T>;
+  /**
+   * Starts every queued run for which a slot is free (and re-checks waiting runs). The manager
+   * does this by itself whenever a slot frees; the server calls it once after reconciliation.
+   */
+  pump(): void;
+  /**
+   * Starts a run in this process and resolves with its id once the run row exists. Over the
+   * limit the run is recorded as `queued` (durably, before this resolves) and starts later.
+   */
   start(req: StartRunRequest): Promise<string>;
   /**
    * Continues a run resting for review (approve it, or send it back with feedback). False when
-   * this process already drives the run, or it is not resting; nothing is started then.
+   * this process already drives the run, or it is not resting; nothing is started then. With no
+   * free slot the answer is kept and the run waits in the queue (true).
    */
   continue(runId: string, entry: ContinueEntry): boolean;
   /**
    * Resumes an `interrupted` or `blocked` run. One continuation per run: `busy` when this
-   * process already drives it (a double click starts one), `not_resumable` when it is in any
-   * other stage (or unknown). `keep` accepts the worktree as it is, after the owner was asked.
+   * process already drives it or it waits in the queue (a double click starts one),
+   * `not_resumable` when it is in any other stage (or unknown). `keep` accepts the worktree as
+   * it is, after the owner was asked. With no free slot the run waits in the queue.
    */
   resume(runId: string, opts?: { keep?: boolean }): 'started' | 'busy' | 'not_resumable';
   /**
    * Cancels a run: one that this process drives (aborted at any stage; a continuation that is
-   * still leaving rest is cancelled once it owns the run), one resting for a person, or one
-   * that stopped (`interrupted`, `blocked`). Resolves with the real outcome: true when the run
-   * is cancelled, false when it ended some other way, was already over, was never aborted, or
-   * is not a run this can cancel, and `'pending'` when it was told to stop but had not settled
-   * within the wait (a push in progress finishes first). Worktree, branch and run directory stay.
+   * still leaving rest is cancelled once it owns the run), one resting for a person, one
+   * waiting in the queue, or one that stopped (`interrupted`, `blocked`). Resolves with the
+   * real outcome: true when the run is cancelled, false when it ended some other way, was
+   * already over, was never aborted, or is not a run this can cancel, and `'pending'` when it
+   * was told to stop but had not settled within the wait (a push in progress finishes first).
+   * Worktree, branch and run directory stay.
    */
   cancel(runId: string): Promise<CancelResult>;
-  /** Interrupts every run this process drives and waits (bounded) for them to settle. */
+  /**
+   * Interrupts every run this process drives and waits (bounded) for them to settle. Queued
+   * runs stay queued: they start after the next server start.
+   */
   shutdown(timeoutMs?: number): Promise<void>;
 }
 
 export interface RunManagerOptions {
   runs: RunStore;
+  /** How many runs may be driven at once (default: 3 in all, 2 per project). */
+  limits?: Limits;
   /** Runs one pipeline to its end (default: runPipeline with createRunDeps). */
-  startPipeline?: (input: RunInput) => Promise<RunOutcome>;
+  startPipeline?: (input: RunInput, hooks: PipelineHooks) => Promise<RunOutcome>;
   /** Continues one resting run to its next rest or end (default: continueRun with createRunDeps). */
   continuePipeline?: (
     runId: string,
     entry: ContinueEntry,
     signal: AbortSignal,
+    hooks: PipelineHooks,
   ) => Promise<RunOutcome>;
   /** Where submitted plan texts are written (default `<dataDir>/plans`). */
   plansDir?: string;
@@ -106,24 +156,43 @@ export interface RunManagerOptions {
 interface Entry {
   ac: AbortController;
   done: Promise<unknown>;
+  /** The project the run belongs to; unset until a start's project is known (it always is). */
+  projectId: string | undefined;
+  /** Whether this entry takes up a run slot right now. */
+  held: boolean;
+}
+
+/** What a queued start keeps: the pipeline's input without the parts that only live in memory. */
+type StoredStart = { repo: string; baseRef: string; title?: string; config: RunInput['config'] } & (
+  { planFile: string } | { description: string }
+);
+
+interface Waiter {
+  entry: Entry;
+  resolve: () => void;
 }
 
 const MAX_DESCRIPTION = 20_000;
 const DEFAULT_SHUTDOWN_MS = 10_000;
 const DEFAULT_CANCEL_WAIT_MS = 30_000;
 
+/** Answers that only finish a run (no agent work), so they never wait for a slot. */
+const needsNoSlot = (entry: ContinueEntry): boolean =>
+  entry.kind === 'cancel' || entry.kind === 'approve';
+
 export function createRunManager(opts: RunManagerOptions): RunManager {
   const { runs } = opts;
+  const limits: Limits = opts.limits ?? { ...DEFAULT_LIMITS };
   const startPipeline =
     opts.startPipeline ??
-    (async (input: RunInput) => {
+    (async (input: RunInput, hooks: PipelineHooks) => {
       const deps = await createRunDeps({ store: runs, mode: input.config.implementer.mode });
       throwIfAborted(input.signal);
-      return runPipeline(input, deps);
+      return runPipeline(input, { ...deps, ...hooks });
     });
   const continuePipeline =
     opts.continuePipeline ??
-    (async (runId: string, entry: ContinueEntry, signal: AbortSignal) => {
+    (async (runId: string, entry: ContinueEntry, signal: AbortSignal, hooks: PipelineHooks) => {
       // The adapter depends on how the run was started, which its saved config says.
       const run = runs.getRun(runId);
       if (!run) throw new Error(`Unknown run: ${runId}`);
@@ -132,7 +201,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       );
       const deps = await createRunDeps({ store: runs, mode: config.implementer.mode });
       throwIfAborted(signal);
-      return continueRun(runId, entry, deps, signal);
+      return continueRun(runId, entry, { ...deps, ...hooks }, signal);
     });
   const plansDir = opts.plansDir ?? join(dataDir(), 'plans');
   const startTimeoutMs = opts.startTimeoutMs ?? 30_000;
@@ -144,7 +213,118 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
   /** Every in-process run, including ones whose id is not known yet. */
   const live = new Set<Entry>();
   const byId = new Map<string, Entry>();
+  const waiters: Waiter[] = [];
+  const locks = new Map<string, Promise<unknown>>();
   let stopping = false;
+
+  // ---- Slots ----------------------------------------------------------------------------
+
+  const held = (projectId?: string): number => {
+    let n = 0;
+    for (const e of live) if (e.held && (projectId === undefined || e.projectId === projectId)) n++;
+    return n;
+  };
+  const hasRoom = (projectId: string | undefined): boolean =>
+    held() < limits.maxRuns &&
+    (projectId === undefined || held(projectId) < limits.maxRunsPerProject);
+
+  const eventAt = (runId: string, type: string, payload?: unknown): void => {
+    try {
+      runs.appendEvent({ runId, ts: new Date().toISOString(), type, payload });
+    } catch {
+      // An event is a note; the queue itself is in the run's row.
+    }
+  };
+
+  /** Records `run.queued { position }` for a run that was just put in the queue. */
+  const noteQueued = (runId: string): number => {
+    let position = 0;
+    try {
+      position = runs.listQueued().findIndex((q) => q.runId === runId) + 1;
+    } catch {
+      // The position is informational.
+    }
+    eventAt(runId, 'run.queued', { position });
+    return position;
+  };
+
+  /** Gives waiting runs, then queued ones, the slots that are free. */
+  const pump = (): void => {
+    if (stopping) return;
+    // A run that already started and waits to carry on goes before one that has not begun.
+    for (const w of [...waiters]) {
+      if (!hasRoom(w.entry.projectId)) continue;
+      waiters.splice(waiters.indexOf(w), 1);
+      w.entry.held = true;
+      w.resolve();
+    }
+    while (held() < limits.maxRuns) {
+      let claimed: ClaimedRun | undefined;
+      try {
+        claimed = runs.claimQueued({
+          fits: (projectId) => hasRoom(projectId),
+          owner: { pid: process.pid, host: hostname() },
+        });
+      } catch (err) {
+        onError('queue', err);
+        return;
+      }
+      if (!claimed) return;
+      launchClaimed(claimed);
+    }
+  };
+
+  const hooksFor = (entry: Entry): PipelineHooks => ({
+    slots: {
+      release() {
+        if (!entry.held) return;
+        entry.held = false;
+        pump();
+      },
+      acquire(signal) {
+        return new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) return reject(signal.reason);
+          if (entry.held) return resolve();
+          if (hasRoom(entry.projectId)) {
+            entry.held = true;
+            return resolve();
+          }
+          const waiter: Waiter = {
+            entry,
+            resolve: () => {
+              signal?.removeEventListener('abort', onAbort);
+              resolve();
+            },
+          };
+          const onAbort = (): void => {
+            const at = waiters.indexOf(waiter);
+            if (at >= 0) waiters.splice(at, 1);
+            reject(signal?.reason);
+          };
+          signal?.addEventListener('abort', onAbort, { once: true });
+          waiters.push(waiter);
+        });
+      },
+    },
+    lockProject: (fn) => withProjectLock(entry.projectId ?? '', fn),
+  });
+
+  function withProjectLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const previous = locks.get(key) ?? Promise.resolve();
+    // Whatever the earlier holder did, this one runs next.
+    const run = previous.then(fn, fn);
+    const tail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    locks.set(key, tail);
+    void tail.then(() => {
+      if (locks.get(key) === tail) locks.delete(key);
+    });
+    return run;
+  }
+
+  // ---- Continuations --------------------------------------------------------------------
 
   const rowExists = (id: string): boolean => {
     try {
@@ -165,27 +345,20 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     }
   };
 
-  const continueEntry = (
+  /** Runs a continuation of `runId` in this process; the caller has checked everything. */
+  const launch = (
     runId: string,
     entry: ContinueEntry,
-    startsFrom: (stage: RunStage) => boolean = isResting,
-  ): Entry | undefined => {
-    if (stopping || byId.has(runId)) return undefined;
-    // Checked again here: the caller's view of the run may be stale.
-    let stage: string | undefined;
-    try {
-      stage = runs.getRun(runId)?.stage;
-    } catch {
-      return undefined;
-    }
-    if (stage === undefined || !startsFrom(stage as RunStage)) return undefined;
+    projectId: string | undefined,
+    takesSlot: boolean,
+  ): Entry => {
     const ac = new AbortController();
-    const entryRec: Entry = { ac, done: Promise.resolve() };
+    const entryRec: Entry = { ac, done: Promise.resolve(), projectId, held: takesSlot };
     live.add(entryRec);
     byId.set(runId, entryRec);
     entryRec.done = (async () => {
       try {
-        await continuePipeline(runId, entry, ac.signal);
+        await continuePipeline(runId, entry, ac.signal, hooksFor(entryRec));
       } catch (err) {
         // The answer that started this could not be carried out: offer the review again
         // (a no-op when the pipeline already did, or the run is no longer resting).
@@ -194,9 +367,43 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       } finally {
         live.delete(entryRec);
         if (byId.get(runId) === entryRec) byId.delete(runId);
+        entryRec.held = false;
+        pump();
       }
     })();
     return entryRec;
+  };
+
+  /**
+   * Starts (or queues) a continuation for a run that is resting (or stopped, per `startsFrom`).
+   * An Entry when it started; 'queued' when no slot was free and the answer was stored in the
+   * run's row; undefined when nothing was started.
+   */
+  const continueEntry = (
+    runId: string,
+    entry: ContinueEntry,
+    startsFrom: (stage: RunStage) => boolean = isResting,
+  ): Entry | 'queued' | undefined => {
+    if (stopping || byId.has(runId)) return undefined;
+    // Checked again here: the caller's view of the run may be stale.
+    let run;
+    try {
+      run = runs.getRun(runId);
+    } catch {
+      return undefined;
+    }
+    // A queued run waits for its slot; its stored answer is the one that will be carried out.
+    if (!run || run.stage === 'queued' || !startsFrom(run.stage)) return undefined;
+    if (needsNoSlot(entry) || hasRoom(run.projectId)) {
+      return launch(runId, entry, run.projectId, !needsNoSlot(entry));
+    }
+    try {
+      if (!runs.queueRun(runId, run.stage, entry)) return undefined;
+    } catch {
+      return undefined;
+    }
+    noteQueued(runId);
+    return 'queued';
   };
 
   const stageNow = (id: string): string | undefined => {
@@ -231,10 +438,115 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       { kind: 'cancel' },
       (stage) => isResting(stage) || canResume(stage),
     );
-    return started ? resultOf(runId, started) : false;
+    return started && started !== 'queued' ? resultOf(runId, started) : false;
+  };
+
+  /** A run that waits in the queue leaves it: a start ends as cancelled, a continuation goes back to rest first. */
+  const cancelQueued = async (runId: string): Promise<CancelResult | undefined> => {
+    let taken;
+    try {
+      taken = runs.cancelQueued(runId);
+    } catch {
+      return undefined;
+    }
+    if (taken === undefined) return undefined;
+    if (taken === 'cancelled') {
+      eventAt(runId, 'run.cancelled', { stage: 'queued' });
+      try {
+        runs.closeOpenQuestions(runId);
+      } catch {
+        // Nothing waits on the questions of a run that never started.
+      }
+      return true;
+    }
+    // Back where it rested, with its answer dropped: cancel it from there.
+    return cancelIdle(runId);
+  };
+
+  // ---- Queued starts --------------------------------------------------------------------
+
+  /** Runs a start that was taken from the queue (its row is `setup`, owned by this process). */
+  const launchClaimed = (claimed: ClaimedRun): void => {
+    const { runId, projectId } = claimed;
+    if (claimed.from !== null) {
+      launch(runId, claimed.entry as ContinueEntry, projectId, true);
+      return;
+    }
+    const stored = claimed.entry as StoredStart;
+    const ac = new AbortController();
+    const entry: Entry = { ac, done: Promise.resolve(), projectId, held: true };
+    live.add(entry);
+    byId.set(runId, entry);
+    let started = false;
+    entry.done = (async () => {
+      try {
+        await startPipeline(
+          {
+            ...stored,
+            runId,
+            signal: ac.signal,
+            onStarted: (id) => {
+              started = true;
+              runs.finishQueuedStart(id);
+            },
+          } as RunInput,
+          hooksFor(entry),
+        );
+      } catch (err) {
+        if (started) onError(runId, err);
+        else failQueuedStart(runId, ac, err);
+      } finally {
+        live.delete(entry);
+        if (byId.get(runId) === entry) byId.delete(runId);
+        entry.held = false;
+        pump();
+      }
+    })();
+  };
+
+  /** A queued start stopped before its run files existed: nothing was lost, say what happened. */
+  const failQueuedStart = (runId: string, ac: AbortController, err: unknown): void => {
+    try {
+      if (ac.signal.reason instanceof ShutdownError) {
+        // The server is stopping: the run keeps its place and starts after the next start.
+        runs.requeueStart(runId);
+        return;
+      }
+      runs.finishQueuedStart(runId);
+      if (ac.signal.aborted) {
+        runs.updateRun(runId, { stage: 'cancelled', stageNote: 'Cancelled before it started' });
+        eventAt(runId, 'run.cancelled', { stage: 'setup' });
+        return;
+      }
+      const reason = err instanceof Error ? err.message : String(err);
+      runs.updateRun(runId, { stage: 'failed', stageNote: `Could not start: ${reason}` });
+      eventAt(runId, 'run.failed', { stage: 'setup', error: reason });
+      onError(runId, err);
+    } catch (e) {
+      onError(runId, e);
+    }
+  };
+
+  /** Writes a plan to its content-addressed file: a temp file renamed into place. */
+  const writePlan = async (planFile: string, text: string): Promise<void> => {
+    await mkdir(plansDir, { recursive: true });
+    // Same text means same path: write a temp file and rename it into place, so a
+    // concurrent start reading this plan never sees it truncated or half-written.
+    const tmp = `${planFile}.${randomUUID()}.tmp`;
+    await writeFile(tmp, text);
+    await rename(tmp, planFile);
   };
 
   return {
+    limits,
+    status: () => ({
+      inUse: held(),
+      maxRuns: limits.maxRuns,
+      maxRunsPerProject: limits.maxRunsPerProject,
+    }),
+    withProjectLock,
+    pump,
+
     async start(req) {
       if (stopping) throw new Error('The server is shutting down');
       if ((req.planText === undefined) === (req.description === undefined)) {
@@ -253,6 +565,50 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
       if (!project) throw new UnknownProjectError(req.projectId);
       const config = loadRunConfig(project.localPath, req.flags);
       const planFile = parsed?.ok ? join(plansDir, `${parsed.plan.contentHash}.md`) : undefined;
+      const source: RunSource =
+        planFile !== undefined ? { planFile } : { description: description! };
+
+      // Decided before the first await, so two starts cannot both take the last slot.
+      if (!hasRoom(project.id)) {
+        if (planFile !== undefined) await writePlan(planFile, req.planText!);
+        if (stopping) throw new Error('The server is shutting down');
+        const now = new Date();
+        const id = newRunId(now);
+        const title =
+          req.title ?? (parsed?.ok ? parsed.plan.title : titleFromDescription(description!));
+        const stored: StoredStart = {
+          repo: project.localPath,
+          ...source,
+          baseRef: req.baseRef,
+          ...(req.title ? { title: req.title } : {}),
+          config,
+        };
+        // The row, with what to do later, is saved before anything answers.
+        runs.createQueuedRun(
+          {
+            id,
+            projectId: project.id,
+            title,
+            stageNote: null,
+            branch: '',
+            worktreePath: '',
+            runDir: defaultRunDir(id),
+            baseRef: req.baseRef,
+            baseSha: '',
+            headSha: null,
+            prNumber: null,
+            planPath: planFile ?? '',
+            planHash: parsed?.ok ? parsed.plan.contentHash : '',
+            implementer: null,
+            rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
+          },
+          stored,
+        );
+        noteQueued(id);
+        // A slot may have freed while the row was being written.
+        pump();
+        return id;
+      }
 
       const ac = new AbortController();
       let runId: string | undefined;
@@ -271,8 +627,8 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         }, startTimeoutMs);
 
         // Tracked before the first await, so a shutdown that starts meanwhile aborts and
-        // waits for this start too.
-        const entry: Entry = { ac, done: Promise.resolve() };
+        // waits for this start too, and so it holds its slot from the start.
+        const entry: Entry = { ac, done: Promise.resolve(), projectId: project.id, held: true };
         live.add(entry);
         const stoppedError = () =>
           ac.signal.reason instanceof ShutdownError
@@ -281,39 +637,33 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
 
         entry.done = (async () => {
           try {
-            if (planFile !== undefined) {
-              await mkdir(plansDir, { recursive: true });
-              // Same text means same path: write a temp file and rename it into place, so a
-              // concurrent start reading this plan never sees it truncated or half-written.
-              const tmp = `${planFile}.${randomUUID()}.tmp`;
-              await writeFile(tmp, req.planText!);
-              await rename(tmp, planFile);
-            }
+            if (planFile !== undefined) await writePlan(planFile, req.planText!);
             if (ac.signal.aborted) throw stoppedError();
-            const source: RunSource =
-              planFile !== undefined ? { planFile } : { description: description! };
-            const outcome = await startPipeline({
-              repo: project.localPath,
-              ...source,
-              baseRef: req.baseRef,
-              ...(req.title ? { title: req.title } : {}),
-              config,
-              signal: ac.signal,
-              onStarted: (id) => {
-                runId = id;
-                byId.set(id, entry);
-                if (!rowExists(id)) {
-                  // The pipeline keeps its files but the server could not show the run:
-                  // stop it before it does any work, and report the failure.
-                  ac.abort();
-                  settle(() =>
-                    reject(new Error(`Run ${id} could not be recorded in the database`)),
-                  );
-                  return;
-                }
-                settle(() => resolve(id));
+            const outcome = await startPipeline(
+              {
+                repo: project.localPath,
+                ...source,
+                baseRef: req.baseRef,
+                ...(req.title ? { title: req.title } : {}),
+                config,
+                signal: ac.signal,
+                onStarted: (id) => {
+                  runId = id;
+                  byId.set(id, entry);
+                  if (!rowExists(id)) {
+                    // The pipeline keeps its files but the server could not show the run:
+                    // stop it before it does any work, and report the failure.
+                    ac.abort();
+                    settle(() =>
+                      reject(new Error(`Run ${id} could not be recorded in the database`)),
+                    );
+                    return;
+                  }
+                  settle(() => resolve(id));
+                },
               },
-            });
+              hooksFor(entry),
+            );
             settle(() => resolve(outcome.runId));
           } catch (err) {
             if (runId === undefined) settle(() => reject(err as Error));
@@ -321,6 +671,8 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
           } finally {
             live.delete(entry);
             if (runId !== undefined && byId.get(runId) === entry) byId.delete(runId);
+            entry.held = false;
+            pump();
           }
         })();
       });
@@ -329,7 +681,7 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
     continue: (runId, entry) => continueEntry(runId, entry) !== undefined,
 
     resume(runId, opts = {}) {
-      if (stopping || byId.has(runId)) return 'busy';
+      if (stopping || byId.has(runId) || stageNow(runId) === 'queued') return 'busy';
       const started = continueEntry(
         runId,
         { kind: 'resume', ...(opts.keep ? { keep: true } : {}) },
@@ -362,6 +714,10 @@ export function createRunManager(opts: RunManagerOptions): RunManager {
         }
         if (!entry.ac.signal.aborted) entry.ac.abort();
         return resultOf(runId, entry);
+      }
+      if (stageNow(runId) === 'queued') {
+        const result = await cancelQueued(runId);
+        if (result !== undefined) return result;
       }
       return cancelIdle(runId);
     },

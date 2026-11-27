@@ -32,6 +32,8 @@ export interface RecorderOptions {
  */
 export class RunRecorder {
   private created = false;
+  /** The row was made before the run files existed (a queued start): the next write fills it in. */
+  private adopting = false;
   private runId: string | null = null;
   private stageId: number | null = null;
   private permissions: number[] = [];
@@ -66,7 +68,17 @@ export class RunRecorder {
       rounds: st.rounds,
     };
     if (this.created) {
-      this.db('updateRun', (s) => s.updateRun(st.id, fields));
+      const adopting = this.adopting;
+      this.adopting = false;
+      this.db('updateRun', (s) =>
+        s.updateRun(st.id, {
+          ...fields,
+          // A queued row only guessed these; now this process owns the run and its files.
+          ...(adopting
+            ? { runDir: this.log.runDir, ownerPid: this.pid, ownerHost: this.host }
+            : {}),
+        }),
+      );
       return;
     }
     this.db('createRun', (s) => {
@@ -97,6 +109,12 @@ export class RunRecorder {
   resume(st: RunState): void {
     this.attach(st.id);
     this.db('claimRun', (s) => s.updateRun(st.id, { ownerPid: this.pid, ownerHost: this.host }));
+  }
+
+  /** Takes over the row of a queued start: the next `state` fills it in and claims it. */
+  adopt(runId: string): void {
+    this.attach(runId);
+    this.adopting = true;
   }
 
   /** Records into an existing run row without taking ownership of it. */

@@ -67,6 +67,10 @@ function fakeManager(opts: { fail?: Error; cancelResult?: boolean | 'pending' } 
   const resumes: { runId: string; opts?: { keep?: boolean } }[] = [];
   const resumed = new Set<string>();
   const manager: RunManager = {
+    limits: { maxRuns: 3, maxRunsPerProject: 2 },
+    status: () => ({ inUse: 1, maxRuns: 3, maxRunsPerProject: 2 }),
+    withProjectLock: (_key, fn) => fn(),
+    pump() {},
     async start(req) {
       starts.push(req);
       if (opts.fail) throw opts.fail;
@@ -294,6 +298,7 @@ describe('JSON endpoints', () => {
           updatedAt: '2026-01-02T00:00:00.000Z',
           openDecisions: 0,
           planVersion: null,
+          queue: null,
         },
         expect.objectContaining({ id: RUN_A, stage: 'implementing', openDecisions: 2 }),
       ],
@@ -303,6 +308,35 @@ describe('JSON endpoints', () => {
     const limited = (await json('/api/runs?limit=1')).runs as { id: string }[];
     expect(limited.map((r) => r.id)).toEqual([RUN_B]);
     expect((await req('/api/runs?limit=x')).status).toBe(400);
+  });
+
+  it('shows a queued run its place in line and the slots in use', async () => {
+    const { manager } = fakeManager();
+    const queuedApp = makeApp(runs, manager);
+    runs.createRun(runInput(projectId, { id: RUN_B, stage: 'implementing' }));
+    const queue = (id: string, at: string) =>
+      runs.createQueuedRun(runInput(projectId, { id, stage: 'queued', createdAt: at }), {});
+    queue('r20260103-cccccc', '2026-01-03T00:00:00.000Z');
+    queue('r20260104-dddddd', '2026-01-04T00:00:00.000Z');
+    const get = async (path: string) =>
+      (
+        await queuedApp.request(path, {
+          headers: { host: HOST, [TOKEN_HEADER]: TOKEN },
+        })
+      ).json() as Promise<{
+        runs?: { id: string; queue: unknown }[];
+        run?: { queue: unknown };
+      }>;
+    const list = await get('/api/runs');
+    const byId = new Map(list.runs!.map((r) => [r.id, r.queue]));
+    expect(byId.get('r20260103-cccccc')).toEqual({ position: 1, inUse: 1, max: 3 });
+    expect(byId.get('r20260104-dddddd')).toEqual({ position: 2, inUse: 1, max: 3 });
+    expect(byId.get(RUN_B)).toBeNull();
+    expect((await get('/api/runs/r20260104-dddddd')).run?.queue).toEqual({
+      position: 2,
+      inUse: 1,
+      max: 3,
+    });
   });
 
   it('returns a run with its stages and decisions', async () => {

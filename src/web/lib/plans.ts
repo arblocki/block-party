@@ -82,10 +82,18 @@ export function planActions(
   );
 }
 
+/** Why a queued run is not running yet: "Waiting for a free slot (2 of 3 in use)". */
+export function queueLabel(queue: RunSummary['queue']): string {
+  return queue && queue.inUse !== null && queue.max !== null
+    ? `Waiting for a free slot (${queue.inUse} of ${queue.max} in use)`
+    : 'Waiting for a free slot';
+}
+
 /** "Plan v<n> ready" from the plan version while awaiting approval; else the note. */
 export function stageNoteLabel(
-  run: Pick<RunSummary, 'stage' | 'stageNote' | 'planVersion'>,
+  run: Pick<RunSummary, 'stage' | 'stageNote' | 'planVersion'> & { queue?: RunSummary['queue'] },
 ): string | null {
+  if (run.stage === 'queued') return queueLabel(run.queue ?? null);
   if (run.stage === 'awaiting_plan_approval' && run.planVersion !== null) {
     return `Plan v${run.planVersion} ready`;
   }

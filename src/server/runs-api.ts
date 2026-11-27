@@ -57,6 +57,8 @@ export interface RunSummary {
   openDecisions: number;
   /** The latest stored plan version, or null when the run has none. */
   planVersion: number | null;
+  /** Where a run waiting for a free slot stands; null for any other run. */
+  queue: { position: number; inUse: number | null; max: number | null } | null;
 }
 
 /** An inbox item with the run it belongs to. */
@@ -237,10 +239,28 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   const projectsById = (): Map<string, Project> =>
     new Map(runs.listProjects().map((p) => [p.id, p]));
 
+  /** Queue positions (1 is next) and slot use, read once per list. */
+  const queueInfo = (): ((run: RunRow) => RunSummary['queue']) => {
+    const position = new Map<string, number>();
+    try {
+      runs.listQueued().forEach((q, i) => position.set(q.runId, i + 1));
+    } catch {
+      // The position is informational.
+    }
+    const status = deps.manager?.status();
+    return (run) => {
+      const at = run.stage === 'queued' ? position.get(run.id) : undefined;
+      return at === undefined
+        ? null
+        : { position: at, inUse: status?.inUse ?? null, max: status?.maxRuns ?? null };
+    };
+  };
+
   const summarize = (
     run: RunRow,
     projects: Map<string, Project>,
     openByRun: Map<string, number>,
+    queueOf: (run: RunRow) => RunSummary['queue'],
   ): RunSummary => {
     const project = projects.get(run.projectId);
     return {
@@ -256,6 +276,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       updatedAt: run.updatedAt,
       openDecisions: openByRun.get(run.id) ?? 0,
       planVersion: runs.listPlans(run.id).at(-1)?.version ?? null,
+      queue: queueOf(run),
     };
   };
 
@@ -270,7 +291,8 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
   const runSummaries = (opts: { active?: boolean; limit?: number }): RunSummary[] => {
     const projects = projectsById();
     const open = openCounts();
-    return runs.listRuns(opts).map((r) => summarize(r, projects, open));
+    const queueOf = queueInfo();
+    return runs.listRuns(opts).map((r) => summarize(r, projects, open, queueOf));
   };
 
   const runSummary = (run: RunRow): RunSummary => {
@@ -280,6 +302,7 @@ export function registerRunsApi(app: Hono, deps: RunsApiDeps): void {
       run,
       new Map(project ? [[project.id, project]] : []),
       new Map([[run.id, open]]),
+      queueInfo(),
     );
   };
 

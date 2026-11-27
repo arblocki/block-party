@@ -3111,3 +3111,141 @@ describe('resume of a pane whose agent is still alive', () => {
     expect(h.calls.starts).toHaveLength(1);
   });
 });
+
+describe('run slots and the project lock', () => {
+  const two = [finding('f_1_1', 'P1', 'Null deref'), finding('f_1_2', 'P2', 'Missing test')];
+
+  it('does the fetch and the worktree add while holding the project lock', async () => {
+    const h = harness({ turns: [{}] });
+    const log: string[] = [];
+    let held = false;
+    h.deps.lockProject = async (fn) => {
+      expect(held).toBe(false);
+      held = true;
+      log.push('lock');
+      try {
+        return await fn();
+      } finally {
+        held = false;
+        log.push('unlock');
+      }
+    };
+    const git = h.deps.git;
+    const fetchBase = git.fetchBase.bind(git);
+    const createWorktree = git.createWorktree.bind(git);
+    git.fetchBase = async (...args) => {
+      expect(held).toBe(true);
+      log.push('fetch');
+      return fetchBase(...args);
+    };
+    git.createWorktree = async (...args) => {
+      expect(held).toBe(true);
+      log.push('worktree add');
+      return createWorktree(...args);
+    };
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    // Each ran alone under the lock, and nothing else did (the run's own work is not locked).
+    expect(log).toEqual(['lock', 'fetch', 'unlock', 'lock', 'worktree add', 'unlock']);
+  });
+
+  it('adopts the queued row it is given instead of creating a second one', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{}] });
+    const project = store.upsertProject({
+      owner: 'o',
+      repo: 'r',
+      localPath: h.root,
+      defaultBase: 'main',
+    });
+    const id = 'r20260101-abcdef';
+    store.createQueuedRun(
+      {
+        id,
+        projectId: project.id,
+        title: 'Queued',
+        stageNote: null,
+        branch: '',
+        worktreePath: '',
+        runDir: '/guess',
+        baseRef: 'main',
+        baseSha: '',
+        headSha: null,
+        prNumber: null,
+        planPath: '',
+        planHash: '',
+        implementer: null,
+        rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
+      },
+      { entry: 'x' },
+    );
+    store.claimQueued({ fits: () => true, owner: { pid: 1, host: 'h' } });
+    const out = await runPipeline(
+      {
+        repo: h.root,
+        planFile: join(h.root, 'plan.md'),
+        baseRef: 'main',
+        config: resolveRunConfig(undefined),
+        runId: id,
+      },
+      h.deps,
+    );
+    expect(out.runId).toBe(id);
+    expect(out.runDir).toBe(join(h.root, 'runs', id));
+    expect(store.listRuns()).toHaveLength(1);
+    expect(store.getRun(id)).toMatchObject({
+      runDir: join(h.root, 'runs', id),
+      stage: 'awaiting_review',
+    });
+    expect(store.getRun(id)?.branch).toMatch(/^bp\//);
+  });
+
+  it('gives its slot back while a question waits and takes one again after the answer', async () => {
+    const { store, asked } = scripted({ finding_triage: ['fix'] });
+    const h = harness({
+      store,
+      turns: [{}, { report: fixed('f_1_1', 'f_1_2') }],
+      reviews: [review(two), review([])],
+    });
+    const calls: string[] = [];
+    h.deps.slots = {
+      release: () => calls.push('release'),
+      acquire: async () => {
+        calls.push('acquire');
+      },
+    };
+    const out = await h.run();
+    expect(out.stage).toBe('awaiting_review');
+    expect(asked).toHaveLength(1);
+    expect(calls).toEqual(['release', 'acquire']);
+  });
+
+  it('does not take a slot again when the wait ends in an abort', async () => {
+    // Opens a question nobody answers, then aborts the run while it waits.
+    const real = openStore(':memory:').runs;
+    const ac = new AbortController();
+    const store: RunStore = new Proxy(real, {
+      get(target, prop, recv) {
+        if (prop === 'openDecision') {
+          return (input: Parameters<RunStore['openDecision']>[0]) => {
+            const id = target.openDecision(input);
+            if (input.options) queueMicrotask(() => ac.abort());
+            return id;
+          };
+        }
+        return Reflect.get(target, prop, recv) as unknown;
+      },
+    });
+    const h = harness({ store, turns: [{}], reviews: [review([two[1]!])] });
+    const calls: string[] = [];
+    h.deps.slots = {
+      release: () => calls.push('release'),
+      acquire: async () => {
+        calls.push('acquire');
+      },
+    };
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('cancelled');
+    expect(calls).toEqual(['release']);
+  });
+});

@@ -21,6 +21,11 @@ export interface NewRunApiDeps {
   homeDir?: string;
   /** Clock for the clone-list cache (default `Date.now`). */
   now?: () => number;
+  /**
+   * Runs git work on a repository's main clone one at a time (the run manager's project lock),
+   * so a clone here never overlaps a run's `fetch` or `worktree add` in the same project.
+   */
+  lockProject?: <T>(key: string, fn: () => Promise<T>) => Promise<T>;
 }
 
 const CACHE_MS = 60_000;
@@ -289,7 +294,8 @@ export function registerNewRunApi(app: Hono, deps: NewRunApiDeps): void {
       );
     }
     // Not on this computer yet: clone it, as the person would with `git clone`.
-    return cloneAndRegister(canonical, k, locateRoot());
+    const lock = deps.lockProject ?? (<T>(_key: string, fn: () => Promise<T>) => fn());
+    return lock(`repo:${k}`, () => cloneAndRegister(canonical, k, locateRoot()));
   };
 
   app.post('/api/new-run/prepare', async (c) => {

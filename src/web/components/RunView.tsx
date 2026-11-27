@@ -458,6 +458,12 @@ export function RunView({ id }: { id: string }) {
           )}
         </div>
         {stageNoteLabel(run) && <p className="mt-1 text-sm text-muted">{stageNoteLabel(run)}</p>}
+        {run.queue && (
+          <p className="mt-1 text-sm text-muted">
+            Number {run.queue.position} in line. It starts by itself when another run finishes or
+            waits for you.
+          </p>
+        )}
         {cancelNote && <p className="mt-1 text-sm text-warning">{cancelNote}</p>}
         <div className="mt-1 flex flex-wrap gap-x-3 text-sm text-muted">
           {project && (

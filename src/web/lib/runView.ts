@@ -284,6 +284,12 @@ export function summarizeEvent(event: Pick<RunEvent, 'type' | 'payload'>): strin
       return `Publish stopped${s('code') ? ` (${s('code')})` : ''}`;
     case 'db.error':
       return s('error') ?? s('message') ?? type;
+    case 'run.queued':
+      return num('position') !== null && num('position')! > 0
+        ? `Waiting for a free slot (number ${num('position')} in line)`
+        : 'Waiting for a free slot';
+    case 'run.failed':
+      return `Could not start${s('error') ? `: ${s('error')}` : ''}`;
     case 'run.interrupted':
       return `Run interrupted${s('note') ? `: ${s('note')}` : ''}`;
     case 'run.cancelled':

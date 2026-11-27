@@ -103,6 +103,11 @@ interface RunInputBase {
   signal?: AbortSignal;
   /** Called once the run exists (its run.json is saved and its row recorded). */
   onStarted?: (runId: string) => void;
+  /**
+   * The id of a run row that already exists (a queued start): the run adopts that row and id
+   * instead of creating its own.
+   */
+  runId?: string;
 }
 
 export interface RunOutcome {
@@ -120,7 +125,25 @@ export interface RunOutcome {
   prNumber: number | null;
 }
 
+/**
+ * How a run shares the server's limited run slots. A run that waits for a person gives its slot
+ * back and takes one again when the answer arrives, so the pipeline never imports the manager.
+ */
+export interface SlotHooks {
+  /** Gives up the slot this run holds (a no-op when it holds none). */
+  release(): void;
+  /** Waits for a free slot and holds it; rejects with the signal's reason when aborted first. */
+  acquire(signal?: AbortSignal): Promise<void>;
+}
+
 export interface PipelineDeps {
+  /** Slot accounting for runs that wait for answers (none: no limits apply). */
+  slots?: SlotHooks;
+  /**
+   * Runs `fn` while holding the project's lock: used for git commands that touch the project's
+   * main clone (`fetch`, `worktree add`), which must not run at the same time.
+   */
+  lockProject?: <T>(fn: () => Promise<T>) => Promise<T>;
   git: Pick<
     Git,
     | 'repoRoot'
@@ -464,11 +487,12 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
     );
   }
   const checks = loaded.config;
-  const base = await git.fetchBase(repoPath, input.baseRef);
+  const lock = deps.lockProject ?? (<T>(fn: () => Promise<T>) => fn());
+  const base = await lock(() => git.fetchBase(repoPath, input.baseRef));
   // Stopped while preparing: no run is created (the error goes to the caller).
   throwIfAborted(input.signal);
 
-  const runId = newRunId(now());
+  const runId = input.runId ?? newRunId(now());
   const paths = deps.paths ?? {
     runDir: (id: string) => defaultRunDir(id),
     worktreePath: (o: string, r: string, id: string) => defaultWorktreePath(o, r, id),
@@ -513,6 +537,8 @@ async function preflight(input: RunInput, deps: PipelineDeps): Promise<Ctx> {
   };
   await saveRunState(runDir, st);
   const rec = new RunRecorder(log, deps.store);
+  // A queued start already has its row: this process takes it over instead of creating one.
+  if (input.runId !== undefined) rec.adopt(runId);
   rec.state(st);
 
   if (plan) {
@@ -562,12 +588,15 @@ async function provision(ctx: Ctx): Promise<void> {
   const { deps, st, runDir, checks, input } = ctx;
   // Aborted as the run was created: end it before any side effect (no worktree).
   throwIfAborted(input.signal);
-  await deps.git.createWorktree({
-    repo: st.repoPath,
-    path: st.worktreePath,
-    branch: st.branch,
-    baseSha: st.baseSha,
-  });
+  const lock = deps.lockProject ?? (<T>(fn: () => Promise<T>) => fn());
+  await lock(() =>
+    deps.git.createWorktree({
+      repo: st.repoPath,
+      path: st.worktreePath,
+      branch: st.branch,
+      baseSha: st.baseSha,
+    }),
+  );
   if (checks.setup) {
     const logPath = join(runDir, 'logs', 'setup.log');
     const r = await deps.runShell({

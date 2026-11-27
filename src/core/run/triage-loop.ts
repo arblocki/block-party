@@ -150,13 +150,19 @@ export async function openDecisions(
   return ids;
 }
 
-/** Waits for every answer; a dismissed question halts the run. */
+/**
+ * Waits for every answer; a dismissed question halts the run. While it waits the run gives its
+ * run slot back (nothing is being driven), and takes one again once the answers are in, which
+ * may wait for a free slot. A run that stops waiting for any other reason does not re-take it.
+ */
 export async function awaitAnswers(
   env: LoopEnv,
   ctx: Ctx,
   ids: number[],
 ): Promise<DecisionAnswer[]> {
   const answers: DecisionAnswer[] = [];
+  const slots = ctx.deps.slots;
+  slots?.release();
   for (const id of ids) {
     try {
       answers.push(await ctx.rec.awaitDecision(id, ctx.input.signal));
@@ -169,6 +175,7 @@ export async function awaitAnswers(
       throw e;
     }
   }
+  if (slots) await slots.acquire(ctx.input.signal);
   return answers;
 }
 

@@ -1,7 +1,8 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { loadRunConfig } from '../core/run/config.js';
 import type { ContinueEntry, RunInput, RunOutcome } from '../core/run/pipeline.js';
 import { ShutdownError } from '../core/run/pipeline-helpers.js';
 import { parsePlan } from '../core/run/plan.js';
@@ -11,6 +12,7 @@ import {
   InvalidStartError,
   PlanValidationError,
   UnknownProjectError,
+  type PipelineHooks,
   type RunManagerOptions,
 } from './run-manager.js';
 
@@ -617,5 +619,622 @@ describe('RunManager.start from a description', () => {
     }
     expect(fake.inputs).toHaveLength(0);
     await m.shutdown();
+  });
+});
+
+// ---- Concurrency limits and the queue -------------------------------------------------------
+
+interface Deferred<T = void> {
+  promise: Promise<T>;
+  resolve: (v: T) => void;
+  reject: (e: unknown) => void;
+}
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (v: T) => void;
+  let reject!: (e: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
+describe('RunManager limits and queue', () => {
+  const ZEROS = { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 };
+  let counter = 0;
+  const newId = () => `r20260101-b${String(++counter).padStart(5, '0')}`;
+  beforeEach(() => {
+    counter = 0;
+  });
+
+  const addRun = (
+    id: string,
+    stage: Parameters<typeof store.runs.createRun>[0]['stage'],
+    pid = projectId,
+  ) =>
+    store.runs.createRun({
+      id,
+      projectId: pid,
+      title: id,
+      stage,
+      stageNote: null,
+      branch: `bp/${id}`,
+      worktreePath: '/wt',
+      runDir: `/runs/${id}`,
+      baseRef: 'main',
+      baseSha: 'b',
+      headSha: null,
+      prNumber: null,
+      planPath: '/p',
+      planHash: 'h',
+      implementer: null,
+      rounds: ZEROS,
+      ownerPid: null,
+      ownerHost: null,
+    });
+
+  const otherProject = () =>
+    store.runs.upsertProject({
+      owner: 'o',
+      repo: 'other',
+      localPath: mkdtempSync(join(tmpdir(), 'bp-other-')),
+      defaultBase: 'main',
+    }).id;
+
+  /**
+   * Fake start pipelines that each run until the test opens their gate. A start from the queue
+   * arrives with `input.runId` and adopts its row, as the real pipeline does.
+   */
+  function controlled() {
+    interface Call {
+      id: string;
+      input: RunInput;
+      hooks: PipelineHooks;
+      gate: Deferred;
+      started: Deferred;
+    }
+    const calls: Call[] = [];
+    const waiting: Deferred<Call>[] = [];
+    const startPipeline = async (input: RunInput, hooks: PipelineHooks): Promise<RunOutcome> => {
+      const id = input.runId ?? newId();
+      const call: Call = { id, input, hooks, gate: deferred(), started: deferred() };
+      calls.push(call);
+      const project = store.runs.listProjects().find((p) => p.localPath === input.repo)!;
+      if (input.runId === undefined) addRun(id, 'setup', project.id);
+      else store.runs.updateRun(id, { stage: 'setup' });
+      input.onStarted?.(id);
+      call.started.resolve();
+      waiting.shift()?.resolve(call);
+      const end = (stage: 'complete' | 'cancelled' | 'interrupted') => {
+        store.runs.updateRun(id, { stage });
+        return { runId: id, runDir: `/runs/${id}`, stage, note: null, prNumber: null };
+      };
+      await Promise.race([
+        call.gate.promise,
+        new Promise<void>((r) => input.signal!.addEventListener('abort', () => r())),
+      ]);
+      if (input.signal!.aborted) {
+        return end(input.signal!.reason instanceof ShutdownError ? 'interrupted' : 'cancelled');
+      }
+      return end('complete');
+    };
+    /** Resolves with the next call that starts (or the one that already did not yet get awaited). */
+    const nextStart = () => {
+      const d = deferred<Call>();
+      waiting.push(d);
+      return d.promise;
+    };
+    return { calls, startPipeline, nextStart };
+  }
+
+  const queuedIds = () => store.runs.listQueued().map((q) => q.runId);
+  const stageOf = (id: string) => store.runs.getRun(id)?.stage;
+  const startReq = (
+    pid = projectId,
+    over: Partial<Parameters<ReturnType<typeof manager>['start']>[0]> = {},
+  ) => ({
+    projectId: pid,
+    baseRef: 'main',
+    description: 'Do the thing',
+    ...over,
+  });
+
+  it('with maxRuns 2 queues the third start and starts it when one of the first two finishes', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 2, maxRunsPerProject: 5 },
+    });
+    const a = await m.start(startReq());
+    const b = await m.start(startReq());
+    const c = await m.start(startReq());
+    expect(fake.calls).toHaveLength(2);
+    expect(stageOf(a)).toBe('setup');
+    expect(stageOf(c)).toBe('queued');
+    expect(queuedIds()).toEqual([c]);
+    expect(m.status()).toMatchObject({ inUse: 2, maxRuns: 2 });
+    // The pending entry was stored before the start answered, with its position as an event.
+    const stored = store.runs.listQueued()[0]!;
+    expect(stored.entry).toMatchObject({ baseRef: 'main', description: 'Do the thing' });
+    expect(store.runs.listEvents(c).find((e) => e.type === 'run.queued')?.payload).toEqual({
+      position: 1,
+    });
+
+    const third = fake.nextStart();
+    fake.calls[0]!.gate.resolve();
+    const call = await third;
+    expect(call.id).toBe(c);
+    expect(call.input.runId).toBe(c);
+    expect(call.input.description).toBe('Do the thing');
+    expect(queuedIds()).toEqual([]);
+    expect(stageOf(c)).toBe('setup');
+    expect(store.runs.getRun(c)).toMatchObject({ ownerPid: process.pid });
+    expect(m.status().inUse).toBe(2);
+    expect(b).not.toBe(c);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('with maxRunsPerProject 1 a second run in the same project waits while another project starts', async () => {
+    const other = otherProject();
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 5, maxRunsPerProject: 1 },
+    });
+    const a1 = await m.start(startReq());
+    const a2 = await m.start(startReq());
+    const b1 = await m.start(startReq(other));
+    expect(stageOf(a1)).toBe('setup');
+    expect(stageOf(a2)).toBe('queued');
+    expect(stageOf(b1)).toBe('setup');
+    expect(fake.calls).toHaveLength(2);
+
+    const next = fake.nextStart();
+    fake.calls[0]!.gate.resolve();
+    expect((await next).id).toBe(a2);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('starts queued runs first-in first-out, skipping one that does not fit its project', async () => {
+    const other = otherProject();
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 2, maxRunsPerProject: 1 },
+    });
+    await m.start(startReq()); // project A, running
+    await m.start(startReq(other)); // project B, running
+    const qa = await m.start(startReq()); // A, queued first
+    const qb = await m.start(startReq(other)); // B, queued second
+    expect(queuedIds()).toEqual([qa, qb]);
+
+    // The slot of project B frees: qa is older but its project is still full, so qb starts.
+    const next = fake.nextStart();
+    fake.calls[1]!.gate.resolve();
+    expect((await next).id).toBe(qb);
+    expect(queuedIds()).toEqual([qa]);
+    // Project A frees: qa starts.
+    const nextA = fake.nextStart();
+    fake.calls[0]!.gate.resolve();
+    expect((await nextA).id).toBe(qa);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('starts each queued run exactly once when two slots free at the same moment', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 2, maxRunsPerProject: 5 },
+    });
+    await m.start(startReq());
+    await m.start(startReq());
+    const q1 = await m.start(startReq());
+    const q2 = await m.start(startReq());
+    const q3 = await m.start(startReq());
+    const both = Promise.all([fake.nextStart(), fake.nextStart()]);
+    // Both finish in the same tick.
+    fake.calls[0]!.gate.resolve();
+    fake.calls[1]!.gate.resolve();
+    const started = await both;
+    expect(started.map((c) => c.id)).toEqual([q1, q2]);
+    expect(queuedIds()).toEqual([q3]);
+    const fromQueue = fake.calls.filter((c) => c.input.runId !== undefined).map((c) => c.id);
+    expect(fromQueue).toEqual([q1, q2]);
+    expect(m.status().inUse).toBe(2);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('frees the slot of a run waiting for an answer, and its answer waits for a slot', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    await m.start(startReq());
+    const a = fake.calls[0]!;
+    expect(m.status().inUse).toBe(1);
+    // The pipeline enters awaiting_decision: nothing is driven, so the slot is free.
+    a.hooks.slots.release();
+    expect(m.status().inUse).toBe(0);
+    const nextB = fake.nextStart();
+    const b = await m.start(startReq());
+    expect(stageOf(b)).toBe('setup');
+    expect(fake.calls).toHaveLength(2);
+    const c = await m.start(startReq());
+    expect(stageOf(c)).toBe('queued');
+
+    // The answer arrives, but B holds the only slot: A waits for it.
+    let acquired = false;
+    const acquiring = a.hooks.slots.acquire(a.input.signal).then(() => (acquired = true));
+    await nextB;
+    await new Promise((r) => setImmediate(r));
+    expect(acquired).toBe(false);
+    expect(m.status().inUse).toBe(1);
+
+    // B ends: the waiting run takes the slot before the queued run C does.
+    fake.calls[1]!.gate.resolve();
+    await acquiring;
+    expect(acquired).toBe(true);
+    expect(stageOf(c)).toBe('queued');
+    expect(m.status().inUse).toBe(1);
+
+    const nextC = fake.nextStart();
+    a.gate.resolve();
+    expect((await nextC).id).toBe(c);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('stops waiting for a slot when the run is cancelled, and release is idempotent', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    const a = await m.start(startReq());
+    const call = fake.calls[0]!;
+    call.hooks.slots.release();
+    call.hooks.slots.release();
+    expect(m.status().inUse).toBe(0);
+    await m.start(startReq()); // B takes the slot
+    const acquiring = call.hooks.slots.acquire(call.input.signal);
+    const rejected = expect(acquiring).rejects.toBeDefined();
+    expect(await m.cancel(a)).toBe(true);
+    await rejected;
+    // A cancelled waiter never takes a slot later.
+    fake.calls[1]!.gate.resolve();
+    await m.shutdown();
+    expect(m.status().inUse).toBe(0);
+  });
+
+  it('holds a continuation to the limits: an answer with no free slot is queued and carried out later', async () => {
+    const fake = controlled();
+    const continuations: { runId: string; entry: ContinueEntry; stageSeen: string | undefined }[] =
+      [];
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      continuePipeline: async (runId, entry) => {
+        continuations.push({ runId, entry, stageSeen: stageOf(runId) });
+        store.runs.updateRun(runId, { stage: 'awaiting_review' });
+        return { runId, runDir: '/r', stage: 'awaiting_review', note: null, prNumber: null };
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    addRun('r20260101-c00001', 'awaiting_plan_approval');
+    addRun('r20260101-c00002', 'interrupted');
+    store.runs.updateRun('r20260101-c00001', { stageNote: 'Plan v1 ready' });
+    await m.start(startReq());
+
+    expect(m.continue('r20260101-c00001', { kind: 'plan_approve' })).toBe(true);
+    expect(m.resume('r20260101-c00002')).toBe('started');
+    expect(continuations).toEqual([]);
+    expect(queuedIds()).toEqual(['r20260101-c00001', 'r20260101-c00002']);
+    expect(stageOf('r20260101-c00001')).toBe('queued');
+    // A second answer for a queued run is not a second continuation.
+    expect(m.continue('r20260101-c00001', { kind: 'plan_approve' })).toBe(false);
+    expect(m.resume('r20260101-c00002')).toBe('busy');
+
+    fake.calls[0]!.gate.resolve();
+    await vi.waitFor(() => expect(continuations.length).toBe(2));
+    // Back at its resting stage (with its note) when the continuation picks it up.
+    expect(continuations[0]).toEqual({
+      runId: 'r20260101-c00001',
+      entry: { kind: 'plan_approve' },
+      stageSeen: 'awaiting_plan_approval',
+    });
+    expect(continuations[1]).toEqual({
+      runId: 'r20260101-c00002',
+      entry: { kind: 'resume' },
+      stageSeen: 'interrupted',
+    });
+    expect(queuedIds()).toEqual([]);
+    await m.shutdown();
+  });
+
+  it('lets approving and cancelling run without a slot: they only finish the run', async () => {
+    const fake = controlled();
+    const entries: ContinueEntry[] = [];
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      continuePipeline: async (runId, entry) => {
+        entries.push(entry);
+        return { runId, runDir: '/r', stage: 'complete', note: null, prNumber: null };
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    addRun('r20260101-c00003', 'awaiting_review');
+    await m.start(startReq());
+    expect(m.continue('r20260101-c00003', { kind: 'approve' })).toBe(true);
+    expect(stageOf('r20260101-c00003')).toBe('awaiting_review');
+    await vi.waitFor(() => expect(entries).toEqual([{ kind: 'approve' }]));
+    expect(queuedIds()).toEqual([]);
+    fake.calls[0]!.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('cancels a queued start without ever starting it', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    await m.start(startReq());
+    const q = await m.start(startReq());
+    expect(await m.cancel(q)).toBe(true);
+    expect(stageOf(q)).toBe('cancelled');
+    expect(queuedIds()).toEqual([]);
+    fake.calls[0]!.gate.resolve();
+    await m.shutdown();
+    expect(fake.calls).toHaveLength(1);
+  });
+
+  it('cancels a queued answer by putting the run back at rest and cancelling it from there', async () => {
+    const fake = controlled();
+    const entries: [string, ContinueEntry][] = [];
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      continuePipeline: async (runId, entry) => {
+        entries.push([stageOf(runId)!, entry]);
+        if (entry.kind === 'cancel') store.runs.updateRun(runId, { stage: 'cancelled' });
+        return { runId, runDir: '/r', stage: 'cancelled', note: null, prNumber: null };
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    addRun('r20260101-c00004', 'awaiting_plan_approval');
+    await m.start(startReq());
+    expect(m.continue('r20260101-c00004', { kind: 'plan_approve' })).toBe(true);
+    expect(stageOf('r20260101-c00004')).toBe('queued');
+    expect(await m.cancel('r20260101-c00004')).toBe(true);
+    // Only the cancel ran, from the rest stage; the approval was dropped.
+    expect(entries).toEqual([['awaiting_plan_approval', { kind: 'cancel' }]]);
+    expect(stageOf('r20260101-c00004')).toBe('cancelled');
+    fake.calls[0]!.gate.resolve();
+    await m.shutdown();
+  });
+
+  it('keeps queued runs queued across a restart and starts them after pump', async () => {
+    const first = controlled();
+    const m1 = manager({
+      startPipeline: first.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    await m1.start(startReq());
+    const q1 = await m1.start(startReq());
+    const q2 = await m1.start(startReq());
+    // The server stops: the running run is interrupted, the queued ones stay queued.
+    await m1.shutdown();
+    expect(stageOf(first.calls[0]!.id)).toBe('interrupted');
+    expect(queuedIds()).toEqual([q1, q2]);
+
+    const second = controlled();
+    const m2 = manager({
+      startPipeline: second.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    // Nothing starts by itself before the server asks, after reconciliation.
+    expect(second.calls).toHaveLength(0);
+    const next = second.nextStart();
+    m2.pump();
+    expect((await next).id).toBe(q1);
+    expect(queuedIds()).toEqual([q2]);
+    const after = second.nextStart();
+    second.calls[0]!.gate.resolve();
+    expect((await after).id).toBe(q2);
+    for (const x of second.calls) x.gate.resolve();
+    await m2.shutdown();
+  });
+
+  it('puts a queued start back in the queue when the server stops before it got going', async () => {
+    const started = deferred();
+    const m = manager({
+      startPipeline: async (input) => {
+        started.resolve();
+        await new Promise<void>((r) => input.signal!.addEventListener('abort', () => r()));
+        // Stopped in preflight, before any run file or onStarted.
+        throw input.signal!.reason;
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    const id = newId();
+    store.runs.createQueuedRun(
+      {
+        id,
+        projectId,
+        title: 'Q',
+        stageNote: null,
+        branch: '',
+        worktreePath: '',
+        runDir: `/runs/${id}`,
+        baseRef: 'main',
+        baseSha: '',
+        headSha: null,
+        prNumber: null,
+        planPath: '',
+        planHash: '',
+        implementer: null,
+        rounds: ZEROS,
+      },
+      { repo: root, baseRef: 'main', description: 'x', config: loadRunConfig(root) },
+    );
+    m.pump();
+    await started.promise;
+    expect(stageOf(id)).toBe('setup');
+    await m.shutdown();
+    expect(stageOf(id)).toBe('queued');
+    expect(queuedIds()).toEqual([id]);
+  });
+
+  it('marks a queued start failed, not lost, when it cannot get started', async () => {
+    const errors: unknown[] = [];
+    const m = manager({
+      startPipeline: async () => {
+        throw new Error('No checks: section in .block-party.yaml');
+      },
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+      onError: (_id, e) => errors.push(e),
+    });
+    const id = newId();
+    store.runs.createQueuedRun(
+      {
+        id,
+        projectId,
+        title: 'Q',
+        stageNote: null,
+        branch: '',
+        worktreePath: '',
+        runDir: `/runs/${id}`,
+        baseRef: 'main',
+        baseSha: '',
+        headSha: null,
+        prNumber: null,
+        planPath: '',
+        planHash: '',
+        implementer: null,
+        rounds: ZEROS,
+      },
+      { repo: root, baseRef: 'main', description: 'x', config: loadRunConfig(root) },
+    );
+    m.pump();
+    await vi.waitFor(() => expect(stageOf(id)).toBe('failed'));
+    expect(store.runs.getRun(id)?.stageNote).toMatch(/Could not start: No checks/);
+    expect(queuedIds()).toEqual([]);
+    expect(errors).toHaveLength(1);
+    await m.shutdown();
+  });
+
+  it('shows queued runs their place: the run list reports the position', async () => {
+    const fake = controlled();
+    const m = manager({
+      startPipeline: fake.startPipeline,
+      limits: { maxRuns: 1, maxRunsPerProject: 1 },
+    });
+    await m.start(startReq());
+    const q1 = await m.start(startReq());
+    const q2 = await m.start(startReq());
+    expect(store.runs.listEvents(q2).find((e) => e.type === 'run.queued')?.payload).toEqual({
+      position: 2,
+    });
+    expect(queuedIds()).toEqual([q1, q2]);
+    for (const x of fake.calls) x.gate.resolve();
+    await m.shutdown();
+  });
+});
+
+describe('RunManager.withProjectLock', () => {
+  it('runs work for one key one at a time, in order, and survives a failure', async () => {
+    const m = manager();
+    const order: string[] = [];
+    const gate1 = deferred();
+    const first = m.withProjectLock('p', async () => {
+      order.push('first:start');
+      await gate1.promise;
+      order.push('first:end');
+      throw new Error('boom');
+    });
+    const second = m.withProjectLock('p', async () => {
+      order.push('second:start');
+      return 2;
+    });
+    const firstResult = expect(first).rejects.toThrow('boom');
+    await new Promise((r) => setImmediate(r));
+    expect(order).toEqual(['first:start']);
+    gate1.resolve();
+    await firstResult;
+    expect(await second).toBe(2);
+    expect(order).toEqual(['first:start', 'first:end', 'second:start']);
+  });
+
+  it('does not make different projects wait for each other', async () => {
+    const m = manager();
+    const gate = deferred();
+    const a = m.withProjectLock('a', () => gate.promise);
+    const ran = await m.withProjectLock('b', async () => 'b ran');
+    expect(ran).toBe('b ran');
+    gate.resolve();
+    await a;
+  });
+
+  it('never lets two setups in one project run `git worktree add` at once', async () => {
+    const m = manager({
+      limits: { maxRuns: 5, maxRunsPerProject: 5 },
+      startPipeline: async (input, hooks) => {
+        const id = newRunIdForLock();
+        addLockRow(id);
+        input.onStarted?.(id);
+        // The real pipeline wraps createWorktree like this.
+        await hooks.lockProject(async () => {
+          active++;
+          maxActive = Math.max(maxActive, active);
+          entered.push(id);
+          await gates[entered.length - 1]!.promise;
+          active--;
+        });
+        return { runId: id, runDir: '/r', stage: 'complete', note: null, prNumber: null };
+      },
+    });
+    let active = 0;
+    let maxActive = 0;
+    const entered: string[] = [];
+    const gates = [deferred(), deferred(), deferred()];
+    let n = 0;
+    const newRunIdForLock = () => `r20260101-d${String(++n).padStart(5, '0')}`;
+    const addLockRow = (id: string) =>
+      store.runs.createRun({
+        id,
+        projectId,
+        title: id,
+        stage: 'setup',
+        stageNote: null,
+        branch: 'b',
+        worktreePath: '/wt',
+        runDir: '/r',
+        baseRef: 'main',
+        baseSha: 'b',
+        headSha: null,
+        prNumber: null,
+        planPath: '',
+        planHash: '',
+        implementer: null,
+        rounds: { checkFix: 0, reviewFix: 0, ciFix: 0, feedback: 0, checkRuns: 0 },
+        ownerPid: null,
+        ownerHost: null,
+      });
+    await m.start({ projectId, baseRef: 'main', description: 'one' });
+    await m.start({ projectId, baseRef: 'main', description: 'two' });
+    await m.start({ projectId, baseRef: 'main', description: 'three' });
+    await new Promise((r) => setImmediate(r));
+    expect(entered).toHaveLength(1);
+    gates[0]!.resolve();
+    await vi.waitFor(() => expect(entered).toHaveLength(2));
+    gates[1]!.resolve();
+    await vi.waitFor(() => expect(entered).toHaveLength(3));
+    gates[2]!.resolve();
+    await m.shutdown();
+    expect(maxActive).toBe(1);
   });
 });
