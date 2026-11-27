@@ -92,6 +92,30 @@ Sequential; each has a plan in `docs/plans/phase-3/`.
 10. **Exit check and docs**: run the exit check in a browser, then update the ARCHITECTURE
     checkboxes and decision log.
 
+## Progress (2026-11-27)
+
+All tasks built on main by Sonnet subagents, each with a task review (Opus for tasks 2, 4, 5
+and 7) and fix rounds, then a whole-phase Opus review and one fix wave (`d4b6fae`).
+
+| Task | Commits |
+| --- | --- |
+| 1 Answerable decisions | c0e4706, c2af54d |
+| 2 Continuations and final review | 1b85e24, df4c030, add6513 |
+| 3 Findings as rows | 8e8fe79, a1c9b43 |
+| 4 Triage, disputes, stop conditions | 569820f, d284e7c, 021e473 |
+| 5 Planning stage | 7f5e17b, 43cf67f |
+| 6 Planning UI | 2149a30, 1c2f7fe |
+| 7 Review page findings and send-back | d16a361 |
+| 8 Evidence and acceptance | 34de6fa, f837a7b |
+| 9 CI parity gap | 0155712 |
+| Final review fixes | d3eb8b2..d4b6fae |
+| 10 Exit check | Passed with PR #23; three bugs it found fixed in 0ed59c3 |
+
+Known gaps, left for later: resting-run reopen at startup ignores live owners (only matters
+with two servers on one DB); `rulings.json` is agent-writable; the review page's send tray is
+desktop-only; P2 triage, disputes, broad fixes and the CI gap are covered by tests, not yet
+seen in a live run.
+
 ## Review focus
 
 1. A decision answered twice, or answered after its run ended, must not start two
@@ -106,19 +130,20 @@ Sequential; each has a plan in `docs/plans/phase-3/`.
 
 ## Acceptance criteria
 
-- [ ] Starting a run from a description produces a plan I can revise and approve in the UI;
+- [x] Starting a run from a description produces a plan I can revise and approve in the UI;
       the approved version is what the implementer and reviewer read. [browser]
 - [ ] P2 findings, disputed findings, broad fixes and the review cap each produce an inbox
       item with answer buttons, and the run continues according to my answer. [browser]
-- [ ] A published run waits in `awaiting_review`; Approve completes it, and Send back from
+      (Pipeline tests only: the exit-check run had no such findings.)
+- [x] A published run waits in `awaiting_review`; Approve completes it, and Send back from
       the review page starts a fix round that updates the PR. [browser]
-- [ ] The review page shows Codex findings on the lines they touch, with their history
+- [x] The review page shows Codex findings on the lines they touch, with their history
       across rounds. [browser]
-- [ ] The run view shows acceptance criteria with their status and the evidence per SHA.
+- [x] The run view shows acceptance criteria with their status and the evidence per SHA.
       [browser]
-- [ ] Red GitHub CI after green local CI starts a CI fix round, or an inbox item past the
+- [x] Red GitHub CI after green local CI starts a CI fix round, or an inbox item past the
       cap. (Unit tests with a fake GitHub client; browser if it happens naturally.)
-- [ ] `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test` and `pnpm build` pass.
+- [x] `pnpm typecheck`, `pnpm lint`, `pnpm format:check`, `pnpm test` and `pnpm build` pass.
 
 ## Out of scope
 

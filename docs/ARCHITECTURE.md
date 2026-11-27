@@ -913,14 +913,20 @@ with no UI beyond the terminal, logs, and artifacts.
 
 ### Phase 3: Planning in-app and the integrated review loop (1–2 weeks)
 
-- [ ] Planning stage: read-only Opus session, plan versions, comment/revise/approve in UI.
-- [ ] Full bounded review/fix loop with triage policy, disputes, and stop conditions.
-- [ ] Findings shown in the review UI on groups/lines; per-finding history across rounds.
-- [ ] "Send to implementer" from findings and from my own review comments.
-- [ ] Evidence panel; acceptance-criteria tracking.
-- [ ] CI parity gap handling (GitHub CI red after local green → fix round + inbox note).
-- **Exit check:** I start from a feature description and finish with a reviewed PR, and the
-  only things I did were approve a plan, answer inbox items, and do the final review.
+- [x] Planning stage: read-only Opus session, plan versions, comment/revise/approve in UI.
+- [x] Full bounded review/fix loop with triage policy, disputes, and stop conditions.
+- [x] Findings shown in the review UI on groups/lines; per-finding history across rounds.
+- [x] "Send to implementer" from findings and from my own review comments.
+- [x] Evidence panel; acceptance-criteria tracking.
+- [x] CI parity gap handling (GitHub CI red after local green → fix round + inbox note).
+- [x] **Exit check:** I start from a feature description and finish with a reviewed PR, and the
+  only things I did were approve a plan, answer inbox items, and do the final review. Passed
+  2026-11-27 in a browser with [#23](https://github.com/arblocki/block-party/pull/23): a
+  description became plan v1, one "request changes" produced v2, I approved it, the run
+  implemented, passed local CI and a clean Codex review, opened the draft PR and waited for
+  review; a draft comment sent from the review page became a new commit on the same PR, and
+  Approve completed the run. P2 triage, disputes, broad fixes and CI gaps did not come up and
+  are covered by pipeline tests.
 
 ### Phase 4: Reliability and parallel runs (several weeks)
 
@@ -984,6 +990,27 @@ See 5.7. Built driver by driver, in the order I need them:
 
 Newest first. Each entry: date, decision, why, and what would make us revisit it.
 
+- **2026-11-27: Phase 3 build decisions.** (1) Inbox items can carry options and an answer;
+  one endpoint answers any of them, atomically, and never for a run that has ended. (2) Short
+  waits inside the review loop (P2 triage, disputes, broad fixes, CI-gap retries) keep the
+  pipeline running in `awaiting_decision` and poll the DB, so CLI runs are answered from the
+  UI too; long waits (plan approval, final review) are resting stages with no owner process,
+  and the answer starts a continuation in the server. A continuation that fails before
+  leaving rest reopens its question; at server start, resting runs whose question was
+  answered but never carried out get it reopened. (3) Findings are rows keyed `r<round>:<id>`
+  with triage class, status and `repeatOf`; `repeatOf` (reviewer output) can carry an earlier
+  ruling only to a finding that is no more severe and no stricter in triage. (4) An upheld
+  dispute gets one fix turn even past `maxReviewFixRounds`, then escalates; each continuation
+  gets a fresh fix-round budget. `maxReviewFixRounds` stays 1 (the spec's 3 is a config
+  change away). (5) The planner is a pane Claude session with no shell allowlist: Read, Glob,
+  Grep, and writes only to its plan and report; HEAD and a clean worktree are checked after
+  each turn. (6) Publishing ends in `awaiting_review`; "Send to implementer" answers that
+  decision with findings and comments, and the feedback turn must resolve the findings it was
+  sent. (7) Red GitHub CI after green local CI gets `maxCiFixRounds` (1) automatic `ci-fix`
+  rounds, then a retry/stop question. *Revisit* (2) when Phase 4 resumes interrupted runs
+  (short waits could rest too), and (5) if planners need shell access often enough that the
+  prompts get in the way. Rulings live in `inputs/rulings.json`, which the agent could edit;
+  rebuild them from answered decisions if that ever matters.
 - **2026-11-26: Phase 2 build decisions.** (1) SQLite owns the run list and run state;
   `run.json` and `run-events.jsonl` are still written through one `RunRecorder`. (2) The
   pipeline stays sequential code; stage changes go through a pure `transition()`. (3) Every
