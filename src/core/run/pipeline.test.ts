@@ -2586,3 +2586,204 @@ describe('planning', () => {
     });
   });
 });
+
+describe('resume', () => {
+  const resume = (h: ReturnType<typeof harness>, id: string, keep = false) =>
+    continueRun(id, keep ? { kind: 'resume', keep: true } : { kind: 'resume' }, h.deps);
+
+  /** Interrupts a run in its first agent turn. */
+  async function interruptedMidImplement(store: RunStore) {
+    const ac = new AbortController();
+    const h = harness({ store, turns: [{}, {}, {}], hangFirstTurn: true });
+    const p = h.run(ac.signal);
+    await new Promise((r) => setTimeout(r, 50));
+    ac.abort(new ShutdownError());
+    const out = await p;
+    expect(out.stage).toBe('interrupted');
+    return { h, out };
+  }
+
+  /** Interrupts a run as it publishes, after a clean review of its head. */
+  async function interruptedAtPublish(store: RunStore) {
+    const ac = new AbortController();
+    let pushes = 0;
+    const h = harness({
+      store,
+      turns: [{}],
+      publishWith: async (p) => {
+        if (pushes++ === 0) {
+          ac.abort(new ShutdownError());
+          throw new Error('server stopped');
+        }
+        return { prNumber: 7, url: 'https://x/pr/7', headSha: p.branch, created: true };
+      },
+    });
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('interrupted');
+    return { h, out };
+  }
+
+  it('resumes the same session mid-implement, judges the report and rests for review', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.starts).toHaveLength(1);
+    expect(h.calls.sendSessions).toEqual(['s1']);
+    expect(h.calls.sends[0]).toMatch(
+      /^You were interrupted\. Continue the task in .*implement-1\.md;/,
+    );
+    expect(existsSync(join(out.runDir, 'reports', 'implement-1.json'))).toBe(true);
+    expect(h.calls.published).toHaveLength(1);
+    // The stale open question is closed, the resume is recorded, and no run is left stopped.
+    expect(store.listDecisions({ runId: out.runId, status: 'open' }).map((d) => d.kind)).toEqual([
+      'final_review',
+    ]);
+    const types = store.listEvents(out.runId).map((e) => e.type);
+    expect(types).toContain('run.resumed');
+    expect(store.getRun(out.runId)?.stage).toBe('awaiting_review');
+    expect(stagesOf(store, out)[0]).toEqual(['implement', 1, 'cancelled']);
+  });
+
+  it('judges a report the agent had already written without sending anything', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    h.git.head = 'c'.repeat(40);
+    writeFileSync(join(out.runDir, 'report.json'), JSON.stringify(report()));
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(0);
+  });
+
+  it('resumes at publish after a clean review, without another review or local CI', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedAtPublish(store);
+    expect(h.calls.reviews).toHaveLength(1);
+    expect(h.calls.checks).toBe(1);
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.reviews).toHaveLength(1);
+    expect(h.calls.checks).toBe(1);
+    expect(h.calls.sends).toHaveLength(0);
+    expect(h.calls.published).toHaveLength(2);
+    expect(next.prNumber).toBe(7);
+    const resumed = store.listEvents(out.runId).find((e) => e.type === 'run.resumed');
+    expect(resumed?.payload).toMatchObject({ from: 'interrupted', point: 'publish' });
+  });
+
+  it('asks instead of resuming when the worktree has uncommitted changes', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    h.git.dirty = true;
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('interrupted');
+    expect(h.calls.sends).toHaveLength(0);
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open.map((d) => d.kind)).toEqual(['resume_conflict']);
+    expect(open[0]!.body).toContain('a.ts');
+    expect(open[0]!.options?.map((o) => o.id)).toEqual(['keep', 'cancel']);
+    expect(store.getRun(out.runId)?.ownerPid).toBeNull();
+    // Keeping them goes on from there.
+    const kept = await resume(h, out.runId, true);
+    expect(kept.stage).toBe('awaiting_review');
+    expect(h.calls.sends).toHaveLength(1);
+  });
+
+  it('asks when HEAD moved since the run stopped, and keep re-records the head', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedAtPublish(store);
+    const before = h.git.head;
+    h.git.head = 'f'.repeat(40);
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('interrupted');
+    const [q] = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(q!.kind).toBe('resume_conflict');
+    expect(q!.body).toContain(before.slice(0, 7));
+    expect(h.calls.published).toHaveLength(1);
+    const kept = await resume(h, out.runId, true);
+    expect(kept.stage).toBe('awaiting_review');
+    // The new head has no evidence: local CI and review ran on it before publishing.
+    expect(h.calls.checks).toBe(2);
+    expect(h.calls.reviews).toHaveLength(2);
+    expect(h.calls.published.at(-1)).toBeDefined();
+  });
+
+  it('resumes a blocked run through the same session and mentions what blocked it', async () => {
+    const store = openStore(':memory:').runs;
+    const h = harness({ store, turns: [{ report: report({ status: 'partial' }) }, {}] });
+    const out = await h.run();
+    expect(out.stage).toBe('blocked');
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(h.calls.sendSessions).toEqual(['s1']);
+    expect(h.calls.sends[0]).toContain(
+      'The run had stopped because: Implementer reported partial work',
+    );
+  });
+
+  it('keeps the fix-round counters across a resume', async () => {
+    const store = openStore(':memory:').runs;
+    const ac = new AbortController();
+    let reviews = 0;
+    const h = harness({
+      store,
+      turns: [{}, {}],
+      checks: [false, true],
+      onReview: () => {
+        if (reviews++ === 0) ac.abort(new ShutdownError());
+      },
+    });
+    const out = await h.run(ac.signal);
+    expect(out.stage).toBe('interrupted');
+    expect(state(out).rounds.checkFix).toBe(1);
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('awaiting_review');
+    expect(state(next).rounds.checkFix).toBe(1);
+  });
+
+  it('does not resume runs that failed, were cancelled or completed', async () => {
+    for (const to of ['failed', 'cancelled', 'complete'] as const) {
+      const store = openStore(':memory:').runs;
+      const h = harness({ store, turns: [{}] });
+      const out = await h.run();
+      store.updateRun(out.runId, { stage: to });
+      const file = join(out.runDir, 'run.json');
+      const st = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>;
+      writeFileSync(file, JSON.stringify({ ...st, stage: to }));
+      await expect(resume(h, out.runId)).rejects.toThrow(/did not stop where it can resume/);
+      expect(h.calls.sends).toHaveLength(0);
+    }
+  });
+
+  it('asks, and offers only cancel, when the worktree cannot be read', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    h.deps.git.statusLines = async () => [];
+    h.deps.git.headSha = async () => {
+      throw new Error('git is broken');
+    };
+    // An unreadable worktree asks rather than failing.
+    const asked = await resume(h, out.runId);
+    expect(asked.stage).toBe('interrupted');
+    expect(store.listDecisions({ runId: out.runId, status: 'open' }).map((d) => d.kind)).toEqual([
+      'resume_conflict',
+    ]);
+  });
+
+  it('keeps the run stopped, with its question back, when a resume fails before it moves', async () => {
+    const store = openStore(':memory:').runs;
+    const { h, out } = await interruptedMidImplement(store);
+    forced.illegal = ['interrupted', 'implementing'];
+    const next = await resume(h, out.runId);
+    expect(next.stage).toBe('interrupted');
+    expect(store.getRun(out.runId)?.stage).toBe('interrupted');
+    expect(store.getRun(out.runId)?.ownerPid).toBeNull();
+    const open = store.listDecisions({ runId: out.runId, status: 'open' });
+    expect(open.map((d) => d.kind)).toEqual(['interrupted']);
+    expect(open[0]!.body).toContain('could not be resumed');
+    expect(open[0]!.options?.map((o) => o.id)).toEqual(['resume', 'dismiss']);
+    // Still resumable once the problem is gone.
+    forced.illegal = null;
+    expect((await resume(h, out.runId)).stage).toBe('awaiting_review');
+  });
+});

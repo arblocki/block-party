@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { isTerminal, type RunStage } from '../../core/run/machine';
+import { canResume, isTerminal, type RunStage } from '../../core/run/machine';
 import { api, openStream } from '../api';
 import { runProject } from '../lib/home';
 import { evidenceFor, headLine, staleLines } from '../lib/evidence';
@@ -167,6 +167,7 @@ export function RunView({ id }: { id: string }) {
   const [error, setError] = useState<string | null>(null);
   const [cancelNote, setCancelNote] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const refetchRef = useRef<() => void>(() => {});
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -353,6 +354,21 @@ export function RunView({ id }: { id: string }) {
     );
   }, []);
 
+  const resumeRun = () => {
+    setResuming(true);
+    setCancelNote(null);
+    api<{ resumed: boolean }>(`/api/runs/${id}/resume`, { method: 'POST' }).then(
+      () => {
+        setResuming(false);
+        refetchRef.current();
+      },
+      (e: Error) => {
+        setResuming(false);
+        setError(e.message);
+      },
+    );
+  };
+
   const cancel = () => {
     setCancelling(true);
     setCancelNote(null);
@@ -416,6 +432,17 @@ export function RunView({ id }: { id: string }) {
           <h1 className="text-xl font-semibold">{run.title}</h1>
           <StageBadge stage={run.stage} />
           <span className="flex-1" />
+          {canResume(run.stage) && (
+            <button
+              type="button"
+              className={linkButton}
+              disabled={resuming}
+              onClick={resumeRun}
+              title="Picks the run up where it stopped, without redoing finished work"
+            >
+              {resuming ? 'Resuming…' : 'Resume'}
+            </button>
+          )}
           {!isTerminal(run.stage) && (
             <button type="button" className={linkButton} disabled={cancelling} onClick={cancel}>
               {cancelling ? 'Cancelling…' : 'Cancel run'}
